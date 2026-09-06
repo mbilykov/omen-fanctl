@@ -1,0 +1,6 @@
+/home/michael/Downloads/omencore/fan-control-daemon-research/src/trace_hp_wmi_2f.bt:38:5-27: WARNING: Return value discarded.
+    delete(@hp2f_out[tid]);
+    ~~~~~~~~~~~~~~~~~~~~~~
+
+
+@hp2f_out[257336]: 18446692891828762504

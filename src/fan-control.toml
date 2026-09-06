@@ -1,0 +1,58 @@
+[daemon]
+# This prototype refuses to run on any unlisted system board.
+allowed_boards = ["8D87"]
+required_profile = "performance"
+
+# Read temperatures every second. Rising targets may be sent on every sample so
+# a sudden CPU boost does not outrun EWMA. Reductions occur at most every five
+# seconds, matching the cadence found in HP Gaming Hub's older control loop.
+sample_interval_s = 1.0
+control_interval_s = 5.0
+
+# Below activation temperature the firmware remains in Auto. Once software
+# control is active it returns to Auto only after cooling below release_temp_c.
+activation_temp_c = 60.0
+release_temp_c = 52.0
+
+# Raw (not smoothed) temperature overrides the curve and requests maximum fans.
+# Maximum remains selected for at least emergency_hold_s and until the smoothed
+# temperature falls below critical_release_temp_c.
+critical_temp_c = 92.0
+critical_release_temp_c = 82.0
+emergency_hold_s = 10.0
+
+# Extra temperature applied only when considering a PWM decrease.
+decrease_hysteresis_c = 3.0
+
+# PWM rate limits per control update. A critical-temperature transition ignores
+# the rise limit and immediately requests maximum.
+max_rise_percent_per_update = 20.0
+max_fall_percent_per_update = 8.0
+minimum_manual_percent = 31.6667
+
+[ewma]
+# Values stored with this factory Performance configuration in Gaming Hub.
+rise_alpha = 0.10
+fall_alpha = 0.05
+
+[sensors]
+# Canonical Gaming Hub IR source on 8D87. The read-only kernel probe must be
+# loaded and index 0 must be readable at startup. If IR is temporarily lost
+# later, the daemon logs it and continues from CPU/GPU until IR recovers.
+include_hp_wmi_ir = true
+hp_wmi_sensors_path = "/proc/hp_wmi_sensors"
+
+# Neither Linux acpitz zone is Gaming Hub's IR input. Keep this disabled for
+# normal control; --include-acpi-proxy enables it only for comparisons.
+include_acpi = false
+include_amd_gpu = true
+# Uses nvidia-smi when present. Failure is non-fatal as long as CPU is readable.
+include_nvidia_gpu = true
+
+[curves]
+# Extracted from HP.Omen.Core.Common.dll resource
+# PowerControl.JSON.Vibrance_STX_N22X9.json, version 20250930. CPU, GPU, and
+# IR use independent stepped tables. IR is read from index 0 of the probe's
+# /proc/hp_wmi_sensors output. Normal factory Performance tops out at HP fan
+# level 47/60 (~78.3%); the daemon's 92 C emergency remains 60/60 (100%).
+preset = "hp-vibrance-stx-n22x9-performance"

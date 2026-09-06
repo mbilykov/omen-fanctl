@@ -1,0 +1,187 @@
+timestamp,elapsed_s,profile,state,cpu_raw_c,gpu_raw_c,nvidia_power_draw_w,nvidia_power_limit_w,acpi_raw_c,cpu_ewma_c,gpu_ewma_c,acpi_ewma_c,hottest_control_c,curve_source,winning_sensor,cpu_target_percent,gpu_target_percent,acpi_target_percent,requested_pwm,requested_percent,actual_mode,actual_pwm,fan1_rpm,fan2_rpm,note
+2026-09-06T19:23:50+03:00,0.1,performance,bios-auto,48.0,45.0,7.0,,,48.0,45.0,,48.0,hp-vibrance-stx-n22x9-performance,,,,,,,2,0,0,0,
+2026-09-06T19:23:51+03:00,1.2,performance,bios-auto,47.8,45.0,7.0,,,48.0,45.0,,48.0,hp-vibrance-stx-n22x9-performance,,,,,,,2,0,0,0,
+2026-09-06T19:23:52+03:00,2.2,performance,bios-auto,47.6,45.0,7.0,,,48.0,45.0,,48.0,hp-vibrance-stx-n22x9-performance,,,,,,,2,0,0,0,
+2026-09-06T19:23:53+03:00,3.3,performance,bios-auto,47.9,45.0,7.1,,,48.0,45.0,,48.0,hp-vibrance-stx-n22x9-performance,,,,,,,2,0,0,0,
+2026-09-06T19:23:54+03:00,4.4,performance,bios-auto,48.6,45.0,7.1,,,48.0,45.0,,48.0,hp-vibrance-stx-n22x9-performance,,,,,,,2,0,0,0,
+2026-09-06T19:23:55+03:00,5.5,performance,manual,65.4,59.0,168.3,,,49.8,46.4,,65.4,hp-vibrance-stx-n22x9-performance,cpu,33.3,31.7,,85,33.3,1,0,0,0,
+2026-09-06T19:23:56+03:00,6.6,performance,manual,71.2,50.0,114.3,,,51.9,46.8,,71.2,hp-vibrance-stx-n22x9-performance,cpu,36.7,31.7,,94,36.9,1,0,0,0,
+2026-09-06T19:23:57+03:00,7.7,performance,manual,72.6,50.0,54.8,,,54.0,47.1,,72.6,hp-vibrance-stx-n22x9-performance,cpu,36.7,31.7,,94,36.9,1,0,0,0,
+2026-09-06T19:23:58+03:00,8.8,performance,manual,73.1,50.0,54.8,,,55.9,47.4,,73.1,hp-vibrance-stx-n22x9-performance,cpu,36.7,31.7,,94,36.9,1,46,1100,1300,
+2026-09-06T19:23:59+03:00,9.8,performance,manual,73.4,50.0,54.8,,,57.6,47.6,,73.4,hp-vibrance-stx-n22x9-performance,cpu,36.7,31.7,,94,36.9,1,68,1600,1700,
+2026-09-06T19:24:00+03:00,10.9,performance,manual,73.6,50.0,54.8,,,59.2,47.9,,73.6,hp-vibrance-stx-n22x9-performance,cpu,36.7,31.7,,94,36.9,1,80,1900,2000,
+2026-09-06T19:24:01+03:00,12.0,performance,manual,73.4,51.0,54.9,,,60.7,48.2,,73.4,hp-vibrance-stx-n22x9-performance,cpu,36.7,31.7,,94,36.9,1,89,2100,2300,
+2026-09-06T19:24:02+03:00,13.0,performance,manual,73.6,51.0,54.9,,,62.0,48.5,,73.6,hp-vibrance-stx-n22x9-performance,cpu,36.7,31.7,,94,36.9,1,89,2100,2300,
+2026-09-06T19:24:04+03:00,14.1,performance,manual,73.9,51.0,54.9,,,63.1,48.7,,73.9,hp-vibrance-stx-n22x9-performance,cpu,36.7,31.7,,94,36.9,1,89,2100,2300,
+2026-09-06T19:24:05+03:00,15.2,performance,manual,74.1,51.0,54.9,,,64.2,48.9,,74.1,hp-vibrance-stx-n22x9-performance,cpu,38.3,31.7,,98,38.4,1,89,2100,2300,
+2026-09-06T19:24:06+03:00,16.2,performance,manual,75.6,51.0,54.9,,,65.4,49.2,,75.6,hp-vibrance-stx-n22x9-performance,cpu,38.3,31.7,,98,38.4,1,93,2200,2400,
+2026-09-06T19:24:07+03:00,17.3,performance,manual,75.8,51.0,54.9,,,66.4,49.3,,75.8,hp-vibrance-stx-n22x9-performance,cpu,38.3,31.7,,98,38.4,1,93,2200,2400,
+2026-09-06T19:24:08+03:00,18.4,performance,manual,75.6,51.0,55.0,,,67.3,49.5,,75.6,hp-vibrance-stx-n22x9-performance,cpu,38.3,31.7,,98,38.4,1,93,2200,2400,
+2026-09-06T19:24:09+03:00,19.4,performance,manual,75.1,51.0,55.0,,,68.1,49.7,,75.1,hp-vibrance-stx-n22x9-performance,cpu,38.3,31.7,,98,38.4,1,93,2200,2400,
+2026-09-06T19:24:10+03:00,20.5,performance,manual,75.0,51.0,55.0,,,68.8,49.8,,75.0,hp-vibrance-stx-n22x9-performance,cpu,38.3,31.7,,98,38.4,1,93,2200,2400,
+2026-09-06T19:24:11+03:00,21.5,performance,manual,75.0,51.0,55.0,,,69.4,49.9,,75.0,hp-vibrance-stx-n22x9-performance,cpu,38.3,31.7,,98,38.4,1,93,2200,2400,
+2026-09-06T19:24:12+03:00,22.6,performance,manual,75.0,51.0,55.0,,,70.0,50.0,,75.0,hp-vibrance-stx-n22x9-performance,cpu,38.3,31.7,,98,38.4,1,93,2200,2400,
+2026-09-06T19:24:13+03:00,23.7,performance,manual,75.0,51.0,55.0,,,70.5,50.1,,75.0,hp-vibrance-stx-n22x9-performance,cpu,38.3,31.7,,98,38.4,1,93,2200,2400,
+2026-09-06T19:24:14+03:00,24.7,performance,manual,75.1,51.0,55.0,,,70.9,50.2,,75.1,hp-vibrance-stx-n22x9-performance,cpu,38.3,31.7,,98,38.4,1,93,2200,2400,
+2026-09-06T19:24:15+03:00,25.8,performance,manual,75.1,51.0,55.1,,,71.4,50.3,,75.1,hp-vibrance-stx-n22x9-performance,cpu,38.3,31.7,,98,38.4,1,93,2200,2400,
+2026-09-06T19:24:16+03:00,26.8,performance,manual,75.2,62.0,107.1,,,71.8,51.5,,75.2,hp-vibrance-stx-n22x9-performance,cpu,38.3,33.3,,98,38.4,1,93,2200,2400,
+2026-09-06T19:24:17+03:00,27.9,performance,manual,76.0,62.0,173.2,,,72.2,52.5,,76.0,hp-vibrance-stx-n22x9-performance,cpu,41.7,33.3,,106,41.6,1,93,2200,2400,
+2026-09-06T19:24:18+03:00,29.0,performance,manual,75.9,63.0,173.6,,,72.5,53.6,,75.9,hp-vibrance-stx-n22x9-performance,cpu,41.7,35.0,,106,41.6,1,102,2400,2600,
+2026-09-06T19:24:20+03:00,30.1,performance,manual,76.2,63.0,173.8,,,72.9,54.5,,76.2,hp-vibrance-stx-n22x9-performance,cpu,41.7,35.0,,106,41.6,1,102,2400,2600,
+2026-09-06T19:24:21+03:00,31.1,performance,manual,76.8,64.0,173.8,,,73.3,55.5,,76.8,hp-vibrance-stx-n22x9-performance,cpu,41.7,35.0,,106,41.6,1,102,2400,2600,
+2026-09-06T19:24:22+03:00,32.2,performance,manual,77.4,64.0,173.9,,,73.7,56.3,,77.4,hp-vibrance-stx-n22x9-performance,cpu,41.7,35.0,,106,41.6,1,102,2400,2600,
+2026-09-06T19:24:23+03:00,33.3,performance,manual,78.4,64.0,174.0,,,74.2,57.1,,78.4,hp-vibrance-stx-n22x9-performance,cpu,46.7,35.0,,119,46.7,1,102,2400,2600,
+2026-09-06T19:24:24+03:00,34.3,performance,manual,79.2,65.0,174.1,,,74.7,57.9,,79.2,hp-vibrance-stx-n22x9-performance,cpu,46.7,35.0,,119,46.7,1,110,2600,2900,
+2026-09-06T19:24:25+03:00,35.4,performance,manual,79.8,65.0,174.2,,,75.2,58.6,,79.8,hp-vibrance-stx-n22x9-performance,cpu,46.7,35.0,,119,46.7,1,119,2800,3000,
+2026-09-06T19:24:26+03:00,36.5,performance,manual,80.1,65.0,174.2,,,75.7,59.2,,80.1,hp-vibrance-stx-n22x9-performance,cpu,51.7,35.0,,132,51.8,1,119,2800,3000,
+2026-09-06T19:24:27+03:00,37.5,performance,manual,80.4,66.0,174.2,,,76.2,59.9,,80.4,hp-vibrance-stx-n22x9-performance,cpu,51.7,36.7,,132,51.8,1,131,3100,3200,
+2026-09-06T19:24:28+03:00,38.6,performance,manual,80.6,66.0,174.3,,,76.6,60.5,,80.6,hp-vibrance-stx-n22x9-performance,cpu,51.7,36.7,,132,51.8,1,127,3000,3200,
+2026-09-06T19:24:29+03:00,39.7,performance,manual,80.9,66.0,174.4,,,77.0,61.1,,80.9,hp-vibrance-stx-n22x9-performance,cpu,51.7,36.7,,132,51.8,1,127,3000,3200,
+2026-09-06T19:24:30+03:00,40.7,performance,manual,81.2,67.0,174.5,,,77.4,61.7,,81.2,hp-vibrance-stx-n22x9-performance,cpu,51.7,36.7,,132,51.8,1,127,3000,3200,
+2026-09-06T19:24:31+03:00,41.8,performance,manual,81.5,67.0,174.5,,,77.9,62.2,,81.5,hp-vibrance-stx-n22x9-performance,cpu,51.7,36.7,,132,51.8,1,127,3000,3200,
+2026-09-06T19:24:32+03:00,42.8,performance,manual,81.5,67.0,174.4,,,78.2,62.7,,81.5,hp-vibrance-stx-n22x9-performance,cpu,51.7,36.7,,132,51.8,1,127,3000,3200,
+2026-09-06T19:24:33+03:00,43.9,performance,manual,81.0,67.0,174.4,,,78.5,63.1,,81.0,hp-vibrance-stx-n22x9-performance,cpu,51.7,36.7,,132,51.8,1,127,3000,3200,
+2026-09-06T19:24:34+03:00,45.0,performance,manual,80.6,68.0,174.4,,,78.7,63.6,,80.6,hp-vibrance-stx-n22x9-performance,cpu,51.7,36.7,,132,51.8,1,127,3000,3200,
+2026-09-06T19:24:35+03:00,46.0,performance,manual,80.4,68.0,174.6,,,78.9,64.0,,80.4,hp-vibrance-stx-n22x9-performance,cpu,51.7,36.7,,132,51.8,1,127,3000,3200,
+2026-09-06T19:24:37+03:00,47.1,performance,manual,80.5,68.0,174.3,,,79.0,64.4,,80.5,hp-vibrance-stx-n22x9-performance,cpu,51.7,36.7,,132,51.8,1,127,3000,3200,
+2026-09-06T19:24:38+03:00,48.1,performance,manual,81.1,69.0,174.5,,,79.2,64.9,,81.1,hp-vibrance-stx-n22x9-performance,cpu,51.7,38.3,,132,51.8,1,127,3000,3200,
+2026-09-06T19:24:39+03:00,49.2,performance,manual,81.1,69.0,174.4,,,79.4,65.3,,81.1,hp-vibrance-stx-n22x9-performance,cpu,51.7,38.3,,132,51.8,1,127,3000,3200,
+2026-09-06T19:24:40+03:00,50.3,performance,manual,81.5,69.0,174.6,,,79.6,65.7,,81.5,hp-vibrance-stx-n22x9-performance,cpu,51.7,38.3,,132,51.8,1,127,3000,3200,
+2026-09-06T19:24:41+03:00,51.3,performance,manual,82.9,69.0,174.3,,,80.0,66.0,,82.9,hp-vibrance-stx-n22x9-performance,cpu,56.7,38.3,,144,56.5,1,127,3000,3200,
+2026-09-06T19:24:42+03:00,52.4,performance,manual,83.5,69.0,174.6,,,80.3,66.3,,83.5,hp-vibrance-stx-n22x9-performance,cpu,61.7,38.3,,157,61.6,1,136,3200,3400,
+2026-09-06T19:24:43+03:00,53.5,performance,manual,83.8,69.0,173.8,,,80.7,66.6,,83.8,hp-vibrance-stx-n22x9-performance,cpu,61.7,38.3,,157,61.6,1,144,3400,3700,
+2026-09-06T19:24:44+03:00,54.6,performance,manual,83.6,69.0,174.2,,,81.0,66.8,,83.6,hp-vibrance-stx-n22x9-performance,cpu,61.7,38.3,,157,61.6,1,153,3600,3800,
+2026-09-06T19:24:45+03:00,55.6,performance,manual,83.0,70.0,174.0,,,81.2,67.1,,83.0,hp-vibrance-stx-n22x9-performance,cpu,61.7,38.3,,157,61.6,1,153,3600,3800,
+2026-09-06T19:24:46+03:00,56.7,performance,manual,82.6,70.0,174.3,,,81.3,67.4,,82.6,hp-vibrance-stx-n22x9-performance,cpu,61.7,38.3,,157,61.6,1,153,3600,3800,
+2026-09-06T19:24:47+03:00,57.7,performance,manual,82.4,70.0,174.3,,,81.4,67.7,,82.4,hp-vibrance-stx-n22x9-performance,cpu,61.7,38.3,,157,61.6,1,153,3600,3800,
+2026-09-06T19:24:48+03:00,58.8,performance,manual,82.4,70.0,174.3,,,81.5,67.9,,82.4,hp-vibrance-stx-n22x9-performance,cpu,61.7,38.3,,157,61.6,1,153,3600,3800,
+2026-09-06T19:24:49+03:00,59.8,performance,manual,82.8,71.0,174.6,,,81.6,68.2,,82.8,hp-vibrance-stx-n22x9-performance,cpu,61.7,41.7,,157,61.6,1,153,3600,3800,
+2026-09-06T19:24:50+03:00,60.9,performance,manual,84.0,70.0,174.3,,,81.9,68.4,,84.0,hp-vibrance-stx-n22x9-performance,cpu,71.7,41.7,,183,71.8,1,153,3600,3800,
+2026-09-06T19:24:51+03:00,62.0,performance,manual,83.6,71.0,174.1,,,82.0,68.7,,83.6,hp-vibrance-stx-n22x9-performance,cpu,71.7,41.7,,183,71.8,1,161,3800,4100,
+2026-09-06T19:24:53+03:00,63.1,performance,manual,83.4,71.0,174.0,,,82.2,68.9,,83.4,hp-vibrance-stx-n22x9-performance,cpu,71.7,41.7,,183,71.8,1,174,4100,4400,
+2026-09-06T19:24:54+03:00,64.1,performance,manual,83.2,71.0,174.1,,,82.3,69.1,,83.2,hp-vibrance-stx-n22x9-performance,cpu,71.7,41.7,,183,71.8,1,178,4200,4400,
+2026-09-06T19:24:55+03:00,65.2,performance,manual,83.1,71.0,174.1,,,82.4,69.3,,83.1,hp-vibrance-stx-n22x9-performance,cpu,71.7,41.7,,183,71.8,1,178,4200,4400,
+2026-09-06T19:24:56+03:00,66.2,performance,manual,83.5,71.0,174.1,,,82.5,69.5,,83.5,hp-vibrance-stx-n22x9-performance,cpu,71.7,41.7,,183,71.8,1,178,4200,4400,
+2026-09-06T19:24:57+03:00,67.3,performance,manual,83.5,71.0,174.1,,,82.6,69.6,,83.5,hp-vibrance-stx-n22x9-performance,cpu,71.7,41.7,,183,71.8,1,178,4200,4400,
+2026-09-06T19:24:58+03:00,68.4,performance,manual,84.1,71.0,174.0,,,82.7,69.8,,84.1,hp-vibrance-stx-n22x9-performance,cpu,71.7,41.7,,183,71.8,1,178,4200,4400,
+2026-09-06T19:24:59+03:00,69.4,performance,manual,84.0,71.0,174.1,,,82.9,69.9,,84.0,hp-vibrance-stx-n22x9-performance,cpu,71.7,41.7,,183,71.8,1,178,4200,4400,
+2026-09-06T19:25:00+03:00,70.5,performance,manual,83.9,71.0,173.9,,,83.0,70.0,,83.9,hp-vibrance-stx-n22x9-performance,cpu,71.7,41.7,,183,71.8,1,178,4200,4400,
+2026-09-06T19:25:01+03:00,71.6,performance,manual,83.8,71.0,174.0,,,83.0,70.1,,83.8,hp-vibrance-stx-n22x9-performance,cpu,71.7,41.7,,183,71.8,1,178,4200,4400,
+2026-09-06T19:25:02+03:00,72.6,performance,manual,83.8,71.0,174.0,,,83.1,70.2,,83.8,hp-vibrance-stx-n22x9-performance,cpu,71.7,41.7,,183,71.8,1,178,4200,4400,
+2026-09-06T19:25:03+03:00,73.7,performance,manual,83.8,72.0,174.0,,,83.2,70.4,,83.8,hp-vibrance-stx-n22x9-performance,cpu,71.7,41.7,,183,71.8,1,178,4200,4400,
+2026-09-06T19:25:04+03:00,74.7,performance,manual,84.8,72.0,174.1,,,83.3,70.5,,84.8,hp-vibrance-stx-n22x9-performance,cpu,71.7,41.7,,183,71.8,1,178,4200,4400,
+2026-09-06T19:25:05+03:00,75.8,performance,manual,85.5,72.0,174.1,,,83.6,70.7,,85.5,hp-vibrance-stx-n22x9-performance,cpu,78.3,41.7,,200,78.4,1,178,4200,4400,
+2026-09-06T19:25:06+03:00,76.9,performance,manual,85.9,72.0,174.0,,,83.8,70.8,,85.9,hp-vibrance-stx-n22x9-performance,cpu,78.3,41.7,,200,78.4,1,187,4400,4600,
+2026-09-06T19:25:07+03:00,77.9,performance,manual,85.9,72.0,174.1,,,84.0,70.9,,85.9,hp-vibrance-stx-n22x9-performance,cpu,78.3,41.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:08+03:00,79.0,performance,manual,85.9,72.0,174.0,,,84.2,71.0,,85.9,hp-vibrance-stx-n22x9-performance,cpu,78.3,41.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:10+03:00,80.1,performance,manual,85.5,72.0,174.0,,,84.3,71.1,,85.5,hp-vibrance-stx-n22x9-performance,cpu,78.3,41.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:11+03:00,81.1,performance,manual,85.2,72.0,174.1,,,84.4,71.2,,85.2,hp-vibrance-stx-n22x9-performance,cpu,78.3,41.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:12+03:00,82.2,performance,manual,84.8,72.0,174.1,,,84.4,71.3,,84.8,hp-vibrance-stx-n22x9-performance,cpu,78.3,41.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:13+03:00,83.2,performance,manual,84.2,72.0,174.0,,,84.4,71.4,,84.4,hp-vibrance-stx-n22x9-performance,cpu,78.3,41.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:14+03:00,84.3,performance,manual,84.1,72.0,174.0,,,84.4,71.4,,84.4,hp-vibrance-stx-n22x9-performance,cpu,78.3,41.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:15+03:00,85.4,performance,manual,84.4,72.0,174.0,,,84.4,71.5,,84.4,hp-vibrance-stx-n22x9-performance,cpu,78.3,41.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:16+03:00,86.4,performance,manual,84.5,72.0,174.0,,,84.4,71.5,,84.5,hp-vibrance-stx-n22x9-performance,cpu,78.3,41.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:17+03:00,87.5,performance,manual,84.4,72.0,174.0,,,84.4,71.6,,84.4,hp-vibrance-stx-n22x9-performance,cpu,78.3,41.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:18+03:00,88.5,performance,manual,84.4,72.0,174.0,,,84.4,71.6,,84.4,hp-vibrance-stx-n22x9-performance,cpu,78.3,41.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:19+03:00,89.6,performance,manual,85.0,72.0,174.0,,,84.5,71.7,,85.0,hp-vibrance-stx-n22x9-performance,cpu,78.3,41.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:20+03:00,90.7,performance,manual,84.8,72.0,174.0,,,84.5,71.7,,84.8,hp-vibrance-stx-n22x9-performance,cpu,78.3,41.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:21+03:00,91.7,performance,manual,84.6,72.0,174.0,,,84.5,71.7,,84.6,hp-vibrance-stx-n22x9-performance,cpu,78.3,41.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:22+03:00,92.8,performance,manual,84.5,72.0,174.1,,,84.5,71.8,,84.5,hp-vibrance-stx-n22x9-performance,cpu,78.3,41.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:23+03:00,93.8,performance,manual,84.5,72.0,174.1,,,84.5,71.8,,84.5,hp-vibrance-stx-n22x9-performance,cpu,78.3,41.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:24+03:00,94.9,performance,manual,85.8,72.0,174.1,,,84.6,71.8,,85.8,hp-vibrance-stx-n22x9-performance,cpu,78.3,41.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:25+03:00,95.9,performance,manual,87.0,72.0,174.3,,,84.9,71.8,,87.0,hp-vibrance-stx-n22x9-performance,cpu,78.3,41.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:26+03:00,97.0,performance,manual,88.4,73.0,174.3,,,85.2,71.9,,88.4,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:28+03:00,98.1,performance,manual,88.5,73.0,174.4,,,85.6,72.0,,88.5,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:29+03:00,99.1,performance,manual,87.6,73.0,174.4,,,85.8,72.1,,87.6,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:30+03:00,100.2,performance,manual,88.6,73.0,174.4,,,86.0,72.2,,88.6,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:31+03:00,101.2,performance,manual,88.9,73.0,174.4,,,86.3,72.3,,88.9,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:32+03:00,102.3,performance,manual,88.8,73.0,174.4,,,86.6,72.4,,88.8,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:33+03:00,103.3,performance,manual,89.0,73.0,169.3,,,86.8,72.4,,89.0,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:34+03:00,104.4,performance,manual,89.1,73.0,169.2,,,87.0,72.5,,89.1,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:35+03:00,105.5,performance,manual,89.0,73.0,169.3,,,87.2,72.5,,89.0,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:36+03:00,106.5,performance,manual,89.0,73.0,174.6,,,87.4,72.6,,89.0,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:37+03:00,107.6,performance,manual,91.8,73.0,174.3,,,87.8,72.6,,91.8,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,200,78.4,1,195,4600,4800,
+2026-09-06T19:25:38+03:00,108.7,performance,emergency,93.2,73.0,160.0,,,88.4,72.7,,88.4,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,195,4600,4800,raw critical threshold
+2026-09-06T19:25:39+03:00,109.8,performance,emergency,93.8,73.0,160.4,,,88.9,72.7,,88.9,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,204,4800,5000,raw critical threshold
+2026-09-06T19:25:40+03:00,110.9,performance,emergency,92.0,73.0,169.8,,,89.2,72.7,,89.2,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,216,5100,5300,raw critical threshold
+2026-09-06T19:25:41+03:00,112.0,performance,emergency,90.0,73.0,168.5,,,89.3,72.8,,89.3,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,225,5300,5600,waiting for critical release
+2026-09-06T19:25:43+03:00,113.1,performance,emergency,88.8,74.0,174.5,,,89.3,72.9,,89.3,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,238,5600,5800,waiting for critical release
+2026-09-06T19:25:44+03:00,114.2,performance,emergency,88.2,74.0,174.4,,,89.2,73.0,,89.2,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,250,5900,5800,waiting for critical release
+2026-09-06T19:25:45+03:00,115.3,performance,emergency,88.0,73.0,174.4,,,89.2,73.0,,89.2,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:25:46+03:00,116.4,performance,emergency,87.6,73.0,174.4,,,89.1,73.0,,89.1,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:25:47+03:00,117.5,performance,emergency,88.2,73.0,174.4,,,89.0,73.0,,89.0,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:25:48+03:00,118.6,performance,emergency,87.6,73.0,174.4,,,89.0,73.0,,89.0,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:25:49+03:00,119.7,performance,emergency,87.2,73.0,174.4,,,88.9,73.0,,88.9,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:25:50+03:00,120.8,performance,emergency,87.1,73.0,174.4,,,88.8,73.0,,88.8,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:25:51+03:00,121.9,performance,emergency,87.2,73.0,174.4,,,88.7,73.0,,88.7,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:25:52+03:00,123.0,performance,emergency,87.4,73.0,174.4,,,88.7,73.0,,88.7,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:25:54+03:00,124.1,performance,emergency,87.8,73.0,174.4,,,88.6,73.0,,88.6,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:25:55+03:00,125.2,performance,emergency,88.2,73.0,174.4,,,88.6,73.0,,88.6,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:25:56+03:00,126.3,performance,emergency,87.9,73.0,174.4,,,88.6,73.0,,88.6,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:25:57+03:00,127.4,performance,emergency,87.5,73.0,174.4,,,88.5,73.0,,88.5,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:25:58+03:00,128.5,performance,emergency,86.9,73.0,174.3,,,88.4,73.0,,88.4,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:25:59+03:00,129.6,performance,emergency,87.6,73.0,174.4,,,88.4,73.0,,88.4,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:00+03:00,130.7,performance,emergency,88.0,73.0,174.4,,,88.4,73.0,,88.4,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:01+03:00,131.8,performance,emergency,87.9,73.0,174.4,,,88.3,73.0,,88.3,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:02+03:00,132.9,performance,emergency,88.4,73.0,174.4,,,88.3,73.0,,88.3,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:03+03:00,134.0,performance,emergency,88.2,73.0,174.4,,,88.3,73.0,,88.3,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:05+03:00,135.1,performance,emergency,87.8,73.0,174.4,,,88.3,73.0,,88.3,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:06+03:00,136.2,performance,emergency,86.9,73.0,174.4,,,88.2,73.0,,88.2,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:07+03:00,137.3,performance,emergency,86.4,73.0,174.4,,,88.1,73.0,,88.1,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:08+03:00,138.4,performance,emergency,86.8,73.0,174.4,,,88.1,73.0,,88.1,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:09+03:00,139.5,performance,emergency,87.0,73.0,174.4,,,88.0,73.0,,88.0,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:10+03:00,140.6,performance,emergency,86.1,73.0,174.4,,,87.9,73.0,,87.9,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:11+03:00,141.7,performance,emergency,87.0,73.0,174.3,,,87.9,73.0,,87.9,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:12+03:00,142.8,performance,emergency,87.1,73.0,174.3,,,87.8,73.0,,87.8,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:13+03:00,143.9,performance,emergency,87.1,72.0,174.2,,,87.8,72.9,,87.8,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:14+03:00,145.0,performance,emergency,87.5,72.0,174.3,,,87.8,72.9,,87.8,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:16+03:00,146.0,performance,emergency,87.4,72.0,174.2,,,87.8,72.9,,87.8,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:17+03:00,147.1,performance,emergency,86.4,72.0,174.2,,,87.7,72.8,,87.7,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:18+03:00,148.2,performance,emergency,86.6,72.0,174.1,,,87.6,72.8,,87.6,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:19+03:00,149.3,performance,emergency,86.8,72.0,174.1,,,87.6,72.7,,87.6,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:20+03:00,150.4,performance,emergency,86.9,72.0,174.1,,,87.6,72.7,,87.6,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:21+03:00,151.5,performance,emergency,86.9,72.0,174.1,,,87.5,72.7,,87.5,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:22+03:00,152.6,performance,emergency,87.4,72.0,174.0,,,87.5,72.6,,87.5,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:23+03:00,153.7,performance,emergency,87.6,72.0,174.0,,,87.5,72.6,,87.5,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:24+03:00,154.8,performance,emergency,81.2,61.0,139.6,,,87.2,72.0,,87.2,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:25+03:00,155.9,performance,emergency,73.4,59.0,36.4,,,86.5,71.4,,86.5,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:27+03:00,157.1,performance,emergency,68.0,58.0,27.4,,,85.6,70.7,,85.6,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:28+03:00,158.2,performance,emergency,64.4,57.0,17.3,,,84.5,70.0,,84.5,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:29+03:00,159.3,performance,emergency,62.0,56.0,8.6,,,83.4,69.3,,83.4,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:30+03:00,160.4,performance,emergency,60.4,56.0,8.9,,,82.3,68.6,,82.3,hp-vibrance-stx-n22x9-performance,cpu,78.3,46.7,,255,100.0,0,255,6000,5800,waiting for critical release
+2026-09-06T19:26:31+03:00,161.6,performance,manual,59.2,55.0,8.6,,,81.1,68.0,,81.1,hp-vibrance-stx-n22x9-performance,cpu,51.7,36.7,,255,100.0,1,255,6000,5800,left emergency state
+2026-09-06T19:26:32+03:00,162.7,performance,manual,58.1,54.0,8.4,,,80.0,67.3,,80.0,hp-vibrance-stx-n22x9-performance,cpu,51.7,36.7,,235,92.2,1,255,6000,6000,
+2026-09-06T19:26:33+03:00,163.7,performance,manual,57.5,54.0,8.5,,,78.8,66.6,,78.8,hp-vibrance-stx-n22x9-performance,cpu,51.7,36.7,,235,92.2,1,246,5800,5800,
+2026-09-06T19:26:34+03:00,164.8,performance,manual,56.8,53.0,8.5,,,77.7,65.9,,77.7,hp-vibrance-stx-n22x9-performance,cpu,51.7,36.7,,235,92.2,1,238,5600,5600,
+2026-09-06T19:26:35+03:00,165.9,performance,manual,56.2,53.0,8.4,,,76.7,65.3,,76.7,hp-vibrance-stx-n22x9-performance,cpu,51.7,36.7,,235,92.2,1,229,5400,5600,
+2026-09-06T19:26:36+03:00,166.9,performance,manual,55.8,53.0,8.4,,,75.6,64.7,,75.6,hp-vibrance-stx-n22x9-performance,cpu,46.7,36.7,,235,92.2,1,229,5400,5600,
+2026-09-06T19:26:37+03:00,168.0,performance,manual,55.4,52.0,8.2,,,74.6,64.0,,74.6,hp-vibrance-stx-n22x9-performance,cpu,46.7,36.7,,215,84.3,1,229,5400,5600,
+2026-09-06T19:26:39+03:00,169.1,performance,manual,55.5,52.0,8.2,,,73.6,63.4,,73.6,hp-vibrance-stx-n22x9-performance,cpu,41.7,36.7,,215,84.3,1,221,5200,5400,
+2026-09-06T19:26:40+03:00,170.2,performance,manual,55.0,51.0,8.2,,,72.7,62.8,,72.7,hp-vibrance-stx-n22x9-performance,cpu,41.7,36.7,,215,84.3,1,212,4900,5200,
+2026-09-06T19:26:41+03:00,171.2,performance,manual,55.0,51.0,7.8,,,71.8,62.2,,71.8,hp-vibrance-stx-n22x9-performance,cpu,38.3,36.7,,215,84.3,1,208,4900,5100,
+2026-09-06T19:26:42+03:00,172.3,performance,manual,55.2,51.0,7.8,,,71.0,61.7,,71.0,hp-vibrance-stx-n22x9-performance,cpu,38.3,36.7,,215,84.3,1,208,4900,5100,
+2026-09-06T19:26:43+03:00,173.4,performance,manual,54.4,51.0,7.8,,,70.2,61.1,,70.2,hp-vibrance-stx-n22x9-performance,cpu,38.3,36.7,,195,76.5,1,208,4900,5100,
+2026-09-06T19:26:44+03:00,174.4,performance,manual,53.6,50.0,7.8,,,69.3,60.6,,69.3,hp-vibrance-stx-n22x9-performance,cpu,36.7,35.0,,195,76.5,1,199,4700,4900,
+2026-09-06T19:26:45+03:00,175.5,performance,manual,54.0,50.0,7.7,,,68.6,60.0,,68.6,hp-vibrance-stx-n22x9-performance,cpu,36.7,35.0,,195,76.5,1,187,4400,4600,
+2026-09-06T19:26:46+03:00,176.6,low-power,bios-auto,54.8,50.0,7.6,,,67.9,59.5,,67.9,hp-vibrance-stx-n22x9-performance,,,,,,,2,187,4400,4600,
+2026-09-06T19:26:47+03:00,177.7,low-power,bios-auto,53.4,49.0,7.7,,,67.2,59.0,,67.2,hp-vibrance-stx-n22x9-performance,,,,,,,2,140,3300,3400,
+2026-09-06T19:26:48+03:00,178.8,low-power,bios-auto,52.6,49.0,7.5,,,66.4,58.5,,66.4,hp-vibrance-stx-n22x9-performance,,,,,,,2,72,1700,1800,
+2026-09-06T19:26:49+03:00,179.9,low-power,bios-auto,52.0,49.0,7.6,,,65.7,58.0,,65.7,hp-vibrance-stx-n22x9-performance,,,,,,,2,29,700,800,
+2026-09-06T19:26:50+03:00,180.9,low-power,bios-auto,51.6,49.0,7.6,,,65.0,57.6,,65.0,hp-vibrance-stx-n22x9-performance,,,,,,,2,4,100,300,
+2026-09-06T19:26:52+03:00,182.1,low-power,bios-auto,51.4,49.0,7.4,,,64.3,57.2,,64.3,hp-vibrance-stx-n22x9-performance,,,,,,,2,4,100,200,
+2026-09-06T19:26:53+03:00,183.1,low-power,bios-auto,51.2,49.0,7.4,,,63.7,56.7,,63.7,hp-vibrance-stx-n22x9-performance,,,,,,,2,0,0,0,
+2026-09-06T19:26:54+03:00,184.2,low-power,bios-auto,51.1,49.0,7.5,,,63.0,56.4,,63.0,hp-vibrance-stx-n22x9-performance,,,,,,,2,0,0,0,
+2026-09-06T19:26:55+03:00,185.3,low-power,bios-auto,51.1,49.0,7.4,,,62.4,56.0,,62.4,hp-vibrance-stx-n22x9-performance,,,,,,,2,0,0,0,
+2026-09-06T19:26:56+03:00,186.4,low-power,bios-auto,51.1,49.0,7.4,,,61.9,55.6,,61.9,hp-vibrance-stx-n22x9-performance,,,,,,,2,0,0,0,
+2026-09-06T19:26:57+03:00,187.5,low-power,bios-auto,51.2,49.0,7.5,,,61.3,55.3,,61.3,hp-vibrance-stx-n22x9-performance,,,,,,,2,0,0,0,
+2026-09-06T19:26:58+03:00,188.5,low-power,bios-auto,51.2,49.0,7.5,,,60.8,55.0,,60.8,hp-vibrance-stx-n22x9-performance,,,,,,,2,0,0,0,
+2026-09-06T19:26:59+03:00,189.6,low-power,bios-auto,51.2,49.0,7.5,,,60.4,54.7,,60.4,hp-vibrance-stx-n22x9-performance,,,,,,,2,0,0,0,
+2026-09-06T19:27:00+03:00,190.7,low-power,bios-auto,51.1,49.0,7.5,,,59.9,54.4,,59.9,hp-vibrance-stx-n22x9-performance,,,,,,,2,0,0,0,
+2026-09-06T19:27:01+03:00,191.8,low-power,bios-auto,51.2,49.0,7.4,,,59.5,54.1,,59.5,hp-vibrance-stx-n22x9-performance,,,,,,,2,0,0,0,
+2026-09-06T19:27:02+03:00,192.8,low-power,bios-auto,51.1,49.0,7.4,,,59.1,53.9,,59.1,hp-vibrance-stx-n22x9-performance,,,,,,,2,0,0,0,
+2026-09-06T19:27:03+03:00,193.9,low-power,bios-auto,51.1,49.0,7.4,,,58.7,53.6,,58.7,hp-vibrance-stx-n22x9-performance,,,,,,,2,0,0,0,
+2026-09-06T19:27:04+03:00,195.0,low-power,bios-auto,51.1,49.0,7.5,,,58.3,53.4,,58.3,hp-vibrance-stx-n22x9-performance,,,,,,,2,0,0,0,
+2026-09-06T19:27:06+03:00,196.1,low-power,bios-auto,51.1,49.0,7.4,,,57.9,53.2,,57.9,hp-vibrance-stx-n22x9-performance,,,,,,,2,0,0,0,
+2026-09-06T19:27:07+03:00,197.1,low-power,bios-auto,51.1,49.0,7.4,,,57.6,53.0,,57.6,hp-vibrance-stx-n22x9-performance,,,,,,,2,0,0,0,
+2026-09-06T19:27:08+03:00,198.2,low-power,bios-auto,51.1,49.0,7.4,,,57.3,52.8,,57.3,hp-vibrance-stx-n22x9-performance,,,,,,,2,0,0,0,
+2026-09-06T19:27:09+03:00,199.3,low-power,bios-auto,51.1,49.0,7.4,,,57.0,52.6,,57.0,hp-vibrance-stx-n22x9-performance,,,,,,,2,0,0,0,

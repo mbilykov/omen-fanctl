@@ -1,0 +1,2 @@
+cpu_temp_bin_c,samples,fan1_avg_rpm,fan1_min_rpm,fan1_max_rpm,fan2_avg_rpm,fan2_min_rpm,fan2_max_rpm
+90-94,11,3400,3400,3400,3600,3600,3600

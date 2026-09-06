@@ -1,0 +1,16 @@
+label=performance
+started=2026-09-06T14:13:47+03:00
+duration_seconds=180
+stop_temperature_c=92
+kernel=7.1.9-arch1-2
+product=OMEN MAX Gaming Laptop 16-ak0xxx
+board=8D87
+bios=F.07
+platform_profile=performance
+hp_hwmon=/sys/class/hwmon/hwmon8
+cpu_hwmon=/sys/class/hwmon/hwmon6
+gpu_hwmon=/sys/class/hwmon/hwmon5
+initial_pwm_enable=2
+initial_pwm=0
+stop_reason=duration completed
+finished=2026-09-06T14:16:48+03:00

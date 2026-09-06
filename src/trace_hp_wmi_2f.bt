@@ -1,0 +1,44 @@
+/*
+ * Capture HP BIOS WMI query 0x2f without probing hp_wmi itself.  The probe is
+ * attached to the WMI core, so it remains alive while hp_wmi is reloaded.
+ *
+ * x86_64 wmi_evaluate_method arguments:
+ *   arg3 = const struct acpi_buffer *in
+ *   arg4 = struct acpi_buffer *out
+ *
+ * hp_wmi's input is struct bios_args.  commandtype/query is the u32 at +8.
+ * Its returned ACPI buffer contains an 8-byte HP status header followed by the
+ * output requested by hp_wmi.
+ */
+
+kprobe:wmi_evaluate_method
+{
+    $input_data = *(uint64 *)(arg3 + 8);
+    if ($input_data != 0 &&
+        *(uint32 *)($input_data + 0) == 0x55434553 &&
+        *(uint32 *)($input_data + 8) == 0x2f) {
+        @hp2f_out[tid] = arg4;
+    }
+}
+
+/*
+ * Linux 7.1.9-arch1-2 uses a return thunk that does not trigger the kretprobe
+ * on this machine. +160 (0xa0) is the common epilogue immediately after
+ * wmidev_evaluate_method and put_device, while arg4/output is still valid.
+ */
+kprobe:wmi_evaluate_method+160
+/@hp2f_out[tid]/
+{
+    $output_buffer = (uint64)@hp2f_out[tid];
+    $object = *(uint64 *)($output_buffer + 8);
+
+    if ($object != 0 && *(uint32 *)($object + 0) == 3) {
+        $object_length = *(uint32 *)($object + 4);
+        $hp_response = *(uint64 *)($object + 8);
+        if ($hp_response != 0 && $object_length >= 136) {
+            printf("HP2F_OBJECT_LENGTH %u\n", $object_length);
+            printf("HP2F_HEX %rx\n", buf($hp_response + 8, 128));
+        }
+    }
+    delete(@hp2f_out[tid]);
+}
