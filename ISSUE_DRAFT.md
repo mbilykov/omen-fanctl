@@ -402,14 +402,20 @@ Kernel references:
 - Current upstream PWM implementation:
   <https://github.com/torvalds/linux/blob/master/drivers/platform/x86/hp/hp-wmi.c#L2594-L2654>
 
+Linux 7.1 answers the refresh question explicitly: HP firmware expires its
+user-defined fan state after 120 seconds, while `hp-wmi` re-applies the cached
+Max/Manual state every 90 seconds. The standalone daemon therefore uses a
+separate systemd recovery path for process failures: `ExecStopPost` restores
+Auto after an unexpected exit or `SIGKILL`, a 15-second service watchdog turns
+a stuck loop into that same recovery path, and only the firmware timeout is
+relied upon when the kernel itself can no longer execute its keep-alive work.
+
 ## Remaining questions
 
 - What `0x2f` variants exist on other supported generations?
 - Can OmenCore already expose the full per-fan mapping, or is a backend API
   needed?
 - Should curves be profile-indexed or run only in Performance?
-- Does firmware require periodic refresh when the requested level is unchanged?
-- What is the strongest practical recovery path for `SIGKILL` or a crash?
 - Actuator/restoration behavior and mappings remain unvalidated outside `8D87`.
 
 Everything central to this report is directly confirmed on `8D87`: active

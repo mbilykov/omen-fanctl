@@ -1,0 +1,41 @@
+[Unit]
+Description=Standalone HP 8D87 automatic fan controller
+Documentation=file:/usr/local/share/doc/hp-fan-control/README.md
+After=multi-user.target
+ConditionPathExists=/sys/firmware/acpi/platform_profile
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/local/lib/hp-fan-control/hp_fan_control.py --apply --config /etc/hp-fan-control/fan-control.toml --status-interval 30
+ExecStopPost=/usr/local/lib/hp-fan-control/hp_fan_control.py --restore-auto
+Restart=on-failure
+RestartSec=5
+WatchdogSec=15
+WatchdogSignal=SIGKILL
+TimeoutStopSec=15
+KillSignal=SIGTERM
+
+RuntimeDirectory=hp-fan-control
+RuntimeDirectoryMode=0750
+LogsDirectory=hp-fan-control
+LogsDirectoryMode=0750
+WorkingDirectory=/var/log/hp-fan-control
+UMask=0027
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

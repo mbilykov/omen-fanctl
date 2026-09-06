@@ -1,12 +1,12 @@
-# HP fan-control prototype
+# Standalone HP fan-control daemon
 
 This is an experimental standalone automatic fan controller for HP system board
 `8D87`. It uses the Linux `hp-wmi` hwmon interface for fan control and the
 project's read-only WMI sensor probe for HP's IR temperature. It does not run,
 link to, or depend on OmenCore.
 
-The default mode is read-only. Do not start with `--apply` before checking the
-dry-run output.
+Direct invocation defaults to read-only. Do not start with `--apply` or enable
+the system service before checking the dry-run output.
 
 ## What it controls
 
@@ -27,7 +27,7 @@ dry-run output.
 
 The current kernel driver converts the standard hwmon PWM scale (`0..255`) to
 the HP firmware fan-level scale and maps the second fan according to its fan
-table. The prototype does not construct raw WMI packets itself.
+table. The daemon does not construct raw fan-control WMI packets itself.
 
 ## Included factory preset
 
@@ -70,6 +70,94 @@ mean that the dGPU was asleep or its driver did not expose the metric.
 cd fan-control-daemon-research/src
 python3 -m unittest -v
 ```
+
+## Install as a system service
+
+The repository root contains explicit install and uninstall scripts. Installing
+does not load the optional WMI IR probe. Existing configuration is never
+overwritten.
+
+Install the files without starting fan control:
+
+```bash
+cd fan-control-daemon-research
+sudo ./install.sh
+sudoedit /etc/hp-fan-control/fan-control.toml
+```
+
+After reviewing the installed configuration, enable the daemon:
+
+```bash
+sudo systemctl enable --now hp-fan-control.service
+systemctl --no-pager --full status hp-fan-control.service
+journalctl -u hp-fan-control.service -f
+```
+
+Alternatively, a reviewed configuration can be installed and enabled in one
+explicit step with `sudo ./install.sh --enable-now`. Timestamped full-resolution
+CSV telemetry is written under `/var/log/hp-fan-control/` and rotated daily for
+14 days. Periodic journal status is limited to once every 30 seconds, while
+state transitions and warnings are logged immediately.
+
+The service sends `SIGTERM` on normal stop, and the daemon restores firmware
+Auto in its cleanup path. `ExecStopPost` independently runs `--restore-auto` as
+a second recovery layer after every stop, including an uncatchable `SIGKILL`,
+and before any configured restart. The recovery command is restricted to board
+`8D87` and does not depend on a readable configuration. The daemon also sends
+systemd watchdog heartbeats; if its control loop stops making progress for 15
+seconds, systemd kills it, runs the independent Auto recovery command, and
+restarts it after five seconds.
+
+Linux 7.1 `hp-wmi` provides the final firmware-backed layer. While Max or
+Manual is selected, its kernel delayed work refreshes the HP user-defined fan
+state every 90 seconds. If the kernel can no longer run that work, HP firmware
+expires the state after 120 seconds and returns to its fallback fan state. This
+firmware timeout is distinct from, and slower than, the normal systemd recovery
+path. See the upstream `hp-wmi` implementation around
+[`hp_wmi_apply_fan_settings`](https://github.com/torvalds/linux/blob/v7.1/drivers/platform/x86/hp/hp-wmi.c#L2248-L2290)
+and its [keep-alive worker](https://github.com/torvalds/linux/blob/v7.1/drivers/platform/x86/hp/hp-wmi.c#L2423-L2440).
+
+### Crash-recovery test
+
+Test this only after the normal dry-run and actuator tests pass. Use a moderate
+workload to make the installed service enter Manual, stop the workload, and
+confirm `pwm1_enable=1`. Keep the independent hwmon watch visible, then kill
+only the service's main process:
+
+```bash
+watch -n0.5 'grep . /sys/class/hwmon/hwmon*/{name,pwm1_enable,pwm1,fan1_input,fan2_input} 2>/dev/null'
+```
+
+```bash
+sudo systemctl kill --kill-whom=main --signal=SIGKILL hp-fan-control.service
+journalctl -u hp-fan-control.service --since=-1min --no-pager
+systemctl --no-pager --full status hp-fan-control.service
+```
+
+The journal must show the killed main process, successful `firmware Auto
+verified` recovery from `ExecStopPost`, and a fresh service start. The hwmon
+view must pass through `pwm1_enable=2`; after restart it may re-enter Manual
+only if a temperature is still above an activation threshold.
+
+To test a stuck loop, repeat under the same cooled, moderate conditions with
+`SIGSTOP` instead. No further heartbeats can be sent, so the 15-second systemd
+watchdog must kill the stopped process and execute the same Auto/restart path:
+
+```bash
+sudo systemctl kill --kill-whom=main --signal=SIGSTOP hp-fan-control.service
+```
+
+Do not deliberately hang or crash the kernel to test the 120-second firmware
+fallback.
+
+Stop and remove the service while preserving configuration and telemetry:
+
+```bash
+sudo ./uninstall.sh
+```
+
+Use `sudo ./uninstall.sh --purge-config` only when the installed configuration
+should also be removed. Telemetry remains preserved in both modes.
 
 ## Capture the raw firmware fan table (`0x2f`)
 
@@ -164,7 +252,7 @@ Expected states:
 | State | Meaning |
 |---|---|
 | `bios-auto` | No writes; firmware owns the curve |
-| `manual` | Prototype owns the curve and writes intermediate PWM values |
+| `manual` | Daemon owns the curve and writes intermediate PWM values |
 | `emergency` | Raw temperature reached 92 C; maximum fans requested |
 
 ### CPU-only control test
@@ -221,18 +309,19 @@ stepped = true
 
 ## Important limitations
 
-- This is not installed as a system service yet.
 - It is allowlisted only for board `8D87`.
 - The extracted preset is confirmed only for the tested Vibrance/8D87 model;
   other boards must remain excluded until their matching Gaming Hub resource
   and fan-level behavior are verified.
-- `SIGKILL`, power loss, or a kernel crash cannot run cleanup. The current
-  `hp-wmi` driver has its own firmware fallback/keepalive behavior, but this is
-  not a substitute for testing failure modes.
+- A daemon crash or `SIGKILL` cannot execute Python cleanup, so safe recovery
+  depends on the service's `ExecStopPost`. A stuck control loop is detected by
+  the systemd watchdog. If userspace or the kernel cannot perform either path,
+  the HP firmware's 120-second user-defined-state timeout is the last fallback;
+  sudden power loss naturally cannot run any software cleanup.
 - The WMI IR probe is an optional experimental extension. If it is absent,
   malformed, or lost later, the daemon logs the degraded state and continues
   safely from CPU/GPU; IR joins or rejoins automatically when available. Loss
   of the mandatory CPU source still invokes the maximum-fan fail-safe.
 - The physical make/model of the IR sensor chip cannot be inferred from WMI.
 - `acpitz` is not Gaming Hub's IR input and is disabled by default.
-- Never run this prototype together with another fan-control program.
+- Never run this daemon together with another fan-control program.

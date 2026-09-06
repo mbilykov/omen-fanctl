@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 
 from hp_fan_control import (
     AUTO_MODE,
@@ -17,12 +18,15 @@ from hp_fan_control import (
     HpFanHwmon,
     Settings,
     Sensors,
+    SystemdNotifier,
     TemperatureSnapshot,
     hp_factory_performance_curves,
     hp_level_percent,
+    main,
     percent_to_pwm,
     pwm_to_percent,
     read_hp_wmi_ir_temperature,
+    restore_firmware_auto,
     run_actuator_test,
 )
 
@@ -407,6 +411,34 @@ class ControllerLoopTests(unittest.TestCase):
             self.assertEqual(fan.actions[-1][0], "auto")
             self.assertEqual(fan.mode, AUTO_MODE)
 
+    def test_systemd_watchdog_tracks_controller_progress_and_stop(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "platform_profile"
+            profile.write_text("performance\n")
+            settings = Settings.load(Path(__file__).with_name("fan-control.toml"))
+            settings = Settings(
+                **{
+                    **settings.__dict__,
+                    "sample_interval_s": 0.01,
+                    "control_interval_s": 0.01,
+                }
+            )
+            notifier = Mock(spec=SystemdNotifier)
+            controller = Controller(
+                settings=settings,
+                fan=FakeFan(),
+                sensors=FakeSensors(50),
+                apply=True,
+                duration_s=0.025,
+                csv_log=CsvLog(None),
+                profile_path=profile,
+                notifier=notifier,
+            )
+            controller.run()
+        notifier.ready.assert_called_once_with()
+        self.assertGreaterEqual(notifier.watchdog.call_count, 1)
+        notifier.stopping.assert_called_once_with()
+
     def test_mandatory_sensor_loss_selects_maximum_then_restores_auto(self):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "platform_profile"
@@ -447,6 +479,57 @@ class ControllerLoopTests(unittest.TestCase):
         self.assertEqual(fan.actions[-1][0], "auto")
         self.assertEqual(fan.mode, AUTO_MODE)
 
+    def test_restore_auto_recovery_command(self):
+        fan = FakeFan()
+        fan.mode = MANUAL_MODE
+        restore_firmware_auto(fan)
+        self.assertEqual(fan.actions, [("auto", None)])
+        self.assertEqual(fan.mode, AUTO_MODE)
+
+    def test_restore_auto_does_not_depend_on_configuration(self):
+        lock = Mock()
+        fan = FakeFan()
+        fan.mode = MANUAL_MODE
+        with (
+            patch("hp_fan_control.read_text", return_value="8D87"),
+            patch("hp_fan_control.os.geteuid", return_value=0),
+            patch("hp_fan_control.acquire_lock", return_value=lock),
+            patch("hp_fan_control.HpFanHwmon", return_value=fan),
+            patch("hp_fan_control.Settings.load") as load_settings,
+        ):
+            self.assertEqual(main(["--restore-auto"]), 0)
+        load_settings.assert_not_called()
+        lock.close.assert_called_once_with()
+        self.assertEqual(fan.mode, AUTO_MODE)
+
+
+class SystemdNotifierTests(unittest.TestCase):
+    def test_abstract_notify_socket_is_supported(self):
+        connection = Mock()
+        context = Mock()
+        context.__enter__ = Mock(return_value=connection)
+        context.__exit__ = Mock(return_value=False)
+        with (
+            patch.dict(
+                "hp_fan_control.os.environ",
+                {"NOTIFY_SOCKET": "@notify", "WATCHDOG_PID": str(os.getpid())},
+                clear=True,
+            ),
+            patch("hp_fan_control.socket.socket", return_value=context),
+        ):
+            notifier = SystemdNotifier.from_environment()
+            notifier.watchdog()
+        connection.sendto.assert_called_once_with(b"WATCHDOG=1", "\0notify")
+
+    def test_watchdog_for_another_pid_is_ignored(self):
+        with patch.dict(
+            "hp_fan_control.os.environ",
+            {"NOTIFY_SOCKET": "/run/notify", "WATCHDOG_PID": "999999"},
+            clear=True,
+        ):
+            notifier = SystemdNotifier.from_environment()
+        self.assertIsNone(notifier.address)
+
 
 class FakeHwmonTests(unittest.TestCase):
     def test_safe_manual_transition_and_restore(self):
@@ -466,6 +549,26 @@ class FakeHwmonTests(unittest.TestCase):
             self.assertEqual(int((hp / "pwm1_enable").read_text()), MANUAL_MODE)
             fan.restore_auto()
             self.assertEqual(int((hp / "pwm1_enable").read_text()), AUTO_MODE)
+
+    def test_failed_initial_pwm_write_rolls_manual_mode_back_to_auto(self):
+        fan = object.__new__(HpFanHwmon)
+        fan.enable = Path("/fake/pwm1_enable")
+        fan.pwm = Path("/fake/pwm1")
+        failure = HardwareError("PWM write failed")
+        with patch(
+            "hp_fan_control.write_int",
+            side_effect=[None, failure, None],
+        ) as write:
+            with self.assertRaisesRegex(HardwareError, "PWM write failed"):
+                fan.set_manual(100)
+        self.assertEqual(
+            write.call_args_list,
+            [
+                call(fan.enable, MANUAL_MODE),
+                call(fan.pwm, 100),
+                call(fan.enable, AUTO_MODE),
+            ],
+        )
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -40,6 +41,47 @@ class ConfigurationError(ValueError):
 
 class HardwareError(RuntimeError):
     pass
+
+
+class SystemdNotifier:
+    """Minimal sd_notify client; inert outside a systemd notify service."""
+
+    def __init__(self, address: str | None):
+        self.address = address
+        self.failed = False
+
+    @classmethod
+    def from_environment(cls) -> "SystemdNotifier":
+        address = os.environ.get("NOTIFY_SOCKET")
+        watchdog_pid = os.environ.get("WATCHDOG_PID")
+        if watchdog_pid:
+            try:
+                if int(watchdog_pid) != os.getpid():
+                    address = None
+            except ValueError:
+                address = None
+        if address and address.startswith("@"):
+            address = "\0" + address[1:]
+        return cls(address)
+
+    def notify(self, message: str) -> None:
+        if self.address is None or self.failed:
+            return
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as connection:
+                connection.sendto(message.encode("utf-8"), self.address)
+        except OSError as exc:
+            self.failed = True
+            LOG.warning("cannot notify systemd watchdog: %s", exc)
+
+    def ready(self) -> None:
+        self.notify("READY=1")
+
+    def watchdog(self) -> None:
+        self.notify("WATCHDOG=1")
+
+    def stopping(self) -> None:
+        self.notify("STOPPING=1")
 
 
 def clamp(value: float, minimum: float, maximum: float) -> float:
@@ -602,7 +644,20 @@ class HpFanHwmon:
         # switching Auto -> Manual, producing a smooth and non-zero transition.
         # pwm1 rejects writes outside Manual mode, so mode must be changed first.
         write_int(self.enable, MANUAL_MODE)
-        write_int(self.pwm, pwm)
+        try:
+            write_int(self.pwm, pwm)
+        except HardwareError:
+            # The mode write may have succeeded even if the first PWM write
+            # failed. Roll back immediately instead of leaving an unowned
+            # Manual mode behind.
+            try:
+                self.restore_auto()
+            except HardwareError as restore_error:
+                LOG.critical(
+                    "initial manual PWM write failed and Auto rollback also failed: %s",
+                    restore_error,
+                )
+            raise
 
     def update_manual(self, pwm: int) -> None:
         pwm = int(clamp(pwm, 1, PWM_MAX))
@@ -681,6 +736,8 @@ class Controller:
         duration_s: float | None,
         csv_log: CsvLog,
         profile_path: Path = Path("/sys/firmware/acpi/platform_profile"),
+        status_interval_s: float = 1.0,
+        notifier: SystemdNotifier | None = None,
     ):
         self.settings = settings
         self.fan = fan
@@ -689,6 +746,10 @@ class Controller:
         self.duration_s = duration_s
         self.csv_log = csv_log
         self.profile_path = profile_path
+        self.status_interval_s = status_interval_s
+        self.notifier = notifier or SystemdNotifier(None)
+        self.next_status_log = 0.0
+        self.last_status_state = ""
         self.stop_requested = False
         self.manual_active = False
         self.emergency = False
@@ -911,27 +972,31 @@ class Controller:
         def fmt(value: float | None) -> str:
             return "" if value is None else f"{value:.1f}"
 
-        LOG.info(
-            "state=%-9s profile=%-11s CPU=%5.1f GPU=%5s GPUW=%6s IR=%5s ACPI=%5s "
-            "control=%5.1f winner=%-4s request=%3s (%5s%%) "
-            "actual=%d/%d fans=%d/%d%s",
-            state,
-            profile,
-            snapshot.cpu,
-            fmt(snapshot.gpu) or "n/a",
-            fmt(snapshot.nvidia_power_draw_w) or "n/a",
-            fmt(snapshot.ir) or "n/a",
-            fmt(snapshot.acpi) or "n/a",
-            hottest,
-            self.winning_sensor or "-",
-            "-" if requested is None else requested,
-            "-" if requested is None else f"{pwm_to_percent(requested):.1f}",
-            mode,
-            actual_pwm,
-            fan1,
-            fan2,
-            f" note={note}" if note else "",
-        )
+        now = time.monotonic()
+        if state != self.last_status_state or note or now >= self.next_status_log:
+            LOG.info(
+                "state=%-9s profile=%-11s CPU=%5.1f GPU=%5s GPUW=%6s IR=%5s ACPI=%5s "
+                "control=%5.1f winner=%-4s request=%3s (%5s%%) "
+                "actual=%d/%d fans=%d/%d%s",
+                state,
+                profile,
+                snapshot.cpu,
+                fmt(snapshot.gpu) or "n/a",
+                fmt(snapshot.nvidia_power_draw_w) or "n/a",
+                fmt(snapshot.ir) or "n/a",
+                fmt(snapshot.acpi) or "n/a",
+                hottest,
+                self.winning_sensor or "-",
+                "-" if requested is None else requested,
+                "-" if requested is None else f"{pwm_to_percent(requested):.1f}",
+                mode,
+                actual_pwm,
+                fan1,
+                fan2,
+                f" note={note}" if note else "",
+            )
+            self.last_status_state = state
+            self.next_status_log = now + self.status_interval_s
         self.csv_log.write(
             {
                 "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -978,8 +1043,11 @@ class Controller:
                     "another controller or Max mode may be active"
                 )
 
+        self.notifier.ready()
+
         try:
             while not self.stop_requested:
+                self.notifier.watchdog()
                 now = time.monotonic()
                 if self.duration_s is not None and now - started >= self.duration_s:
                     LOG.info("configured duration completed")
@@ -1095,6 +1163,7 @@ class Controller:
                 self._restore_auto("controller stopped")
             except HardwareError as exc:
                 LOG.critical("FAILED TO RESTORE FIRMWARE AUTO: %s", exc)
+            self.notifier.stopping()
 
 
 def acquire_lock(path: Path) -> object:
@@ -1121,10 +1190,16 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         default=source_dir / "fan-control.toml",
         help="configuration file",
     )
-    parser.add_argument(
+    operation_group = parser.add_mutually_exclusive_group()
+    operation_group.add_argument(
         "--apply",
         action="store_true",
         help="actually write fan controls (default is dry-run)",
+    )
+    operation_group.add_argument(
+        "--restore-auto",
+        action="store_true",
+        help="restore firmware Auto and exit (systemd recovery command)",
     )
     parser.add_argument(
         "--actuator-test",
@@ -1144,6 +1219,12 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--no-log-file", action="store_true", help="disable CSV output"
+    )
+    parser.add_argument(
+        "--status-interval",
+        type=float,
+        default=1.0,
+        help="seconds between periodic console/journal status lines",
     )
     sensor_group = parser.add_mutually_exclusive_group()
     sensor_group.add_argument(
@@ -1224,6 +1305,18 @@ def run_actuator_test(
         LOG.info("firmware Auto restored; fans=%d/%d", restored_fan1, restored_fan2)
 
 
+def restore_firmware_auto(fan: HpFanHwmon) -> None:
+    mode, _, _, _ = fan.status()
+    if mode != AUTO_MODE:
+        fan.restore_auto()
+    restored_mode, _, fan1, fan2 = fan.status()
+    if restored_mode != AUTO_MODE:
+        raise HardwareError(
+            f"failed to verify firmware Auto: mode={restored_mode}"
+        )
+    LOG.info("firmware Auto verified; fans=%d/%d", fan1, fan2)
+
+
 def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(
@@ -1232,6 +1325,20 @@ def main(argv: Iterable[str] | None = None) -> int:
         datefmt="%H:%M:%S",
     )
     try:
+        if args.restore_auto:
+            board = read_text(Path("/sys/class/dmi/id/board_name"))
+            if board != "8D87":
+                raise HardwareError(
+                    f"--restore-auto is only allowed on board 8D87, found {board!r}"
+                )
+            if os.geteuid() != 0:
+                raise HardwareError("fan-control writes must be run as root (use sudo)")
+            lock_handle = acquire_lock(Path("/run/hp-fan-control/control.lock"))
+            fan = HpFanHwmon()
+            restore_firmware_auto(fan)
+            lock_handle.close()
+            return 0
+
         settings = Settings.load(args.config)
         if args.cpu_only:
             settings = replace(
@@ -1249,13 +1356,17 @@ def main(argv: Iterable[str] | None = None) -> int:
                 f"board {board!r} is not allowlisted: {settings.allowed_boards}"
             )
         if args.apply and os.geteuid() != 0:
-            raise HardwareError("--apply must be run as root (use sudo)")
+            raise HardwareError("fan-control writes must be run as root (use sudo)")
         if args.duration is not None and args.duration <= 0:
             raise ConfigurationError("--duration must be positive")
+        if args.status_interval < settings.sample_interval_s:
+            raise ConfigurationError(
+                "--status-interval must be >= daemon sample_interval_s"
+            )
 
-        lock_path = Path("/run/hp-fan-control-prototype.lock")
+        lock_path = Path("/run/hp-fan-control/control.lock")
         if not args.apply:
-            lock_path = Path("/tmp/hp-fan-control-prototype-dry-run.lock")
+            lock_path = Path("/tmp/hp-fan-control-dry-run.lock")
         # Keep the file object alive for the lifetime of main; closing it releases
         # the advisory lock.
         lock_handle = acquire_lock(lock_path)
@@ -1293,6 +1404,8 @@ def main(argv: Iterable[str] | None = None) -> int:
             apply=args.apply,
             duration_s=args.duration,
             csv_log=csv_log,
+            status_interval_s=args.status_interval,
+            notifier=SystemdNotifier.from_environment(),
         )
         signal.signal(signal.SIGINT, controller.request_stop)
         signal.signal(signal.SIGTERM, controller.request_stop)
