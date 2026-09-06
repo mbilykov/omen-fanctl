@@ -1,1 +1,0 @@
-./hp_wmi_sensor_probe.o

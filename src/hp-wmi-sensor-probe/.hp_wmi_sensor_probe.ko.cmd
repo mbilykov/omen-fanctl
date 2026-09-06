@@ -1,1 +1,0 @@
-savedcmd_hp_wmi_sensor_probe.ko := ld -r -m elf_x86_64 -z noexecstack --no-warn-rwx-segments --build-id=sha1  -T /usr/lib/modules/7.1.9-arch1-2/build/scripts/module.lds -o hp_wmi_sensor_probe.ko hp_wmi_sensor_probe.o hp_wmi_sensor_probe.mod.o .module-common.o
