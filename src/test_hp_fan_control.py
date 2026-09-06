@@ -194,6 +194,7 @@ class ControlDecisionTests(unittest.TestCase):
                 "curve_source": "test-factory",
             }
         )
+        self.controller.activated_sensors.add("ir")
         self.assertFalse(
             self.controller._cool_enough_for_auto(
                 TemperatureSnapshot(cpu=40.0, gpu=40.0, acpi=None, ir=40.0),
@@ -204,6 +205,22 @@ class ControlDecisionTests(unittest.TestCase):
             self.controller._cool_enough_for_auto(
                 TemperatureSnapshot(cpu=39.0, gpu=39.0, acpi=None, ir=39.0),
                 {"cpu": 39.0, "gpu": 39.0, "ir": 39.0, "acpi": None},
+            )
+        )
+
+    def test_ir_below_activation_does_not_block_cpu_triggered_auto_release(self):
+        self.controller.settings = Settings(
+            **{
+                **self.controller.settings.__dict__,
+                "curves": hp_factory_performance_curves(),
+                "curve_source": "test-factory",
+            }
+        )
+        self.controller.activated_sensors.add("cpu")
+        self.assertTrue(
+            self.controller._cool_enough_for_auto(
+                TemperatureSnapshot(cpu=51.0, gpu=50.0, acpi=None, ir=40.0),
+                {"cpu": 51.0, "gpu": 50.0, "ir": 40.0, "acpi": None},
             )
         )
 

@@ -702,6 +702,7 @@ class Controller:
             "ir": None,
             "acpi": None,
         }
+        self.activated_sensors: set[str] = set()
         self.winning_sensor = ""
 
     def request_stop(self, signum: int, _frame: object) -> None:
@@ -740,6 +741,11 @@ class Controller:
             raw_value = raw[name]
             if raw_value is None or filtered_value is None:
                 continue
+            # IR/acpitz use much lower curve temperatures than CPU/GPU. Do not
+            # let a cool sensor that never activated control prevent a return
+            # to firmware Auto after another sensor caused the Manual cycle.
+            if name in ("ir", "acpi") and name not in self.activated_sensors:
+                continue
             release = self.settings.release_temp_c
             if name in ("ir", "acpi"):
                 curve = self.settings.curve_for(name)
@@ -753,17 +759,18 @@ class Controller:
                 return False
         return True
 
-    def _should_activate(self, snapshot: TemperatureSnapshot) -> bool:
+    def _activation_sources(self, snapshot: TemperatureSnapshot) -> set[str]:
         raw = {
             "cpu": snapshot.cpu,
             "gpu": snapshot.gpu,
             "ir": snapshot.ir,
             "acpi": snapshot.acpi,
         }
-        return any(
-            value is not None
-            and value
-            >= (
+        return {
+            name
+            for name, value in raw.items()
+            if value is not None
+            and value >= (
                 min(
                     self.settings.activation_temp_c,
                     self.settings.curve_for(name).temperatures[0],
@@ -771,8 +778,10 @@ class Controller:
                 if name in ("ir", "acpi")
                 else self.settings.activation_temp_c
             )
-            for name, value in raw.items()
-        )
+        }
+
+    def _should_activate(self, snapshot: TemperatureSnapshot) -> bool:
+        return bool(self._activation_sources(snapshot))
 
     def _desired_pwm(
         self,
@@ -875,6 +884,7 @@ class Controller:
         self.emergency_since = None
         self.commanded_pwm = None
         self.sensor_targets = {"cpu": None, "gpu": None, "ir": None, "acpi": None}
+        self.activated_sensors.clear()
         self.winning_sensor = ""
 
     def _log_sample(
@@ -988,6 +998,11 @@ class Controller:
                 hottest = max(v for v in filtered.values() if v is not None)
                 note = ""
 
+                if profile == self.settings.required_profile:
+                    self.activated_sensors.update(
+                        self._activation_sources(snapshot)
+                    )
+
                 if profile != self.settings.required_profile:
                     self._restore_auto(f"profile is {profile}")
                     state = "bios-auto"
@@ -1019,6 +1034,7 @@ class Controller:
                             "ir": None,
                             "acpi": None,
                         }
+                        self.activated_sensors = self._activation_sources(snapshot)
                         requested, hottest = self._desired_pwm(filtered)
                         requested = self._apply_manual(requested)
                         state = "manual"

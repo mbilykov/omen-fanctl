@@ -51,6 +51,9 @@ The CSV log contains raw and filtered `ir` values, each sensor's target, and
 `winning_sensor`, so a run can verify which curve controlled the fans. WMI IR
 is enabled by default. Neither available `acpitz` zone is the same input; one
 can still be enabled explicitly with `--include-acpi-proxy` for comparisons.
+An IR reading below its first curve point does not hold the daemon in Manual
+after a CPU/GPU-triggered cycle; IR release hysteresis is latched only after IR
+itself reaches its activation point.
 When NVIDIA telemetry is available, every sample also records
 `nvidia_power_draw_w` and `nvidia_power_limit_w` from `nvidia-smi`. Empty values
 mean that the dGPU was asleep or its driver did not expose the metric.
