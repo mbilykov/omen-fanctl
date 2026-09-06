@@ -22,6 +22,7 @@ from hp_fan_control import (
     PlatformProfileMonitor,
     SystemdNotifier,
     TemperatureSnapshot,
+    ensure_failsafe_fan_state,
     hp_factory_performance_curves,
     hp_level_percent,
     main,
@@ -140,6 +141,24 @@ class ControlDecisionTests(unittest.TestCase):
         )
         self.assertEqual(hottest, 80)
         self.assertAlmostEqual(pwm_to_percent(pwm), 75, delta=0.2)
+
+    def test_auto_handoff_requires_continuous_cool_dwell(self):
+        self.controller.settings = Settings(
+            **{
+                **self.controller.settings.__dict__,
+                "auto_handoff_hold_s": 90.0,
+            }
+        )
+        self.controller.activated_sensors.add("cpu")
+        cool = TemperatureSnapshot(50, 50, None, None)
+        hot = TemperatureSnapshot(60, 50, None, None)
+        cool_filtered = {"cpu": 50.0, "gpu": 50.0, "ir": None, "acpi": None}
+        hot_filtered = {"cpu": 60.0, "gpu": 50.0, "ir": None, "acpi": None}
+
+        self.assertFalse(self.controller._auto_handoff_ready(cool, cool_filtered, 0))
+        self.assertFalse(self.controller._auto_handoff_ready(hot, hot_filtered, 80))
+        self.assertFalse(self.controller._auto_handoff_ready(cool, cool_filtered, 100))
+        self.assertTrue(self.controller._auto_handoff_ready(cool, cool_filtered, 190))
 
     def test_independent_gpu_curve_can_win(self):
         self.controller.settings = Settings(
@@ -396,13 +415,14 @@ class ControllerLoopTests(unittest.TestCase):
         notifier.ready.assert_called_once_with()
         self.assertGreaterEqual(notifier.watchdog.call_count, 1)
 
-    def test_leaving_performance_restores_auto_before_sleeping(self):
+    def test_leaving_performance_keeps_hot_manual_control(self):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "platform_profile"
             profile.write_text("balanced\n")
             settings = Settings.load(Path(__file__).with_name("fan-control.toml"))
             fan = FakeFan()
-            sensors = Mock()
+            fan.mode = 0
+            sensors = FakeSensors(70)
             controller = Controller(
                 settings=settings,
                 fan=fan,
@@ -413,11 +433,41 @@ class ControllerLoopTests(unittest.TestCase):
                 profile_path=profile,
                 inactive_event_wait_s=0.01,
             )
-            controller.manual_active = True
-            controller.commanded_pwm = 100
             controller.run()
-        sensors.read.assert_not_called()
-        self.assertEqual(fan.actions, [("auto", None)])
+        self.assertNotIn(("auto", None), fan.actions)
+        self.assertEqual(fan.actions[-1], ("maximum", 255))
+        self.assertEqual(fan.mode, 0)
+
+    def test_leaving_performance_restores_auto_after_cool_dwell(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "platform_profile"
+            profile.write_text("balanced\n")
+            settings = Settings.load(Path(__file__).with_name("fan-control.toml"))
+            settings = Settings(
+                **{
+                    **settings.__dict__,
+                    "sample_interval_s": 0.01,
+                    "control_interval_s": 0.01,
+                    "auto_handoff_hold_s": 0.01,
+                    "emergency_hold_s": 0.0,
+                }
+            )
+            fan = FakeFan()
+            fan.mode = 0
+            sensors = Mock()
+            sensors.read.return_value = TemperatureSnapshot(50, 50, None, None)
+            controller = Controller(
+                settings=settings,
+                fan=fan,
+                sensors=sensors,
+                apply=True,
+                duration_s=0.04,
+                csv_log=CsvLog(None),
+                profile_path=profile,
+                inactive_event_wait_s=0.01,
+            )
+            controller.run()
+        self.assertIn(("auto", None), fan.actions)
         self.assertEqual(fan.mode, AUTO_MODE)
 
     def test_enters_manual_and_restores_auto_at_exit(self):
@@ -457,8 +507,8 @@ class ControllerLoopTests(unittest.TestCase):
             )
             controller.run()
             self.assertEqual(fan.actions[0][0], "manual")
-            self.assertEqual(fan.actions[-1][0], "auto")
-            self.assertEqual(fan.mode, AUTO_MODE)
+            self.assertEqual(fan.actions[-1][0], "maximum")
+            self.assertEqual(fan.mode, 0)
 
     def test_systemd_watchdog_tracks_controller_progress_and_stop(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -488,7 +538,7 @@ class ControllerLoopTests(unittest.TestCase):
         self.assertGreaterEqual(notifier.watchdog.call_count, 1)
         notifier.stopping.assert_called_once_with()
 
-    def test_mandatory_sensor_loss_selects_maximum_then_restores_auto(self):
+    def test_mandatory_sensor_loss_and_exit_preserve_maximum(self):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "platform_profile"
             profile.write_text("performance\n")
@@ -513,8 +563,8 @@ class ControllerLoopTests(unittest.TestCase):
             controller.run()
             self.assertEqual(fan.actions[0][0], "manual")
             self.assertIn(("maximum", 255), fan.actions)
-            self.assertEqual(fan.actions[-1][0], "auto")
-            self.assertEqual(fan.mode, AUTO_MODE)
+            self.assertEqual(fan.actions[-1][0], "maximum")
+            self.assertEqual(fan.mode, 0)
 
     def test_actuator_test_restores_auto(self):
         fan = FakeFan()
@@ -535,6 +585,19 @@ class ControllerLoopTests(unittest.TestCase):
         self.assertEqual(fan.actions, [("auto", None)])
         self.assertEqual(fan.mode, AUTO_MODE)
 
+    def test_failsafe_recovery_replaces_manual_with_maximum(self):
+        fan = FakeFan()
+        fan.mode = MANUAL_MODE
+        ensure_failsafe_fan_state(fan)
+        self.assertEqual(fan.actions, [("maximum", 255)])
+        self.assertEqual(fan.mode, 0)
+
+    def test_failsafe_recovery_preserves_existing_auto(self):
+        fan = FakeFan()
+        ensure_failsafe_fan_state(fan)
+        self.assertEqual(fan.actions, [])
+        self.assertEqual(fan.mode, AUTO_MODE)
+
     def test_restore_auto_does_not_depend_on_configuration(self):
         lock = Mock()
         fan = FakeFan()
@@ -550,6 +613,22 @@ class ControllerLoopTests(unittest.TestCase):
         load_settings.assert_not_called()
         lock.close.assert_called_once_with()
         self.assertEqual(fan.mode, AUTO_MODE)
+
+    def test_failsafe_command_does_not_depend_on_configuration(self):
+        lock = Mock()
+        fan = FakeFan()
+        fan.mode = MANUAL_MODE
+        with (
+            patch("hp_fan_control.read_text", return_value="8D87"),
+            patch("hp_fan_control.os.geteuid", return_value=0),
+            patch("hp_fan_control.acquire_lock", return_value=lock),
+            patch("hp_fan_control.HpFanHwmon", return_value=fan),
+            patch("hp_fan_control.Settings.load") as load_settings,
+        ):
+            self.assertEqual(main(["--failsafe"]), 0)
+        load_settings.assert_not_called()
+        lock.close.assert_called_once_with()
+        self.assertEqual(fan.mode, 0)
 
 
 class SystemdNotifierTests(unittest.TestCase):

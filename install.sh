@@ -48,6 +48,29 @@ for required in \
     fi
 done
 
+if systemctl cat hp-fan-control.service >/dev/null 2>&1; then
+    if systemctl is-active --quiet hp-fan-control.service; then
+        HP_HWMON=
+        for candidate in /sys/class/hwmon/hwmon*; do
+            if [[ -r "$candidate/name" ]] && [[ "$(<"$candidate/name")" == hp ]]; then
+                HP_HWMON=$candidate
+                break
+            fi
+        done
+        if [[ -z "$HP_HWMON" ]] || [[ ! -r "$HP_HWMON/pwm1_enable" ]]; then
+            echo "ERROR: cannot safely stop the existing service: HP hwmon was not found" >&2
+            exit 1
+        fi
+        if [[ "$(<"$HP_HWMON/pwm1_enable")" != 2 ]]; then
+            echo "ERROR: refusing to stop the existing service outside BIOS Auto" >&2
+            echo "Switch to Balanced, wait for 'state=sleeping', then retry." >&2
+            exit 1
+        fi
+    fi
+    echo "Stopping existing hp-fan-control.service before installation..."
+    systemctl stop hp-fan-control.service
+fi
+
 install -D -m 0755 "$SCRIPT_DIR/src/hp_fan_control.py" \
     "$INSTALL_DIR/hp_fan_control.py"
 install -D -m 0644 "$SCRIPT_DIR/src/README.md" "$DOC_DIR/README.md"
@@ -68,6 +91,6 @@ if [[ "$ENABLE_NOW" == true ]]; then
     systemctl enable --now hp-fan-control.service
     systemctl --no-pager --full status hp-fan-control.service || true
 else
-    echo "Installed but not enabled. Review $CONFIG_DIR/fan-control.toml, then run:"
+    echo "Installed but not running. Review $CONFIG_DIR/fan-control.toml, then run:"
     echo "  sudo systemctl enable --now hp-fan-control.service"
 fi

@@ -35,15 +35,30 @@ if (( EUID != 0 )); then
     exit 1
 fi
 
+HP_HWMON=
+for candidate in /sys/class/hwmon/hwmon*; do
+    if [[ -r "$candidate/name" ]] && [[ "$(<"$candidate/name")" == hp ]]; then
+        HP_HWMON=$candidate
+        break
+    fi
+done
+if [[ -z "$HP_HWMON" ]] || [[ ! -r "$HP_HWMON/pwm1_enable" ]]; then
+    echo "ERROR: HP fan-control hwmon interface was not found" >&2
+    exit 1
+fi
+if [[ "$(<"$HP_HWMON/pwm1_enable")" != 2 ]]; then
+    echo "ERROR: refusing to uninstall while fan control is not in BIOS Auto" >&2
+    echo "Switch to Balanced, wait for 'state=sleeping', then retry." >&2
+    exit 1
+fi
+
 if systemctl cat hp-fan-control.service >/dev/null 2>&1; then
     systemctl disable --now hp-fan-control.service || true
 fi
 
-# ExecStopPost normally performs this recovery. Repeat it before removing the
-# executable so an inactive or previously failed unit also returns to Auto.
-if [[ -x "$INSTALL_DIR/hp_fan_control.py" ]]; then
-    "$INSTALL_DIR/hp_fan_control.py" --restore-auto || \
-        echo "WARNING: could not verify firmware Auto" >&2
+if [[ "$(<"$HP_HWMON/pwm1_enable")" != 2 ]]; then
+    echo "ERROR: service stop did not preserve BIOS Auto; files were not removed" >&2
+    exit 1
 fi
 
 rm -f -- "$UNIT_PATH" "$LOGROTATE_PATH" \

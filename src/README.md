@@ -20,13 +20,15 @@ the system service before checking the dry-run output.
   highest resulting target. `acpitz` remains an opt-in diagnostic proxy only.
 - Uses raw temperature for prompt ramp-up, and asymmetric EWMA plus the HP
   high/low thresholds for a slower ramp-down.
-- Leaves BIOS Auto active while cool or outside the Performance profile.
-- Outside Performance, blocks on the kernel's `platform_profile` sysfs
-  notification and does not query CPU/GPU/IR, invoke `nvidia-smi`, or run the
-  control algorithm. A profile-change event wakes it immediately.
+- Leaves BIOS Auto active while cool. Outside Performance, a controller that
+  was already in Auto sleeps immediately; a Manual/Max controller first keeps
+  cooling until a safe handoff is possible.
+- While sleeping outside Performance, blocks on the kernel's `platform_profile`
+  sysfs notification and does not query CPU/GPU/IR, invoke `nvidia-smi`, or run
+  the control algorithm. A profile-change event wakes it immediately.
 - Uses `pwm1_enable=1` and `pwm1` only when software control is needed.
 - Uses `pwm1_enable=0` for immediate maximum fans at the raw critical threshold.
-- Restores `pwm1_enable=2` on normal exit, `SIGINT`, or `SIGTERM`.
+- Never switches a hot Manual/Max controller directly to firmware Auto.
 
 The current kernel driver converts the standard hwmon PWM scale (`0..255`) to
 the HP firmware fan-level scale and maps the second fan according to its fan
@@ -78,7 +80,9 @@ python3 -m unittest -v
 
 The repository root contains explicit install and uninstall scripts. Installing
 does not load the optional WMI IR probe. Existing configuration is never
-overwritten.
+overwritten. During an upgrade, `install.sh` stops an existing service before
+replacing any files. For safety it refuses to stop an active controller until
+that controller has completed its handoff and `pwm1_enable=2`.
 
 Install the files without starting fan control:
 
@@ -104,8 +108,14 @@ state transitions and warnings are logged immediately.
 
 The systemd process remains resident so it can notice profile changes without
 depending on desktop-specific hooks. Its fan controller is active only in
-Performance; under any other profile it leaves BIOS Auto selected and blocks
-in `poll(POLLPRI)` on `/sys/firmware/acpi/platform_profile`. Linux calls
+Performance. Under any other profile it blocks in `poll(POLLPRI)` only when
+firmware Auto already owns the fans. If a profile change occurs during Manual
+or Max, it enters `handoff`, continues reading CPU/GPU/IR and controlling the
+fans, and requires every active temperature to remain below its release
+threshold for `auto_handoff_hold_s` before selecting Auto. This matters because
+the tested F.07 firmware can stop both fans for roughly 90 seconds following a
+Manual-to-Auto transition. The default dwell is therefore 90 seconds, and any
+temperature rise above a release threshold restarts it. Linux calls
 `sysfs_notify` when the profile changes, so this does not poll the file. The
 wait has a five-second timeout solely to send the systemd watchdog heartbeat;
 the profile is re-read only after an actual notification. Event wake-up was
@@ -113,13 +123,16 @@ validated on the 8D87 with both `amd-pmf` and `hp-wmi` profile providers. The
 notification originates in the upstream Linux
 [`platform_profile` core](https://github.com/torvalds/linux/blob/v7.1/drivers/acpi/platform_profile.c#L383-L413).
 
-The service sends `SIGTERM` on normal stop, and the daemon restores firmware
-Auto in its cleanup path. `ExecStopPost` independently runs `--restore-auto` as
-a second recovery layer after every stop, including an uncatchable `SIGKILL`,
-and before any configured restart. The recovery command is restricted to board
-`8D87` and does not depend on a readable configuration. The daemon also sends
+The service sends `SIGTERM` on normal stop. If software still owns the fans,
+the daemon selects maximum rather than triggering the firmware's fan-stop
+window. `ExecStopPost` independently runs `--failsafe` after every stop: it
+preserves an existing Auto state, but replaces Manual with Max after an
+uncatchable `SIGKILL` and before any configured restart. A restarted daemon can
+adopt this Max state and continue cooling; it returns to Auto only through the
+same cool-dwell handoff. The recovery command is restricted to board `8D87`
+and does not depend on a readable configuration. The daemon also sends
 systemd watchdog heartbeats; if its control loop stops making progress for 15
-seconds, systemd kills it, runs the independent Auto recovery command, and
+seconds, systemd kills it, runs the independent maximum-fan recovery, and
 restarts it after five seconds.
 
 Linux 7.1 `hp-wmi` provides the final firmware-backed layer. While Max or
@@ -148,14 +161,15 @@ journalctl -u hp-fan-control.service --since=-1min --no-pager
 systemctl --no-pager --full status hp-fan-control.service
 ```
 
-The journal must show the killed main process, successful `firmware Auto
+The journal must show the killed main process, successful `maximum fail-safe
 verified` recovery from `ExecStopPost`, and a fresh service start. The hwmon
-view must pass through `pwm1_enable=2`; after restart it may re-enter Manual
-only if a temperature is still above an activation threshold.
+view must change directly from Manual to Max (`pwm1_enable=0`) without passing
+through Auto. The restarted daemon adopts Max, then follows its normal thermal
+release and cool-dwell rules.
 
 To test a stuck loop, repeat under the same cooled, moderate conditions with
 `SIGSTOP` instead. No further heartbeats can be sent, so the 15-second systemd
-watchdog must kill the stopped process and execute the same Auto/restart path:
+watchdog must kill the stopped process and execute the same Max/restart path:
 
 ```bash
 sudo systemctl kill --kill-whom=main --signal=SIGSTOP hp-fan-control.service
@@ -169,6 +183,12 @@ Stop and remove the service while preserving configuration and telemetry:
 ```bash
 sudo ./uninstall.sh
 ```
+
+The uninstaller refuses to proceed unless `pwm1_enable=2`. Switch to Balanced
+and wait for the journal to report `state=sleeping` first. This prevents an
+uninstall from forcing the unsafe hot Manual-to-Auto transition. If a service
+is intentionally stopped while Manual/Max is active, maximum fans remain as a
+fail-safe; start the service again and let it complete a safe handoff.
 
 Use `sudo ./uninstall.sh --purge-config` only when the installed configuration
 should also be removed. Telemetry remains preserved in both modes.
@@ -251,9 +271,10 @@ cd fan-control-daemon-research/src
 sudo python3 hp_fan_control.py --apply --duration 300
 ```
 
-Start the workload in another terminal. Stop the workload before stopping the
-controller. Press Ctrl+C if anything looks wrong. On Ctrl+C the controller
-returns the fan interface to firmware Auto.
+Start the workload in another terminal. Stop the workload, switch to Balanced,
+and wait for `state=sleeping` before stopping the controller. If Ctrl+C or the
+duration limit stops it while Manual/Max is still active, it deliberately
+leaves maximum fans selected instead of forcing an unsafe Auto transition.
 
 Useful independent checks:
 
@@ -328,7 +349,8 @@ stepped = true
   other boards must remain excluded until their matching Gaming Hub resource
   and fan-level behavior are verified.
 - A daemon crash or `SIGKILL` cannot execute Python cleanup, so safe recovery
-  depends on the service's `ExecStopPost`. A stuck control loop is detected by
+  depends on the service's `ExecStopPost`, which selects Max rather than Auto
+  when userspace owned the fans. A stuck control loop is detected by
   the systemd watchdog. If userspace or the kernel cannot perform either path,
   the HP firmware's 120-second user-defined-state timeout is the last fallback;
   sudden power loss naturally cannot run any software cleanup.
