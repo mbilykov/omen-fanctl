@@ -53,7 +53,9 @@ is enabled by default. Neither available `acpitz` zone is the same input; one
 can still be enabled explicitly with `--include-acpi-proxy` for comparisons.
 An IR reading below its first curve point does not hold the daemon in Manual
 after a CPU/GPU-triggered cycle; IR release hysteresis is latched only after IR
-itself reaches its activation point.
+itself reaches its activation point. Because WMI IR has whole-degree resolution,
+its separate default release hysteresis is 1 C (activate at 42 C, release at or
+below 41 C once both raw and EWMA readings cool sufficiently).
 When NVIDIA telemetry is available, every sample also records
 `nvidia_power_draw_w` and `nvidia_power_limit_w` from `nvidia-smi`. Empty values
 mean that the dGPU was asleep or its driver did not expose the metric.

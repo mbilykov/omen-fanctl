@@ -211,6 +211,7 @@ class Settings:
     include_amd_gpu: bool
     include_nvidia_gpu: bool
     curve: Curve
+    ir_release_hysteresis_c: float = 1.0
     include_hp_wmi_ir: bool = True
     hp_wmi_sensors_path: Path = Path("/proc/hp_wmi_sensors")
     curves: dict[str, Curve] | None = None
@@ -281,6 +282,9 @@ class Settings:
                 include_amd_gpu=bool(sensors.get("include_amd_gpu", True)),
                 include_nvidia_gpu=bool(sensors.get("include_nvidia_gpu", True)),
                 curve=curve,
+                ir_release_hysteresis_c=float(
+                    daemon.get("ir_release_hysteresis_c", 1.0)
+                ),
                 include_hp_wmi_ir=bool(sensors.get("include_hp_wmi_ir", True)),
                 hp_wmi_sensors_path=Path(
                     str(sensors.get("hp_wmi_sensors_path", "/proc/hp_wmi_sensors"))
@@ -334,6 +338,10 @@ class Settings:
             )
         if self.activation_temp_c >= self.critical_temp_c:
             raise ConfigurationError("activation_temp_c must be below critical_temp_c")
+        if not 0 < self.ir_release_hysteresis_c < self.activation_temp_c:
+            raise ConfigurationError(
+                "ir_release_hysteresis_c must be positive and below activation_temp_c"
+            )
         for name, value in (
             ("ewma.rise_alpha", self.ewma_rise_alpha),
             ("ewma.fall_alpha", self.ewma_fall_alpha),
@@ -753,7 +761,8 @@ class Controller:
                     self.settings.activation_temp_c, curve.temperatures[0]
                 )
                 release = min(
-                    release, activation - self.settings.decrease_hysteresis_c
+                    release,
+                    activation - self.settings.ir_release_hysteresis_c,
                 )
             if raw_value > release or filtered_value > release:
                 return False

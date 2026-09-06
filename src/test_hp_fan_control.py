@@ -197,14 +197,14 @@ class ControlDecisionTests(unittest.TestCase):
         self.controller.activated_sensors.add("ir")
         self.assertFalse(
             self.controller._cool_enough_for_auto(
-                TemperatureSnapshot(cpu=40.0, gpu=40.0, acpi=None, ir=40.0),
-                {"cpu": 40.0, "gpu": 40.0, "ir": 40.0, "acpi": None},
+                TemperatureSnapshot(cpu=40.0, gpu=40.0, acpi=None, ir=42.0),
+                {"cpu": 40.0, "gpu": 40.0, "ir": 42.0, "acpi": None},
             )
         )
         self.assertTrue(
             self.controller._cool_enough_for_auto(
-                TemperatureSnapshot(cpu=39.0, gpu=39.0, acpi=None, ir=39.0),
-                {"cpu": 39.0, "gpu": 39.0, "ir": 39.0, "acpi": None},
+                TemperatureSnapshot(cpu=41.0, gpu=41.0, acpi=None, ir=41.0),
+                {"cpu": 41.0, "gpu": 41.0, "ir": 41.0, "acpi": None},
             )
         )
 
