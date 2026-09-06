@@ -40,9 +40,9 @@ rise_alpha = 0.10
 fall_alpha = 0.05
 
 [sensors]
-# Canonical Gaming Hub IR source on 8D87. The read-only kernel probe must be
-# loaded and index 0 must be readable at startup. If IR is temporarily lost
-# later, the daemon logs it and continues from CPU/GPU until IR recovers.
+# Optional experimental extension providing Gaming Hub's IR source on 8D87.
+# When the read-only probe is absent or invalid, the daemon logs one warning
+# and continues with CPU/GPU. IR joins automatically whenever it is available.
 include_hp_wmi_ir = true
 hp_wmi_sensors_path = "/proc/hp_wmi_sensors"
 

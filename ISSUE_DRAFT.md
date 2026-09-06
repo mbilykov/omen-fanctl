@@ -256,13 +256,12 @@ calls nor links to OmenCore. It implements:
 The Linux `acpitz` sensors remain disabled by default: a direct WMI comparison
 confirmed that neither is Gaming Hub's IR input on `8D87`.
 
-The prototype now consumes the confirmed index-0 value directly from the
-read-only probe's `/proc/hp_wmi_sensors` interface. It treats that source as
-required when enabled: invalid startup data prevents fan takeover, and loss of
-the source during manual control temporarily removes IR from the maximum-of-
-sensors decision while CPU/GPU control continues. IR rejoins automatically
-after recovery; loss of the mandatory CPU source still invokes the existing
-maximum-fan fail-safe.
+The prototype can consume the confirmed index-0 value directly from the
+read-only probe's `/proc/hp_wmi_sensors` interface. The probe is an optional
+experimental extension: absent or invalid data removes IR from the maximum-of-
+sensors decision while CPU/GPU control continues, including at startup. IR
+joins or rejoins automatically when available; loss of the mandatory CPU
+source still invokes the existing maximum-fan fail-safe.
 
 ### Actuator and controller-development tests
 

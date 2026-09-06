@@ -13,8 +13,9 @@ dry-run output.
 - Reads CPU temperature from `k10temp`.
 - Optionally reads the AMD GPU hwmon sensor and NVIDIA temperature through
   `nvidia-smi`.
-- Reads Gaming Hub's exact IR input (WMI group `0x20008`, query `0x23`, index
-  `0`) from `/proc/hp_wmi_sensors`.
+- Optionally reads Gaming Hub's exact IR input (WMI group `0x20008`, query
+  `0x23`, index `0`) from `/proc/hp_wmi_sensors` when the experimental probe is
+  available.
 - Evaluates CPU, GPU, and IR temperatures against separate curves and uses the
   highest resulting target. `acpitz` remains an opt-in diagnostic proxy only.
 - Uses raw temperature for prompt ramp-up, and asymmetric EWMA plus the HP
@@ -49,8 +50,11 @@ unknown; the WMI value itself is confirmed to be Gaming Hub's IR input.
 
 The CSV log contains raw and filtered `ir` values, each sensor's target, and
 `winning_sensor`, so a run can verify which curve controlled the fans. WMI IR
-is enabled by default. Neither available `acpitz` zone is the same input; one
-can still be enabled explicitly with `--include-acpi-proxy` for comparisons.
+probing is enabled by default but optional at runtime: a missing or invalid
+probe produces one warning while CPU/GPU control continues, and IR joins
+automatically if the probe appears. Neither available `acpitz` zone is the same
+input; one can still be enabled explicitly with `--include-acpi-proxy` for
+comparisons.
 An IR reading below its first curve point does not hold the daemon in Manual
 after a CPU/GPU-triggered cycle; IR release hysteresis is latched only after IR
 itself reaches its activation point. Because WMI IR has whole-degree resolution,
@@ -87,8 +91,7 @@ captures the arguments of `wmi_evaluate_method` by calling convention.
 
 ## 2. Read-only dry run
 
-Load and verify the read-only sensor probe with the project script, then select
-the Performance profile:
+To include the optional IR input, load and verify the read-only sensor probe:
 
 ```bash
 cd fan-control-daemon-research/src
@@ -102,8 +105,10 @@ cd fan-control-daemon-research/src
 python3 hp_fan_control.py --duration 60
 ```
 
-This prints the temperatures and decisions but does not change fan state. A
-timestamped CSV file is created in the current directory.
+Without the probe, the same command logs one warning and runs from CPU/GPU;
+`ir` fields remain empty. In either case, this prints temperatures and decisions
+without changing fan state. A timestamped CSV file is created in the current
+directory.
 
 ## 3. Short actuator test
 
@@ -224,11 +229,10 @@ stepped = true
 - `SIGKILL`, power loss, or a kernel crash cannot run cleanup. The current
   `hp-wmi` driver has its own firmware fallback/keepalive behavior, but this is
   not a substitute for testing failure modes.
-- The probe must be loaded when WMI IR is enabled. A missing or malformed
-  index-0 reading prevents startup. If IR is lost later, the daemon logs the
-  degraded state and continues safely from CPU/GPU; IR rejoins automatically
-  when it recovers. Loss of the mandatory CPU source still invokes the
-  maximum-fan fail-safe.
+- The WMI IR probe is an optional experimental extension. If it is absent,
+  malformed, or lost later, the daemon logs the degraded state and continues
+  safely from CPU/GPU; IR joins or rejoins automatically when available. Loss
+  of the mandatory CPU source still invokes the maximum-fan fail-safe.
 - The physical make/model of the IR sensor chip cannot be inferred from WMI.
 - `acpitz` is not Gaming Hub's IR input and is disabled by default.
 - Never run this prototype together with another fan-control program.

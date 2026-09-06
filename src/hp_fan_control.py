@@ -467,10 +467,6 @@ class Sensors:
         )
         self.hp_wmi_sensors_path = settings.hp_wmi_sensors_path
         self.hp_wmi_ir_failed = False
-        if settings.include_hp_wmi_ir:
-            # Fail before fan ownership can change if the read-only probe is
-            # absent, malformed, or cannot return Gaming Hub's index-0 input.
-            read_hp_wmi_ir_temperature(self.hp_wmi_sensors_path)
 
     def _cpu_temperature(self) -> float:
         values = read_hwmon_temperatures(self.cpu_hwmon)
@@ -554,7 +550,7 @@ class Sensors:
         except HardwareError as exc:
             if not self.hp_wmi_ir_failed:
                 LOG.warning(
-                    "HP WMI IR sensor unavailable; continuing with CPU/GPU: %s",
+                    "optional HP WMI IR sensor unavailable; continuing with CPU/GPU: %s",
                     exc,
                 )
             self.hp_wmi_ir_failed = True

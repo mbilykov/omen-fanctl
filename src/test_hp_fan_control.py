@@ -252,6 +252,29 @@ class SettingsTests(unittest.TestCase):
 
 
 class SensorMetricTests(unittest.TestCase):
+    def test_missing_optional_ir_probe_does_not_block_sensor_startup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cpu = root / "hwmon0"
+            cpu.mkdir()
+            (cpu / "name").write_text("k10temp\n")
+            (cpu / "temp1_input").write_text("50000\n")
+            settings = Settings.load(Path(__file__).with_name("fan-control.toml"))
+            settings = Settings(
+                **{
+                    **settings.__dict__,
+                    "include_acpi": False,
+                    "include_amd_gpu": False,
+                    "include_nvidia_gpu": False,
+                    "hp_wmi_sensors_path": root / "missing-probe",
+                }
+            )
+            sensors = Sensors(settings, root)
+            snapshot = sensors.read()
+            self.assertEqual(snapshot.cpu, 50.0)
+            self.assertIsNone(snapshot.ir)
+            self.assertTrue(sensors.hp_wmi_ir_failed)
+
     def test_reads_index_zero_hp_wmi_ir_temperature(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "hp_wmi_sensors"
