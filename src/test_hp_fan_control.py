@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+import select
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +19,7 @@ from hp_fan_control import (
     HpFanHwmon,
     Settings,
     Sensors,
+    PlatformProfileMonitor,
     SystemdNotifier,
     TemperatureSnapshot,
     hp_factory_performance_curves,
@@ -371,6 +373,53 @@ class FailingAfterFirstSample:
 
 
 class ControllerLoopTests(unittest.TestCase):
+    def test_non_performance_profile_sleeps_without_reading_sensors(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "platform_profile"
+            profile.write_text("balanced\n")
+            settings = Settings.load(Path(__file__).with_name("fan-control.toml"))
+            sensors = Mock()
+            notifier = Mock(spec=SystemdNotifier)
+            controller = Controller(
+                settings=settings,
+                fan=FakeFan(),
+                sensors=sensors,
+                apply=True,
+                duration_s=0.025,
+                csv_log=CsvLog(None),
+                profile_path=profile,
+                notifier=notifier,
+                inactive_event_wait_s=0.01,
+            )
+            controller.run()
+        sensors.read.assert_not_called()
+        notifier.ready.assert_called_once_with()
+        self.assertGreaterEqual(notifier.watchdog.call_count, 1)
+
+    def test_leaving_performance_restores_auto_before_sleeping(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "platform_profile"
+            profile.write_text("balanced\n")
+            settings = Settings.load(Path(__file__).with_name("fan-control.toml"))
+            fan = FakeFan()
+            sensors = Mock()
+            controller = Controller(
+                settings=settings,
+                fan=fan,
+                sensors=sensors,
+                apply=True,
+                duration_s=0.025,
+                csv_log=CsvLog(None),
+                profile_path=profile,
+                inactive_event_wait_s=0.01,
+            )
+            controller.manual_active = True
+            controller.commanded_pwm = 100
+            controller.run()
+        sensors.read.assert_not_called()
+        self.assertEqual(fan.actions, [("auto", None)])
+        self.assertEqual(fan.mode, AUTO_MODE)
+
     def test_enters_manual_and_restores_auto_at_exit(self):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "platform_profile"
@@ -529,6 +578,23 @@ class SystemdNotifierTests(unittest.TestCase):
         ):
             notifier = SystemdNotifier.from_environment()
         self.assertIsNone(notifier.address)
+
+
+class PlatformProfileMonitorTests(unittest.TestCase):
+    def test_sysfs_notification_refreshes_cached_profile(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "platform_profile"
+            path.write_text("balanced\n")
+            poller = Mock()
+            poller.poll.return_value = [(7, select.POLLPRI)]
+            with patch("hp_fan_control.select.poll", return_value=poller):
+                monitor = PlatformProfileMonitor(path)
+                self.assertEqual(monitor.current, "balanced")
+                path.write_text("performance\n")
+                self.assertTrue(monitor.wait_for_change(5.0))
+                self.assertEqual(monitor.current, "performance")
+                monitor.close()
+        poller.poll.assert_called_once_with(5000)
 
 
 class FakeHwmonTests(unittest.TestCase):

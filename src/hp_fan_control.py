@@ -15,6 +15,7 @@ import fcntl
 import logging
 import os
 from pathlib import Path
+import select
 import shutil
 import signal
 import socket
@@ -82,6 +83,42 @@ class SystemdNotifier:
 
     def stopping(self) -> None:
         self.notify("STOPPING=1")
+
+
+class PlatformProfileMonitor:
+    """Keep a sysfs fd open and consume platform-profile notifications."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        try:
+            self.handle = path.open("r", encoding="ascii")
+            self.poller = select.poll()
+            self.poller.register(
+                self.handle.fileno(), select.POLLPRI | select.POLLERR
+            )
+            self.current = self._read()
+        except OSError as exc:
+            raise HardwareError(f"cannot monitor platform profile: {exc}") from exc
+
+    def _read(self) -> str:
+        try:
+            self.handle.seek(0)
+            return self.handle.read().strip()
+        except OSError as exc:
+            raise HardwareError(f"cannot read platform profile: {exc}") from exc
+
+    def wait_for_change(self, timeout_s: float) -> bool:
+        try:
+            events = self.poller.poll(round(timeout_s * 1000))
+        except OSError as exc:
+            raise HardwareError(f"cannot wait for platform profile change: {exc}") from exc
+        if not events:
+            return False
+        self.current = self._read()
+        return True
+
+    def close(self) -> None:
+        self.handle.close()
 
 
 def clamp(value: float, minimum: float, maximum: float) -> float:
@@ -738,6 +775,7 @@ class Controller:
         profile_path: Path = Path("/sys/firmware/acpi/platform_profile"),
         status_interval_s: float = 1.0,
         notifier: SystemdNotifier | None = None,
+        inactive_event_wait_s: float = 5.0,
     ):
         self.settings = settings
         self.fan = fan
@@ -748,6 +786,8 @@ class Controller:
         self.profile_path = profile_path
         self.status_interval_s = status_interval_s
         self.notifier = notifier or SystemdNotifier(None)
+        self.profile_monitor: PlatformProfileMonitor | None = None
+        self.inactive_event_wait_s = inactive_event_wait_s
         self.next_status_log = 0.0
         self.last_status_state = ""
         self.stop_requested = False
@@ -775,10 +815,9 @@ class Controller:
         self.stop_requested = True
 
     def _profile(self) -> str:
-        try:
-            return read_text(self.profile_path)
-        except OSError as exc:
-            raise HardwareError(f"cannot read platform profile: {exc}") from exc
+        if self.profile_monitor is None:
+            raise HardwareError("platform profile monitor is not initialized")
+        return self.profile_monitor.current
 
     def _filtered(self, snapshot: TemperatureSnapshot) -> dict[str, float | None]:
         result: dict[str, float | None] = {}
@@ -1043,6 +1082,7 @@ class Controller:
                     "another controller or Max mode may be active"
                 )
 
+        self.profile_monitor = PlatformProfileMonitor(self.profile_path)
         self.notifier.ready()
 
         try:
@@ -1054,6 +1094,22 @@ class Controller:
                     break
 
                 profile = self._profile()
+                if profile != self.settings.required_profile:
+                    self._restore_auto(f"profile is {profile}")
+                    for temperature_filter in self.filters.values():
+                        temperature_filter.value = None
+                    if self.last_status_state != "sleeping":
+                        LOG.info(
+                            "state=sleeping profile=%s; waiting for %s",
+                            profile,
+                            self.settings.required_profile,
+                        )
+                        self.last_status_state = "sleeping"
+                    self.profile_monitor.wait_for_change(
+                        self.inactive_event_wait_s
+                    )
+                    continue
+
                 try:
                     snapshot = self.sensors.read()
                 except HardwareError as exc:
@@ -1064,23 +1120,20 @@ class Controller:
                         self.emergency_since = self.emergency_since or now
                     else:
                         LOG.error("sensor failure while BIOS Auto is active: %s", exc)
-                    time.sleep(self.settings.sample_interval_s)
+                    self.profile_monitor.wait_for_change(
+                        self.settings.sample_interval_s
+                    )
                     continue
 
                 filtered = self._filtered(snapshot)
                 hottest = max(v for v in filtered.values() if v is not None)
                 note = ""
 
-                if profile == self.settings.required_profile:
-                    self.activated_sensors.update(
-                        self._activation_sources(snapshot)
-                    )
+                self.activated_sensors.update(
+                    self._activation_sources(snapshot)
+                )
 
-                if profile != self.settings.required_profile:
-                    self._restore_auto(f"profile is {profile}")
-                    state = "bios-auto"
-                    requested = None
-                elif snapshot.raw_hottest >= self.settings.critical_temp_c:
+                if snapshot.raw_hottest >= self.settings.critical_temp_c:
                     if not self.emergency:
                         LOG.warning(
                             "critical raw temperature %.1f C; selecting maximum fans",
@@ -1157,13 +1210,16 @@ class Controller:
                 self._log_sample(
                     started, profile, state, snapshot, filtered, hottest, requested, note
                 )
-                time.sleep(self.settings.sample_interval_s)
+                self.profile_monitor.wait_for_change(
+                    self.settings.sample_interval_s
+                )
         finally:
             try:
                 self._restore_auto("controller stopped")
             except HardwareError as exc:
                 LOG.critical("FAILED TO RESTORE FIRMWARE AUTO: %s", exc)
             self.notifier.stopping()
+            self.profile_monitor.close()
 
 
 def acquire_lock(path: Path) -> object:

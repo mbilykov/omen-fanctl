@@ -21,6 +21,9 @@ the system service before checking the dry-run output.
 - Uses raw temperature for prompt ramp-up, and asymmetric EWMA plus the HP
   high/low thresholds for a slower ramp-down.
 - Leaves BIOS Auto active while cool or outside the Performance profile.
+- Outside Performance, blocks on the kernel's `platform_profile` sysfs
+  notification and does not query CPU/GPU/IR, invoke `nvidia-smi`, or run the
+  control algorithm. A profile-change event wakes it immediately.
 - Uses `pwm1_enable=1` and `pwm1` only when software control is needed.
 - Uses `pwm1_enable=0` for immediate maximum fans at the raw critical threshold.
 - Restores `pwm1_enable=2` on normal exit, `SIGINT`, or `SIGTERM`.
@@ -98,6 +101,17 @@ explicit step with `sudo ./install.sh --enable-now`. Timestamped full-resolution
 CSV telemetry is written under `/var/log/hp-fan-control/` and rotated daily for
 14 days. Periodic journal status is limited to once every 30 seconds, while
 state transitions and warnings are logged immediately.
+
+The systemd process remains resident so it can notice profile changes without
+depending on desktop-specific hooks. Its fan controller is active only in
+Performance; under any other profile it leaves BIOS Auto selected and blocks
+in `poll(POLLPRI)` on `/sys/firmware/acpi/platform_profile`. Linux calls
+`sysfs_notify` when the profile changes, so this does not poll the file. The
+wait has a five-second timeout solely to send the systemd watchdog heartbeat;
+the profile is re-read only after an actual notification. Event wake-up was
+validated on the 8D87 with both `amd-pmf` and `hp-wmi` profile providers. The
+notification originates in the upstream Linux
+[`platform_profile` core](https://github.com/torvalds/linux/blob/v7.1/drivers/acpi/platform_profile.c#L383-L413).
 
 The service sends `SIGTERM` on normal stop, and the daemon restores firmware
 Auto in its cleanup path. `ExecStopPost` independently runs `--restore-auto` as
