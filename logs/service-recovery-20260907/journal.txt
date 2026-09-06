@@ -1,0 +1,58 @@
+Sep 07 00:37:00 laptop systemd[1]: Starting Standalone HP 8D87 automatic fan controller...
+Sep 07 00:37:00 laptop hp_fan_control.py[512307]: 00:37:00 WARNING APPLY mode; board=8D87 curves=hp-vibrance-stx-n22x9-performance hp_hwmon=/sys/class/hwmon/hwmon8 log=/var/log/hp-fan-control/hp-fan-control-20260907-003700.csv
+Sep 07 00:37:00 laptop systemd[1]: Started Standalone HP 8D87 automatic fan controller.
+Sep 07 00:37:00 laptop hp_fan_control.py[512307]: 00:37:00 INFO state=bios-auto profile=performance CPU= 48.8 GPU= 45.0 GPUW=   7.0 IR= 41.0 ACPI=  n/a control= 48.8 winner=-    request=  - (    -%) actual=2/80 fans=1900/2100
+Sep 07 00:37:31 laptop hp_fan_control.py[512307]: 00:37:31 INFO state=bios-auto profile=performance CPU= 46.4 GPU= 44.0 GPUW=   7.0 IR= 40.0 ACPI=  n/a control= 47.7 winner=-    request=  - (    -%) actual=2/80 fans=1900/2100
+Sep 07 00:38:02 laptop hp_fan_control.py[512307]: 00:38:02 INFO state=bios-auto profile=performance CPU= 46.8 GPU= 43.0 GPUW=   6.9 IR= 40.0 ACPI=  n/a control= 47.1 winner=-    request=  - (    -%) actual=2/80 fans=1900/2100
+Sep 07 00:38:33 laptop hp_fan_control.py[512307]: 00:38:33 INFO state=bios-auto profile=performance CPU= 45.4 GPU= 43.0 GPUW=   6.8 IR= 39.0 ACPI=  n/a control= 46.2 winner=-    request=  - (    -%) actual=2/0 fans=0/0
+Sep 07 00:38:44 laptop systemd[1]: Stopping Standalone HP 8D87 automatic fan controller...
+Sep 07 00:38:44 laptop hp_fan_control.py[512307]: 00:38:44 INFO received signal 15
+Sep 07 00:38:44 laptop hp_fan_control.py[514617]: 00:38:44 INFO firmware Auto verified; fans=0/0
+Sep 07 00:38:44 laptop systemd[1]: hp-fan-control.service: Deactivated successfully.
+Sep 07 00:38:44 laptop systemd[1]: Stopped Standalone HP 8D87 automatic fan controller.
+Sep 07 00:38:44 laptop systemd[1]: hp-fan-control.service: Consumed 3.009s CPU time over 1min 44.716s wall clock time, 36.5M memory peak.
+Sep 07 00:40:49 laptop systemd[1]: Starting Standalone HP 8D87 automatic fan controller...
+Sep 07 00:40:49 laptop hp_fan_control.py[517180]: 00:40:49 WARNING APPLY mode; board=8D87 curves=hp-vibrance-stx-n22x9-performance hp_hwmon=/sys/class/hwmon/hwmon8 log=/var/log/hp-fan-control/hp-fan-control-20260907-004049.csv
+Sep 07 00:40:49 laptop systemd[1]: Started Standalone HP 8D87 automatic fan controller.
+Sep 07 00:40:49 laptop hp_fan_control.py[517180]: 00:40:49 INFO state=bios-auto profile=performance CPU= 49.4 GPU= 46.0 GPUW=   7.0 IR= 39.0 ACPI=  n/a control= 49.4 winner=-    request=  - (    -%) actual=2/0 fans=0/0
+Sep 07 00:41:20 laptop hp_fan_control.py[517180]: 00:41:20 INFO state=bios-auto profile=performance CPU= 48.6 GPU= 46.0 GPUW=   7.2 IR= 39.0 ACPI=  n/a control= 48.9 winner=-    request=  - (    -%) actual=2/0 fans=0/0
+Sep 07 00:41:51 laptop hp_fan_control.py[517180]: 00:41:51 INFO state=manual    profile=performance CPU= 64.9 GPU= 48.0 GPUW=   7.3 IR= 39.0 ACPI=  n/a control= 64.9 winner=cpu  request= 85 ( 33.3%) actual=1/0 fans=0/0
+Sep 07 00:42:22 laptop hp_fan_control.py[517180]: 00:42:22 INFO state=manual    profile=performance CPU= 76.2 GPU= 50.0 GPUW=   7.0 IR= 39.0 ACPI=  n/a control= 76.2 winner=cpu  request=106 ( 41.6%) actual=1/102 fans=2400/2600
+Sep 07 00:42:52 laptop hp_fan_control.py[517180]: 00:42:52 INFO state=manual    profile=performance CPU= 76.1 GPU= 50.0 GPUW=   7.0 IR= 39.0 ACPI=  n/a control= 76.1 winner=cpu  request=106 ( 41.6%) actual=1/102 fans=2400/2600
+Sep 07 00:42:58 laptop systemd[1]: hp-fan-control.service: Sent signal SIGKILL to main process 517180 (python3) on client request.
+Sep 07 00:42:58 laptop systemd[1]: hp-fan-control.service: Main process exited, code=killed, status=9/KILL
+Sep 07 00:42:58 laptop hp_fan_control.py[520606]: 00:42:58 INFO firmware Auto verified; fans=2400/2600
+Sep 07 00:42:58 laptop systemd[1]: hp-fan-control.service: Failed with result 'signal'.
+Sep 07 00:42:58 laptop systemd[1]: hp-fan-control.service: Consumed 3.815s CPU time over 2min 8.793s wall clock time, 36.9M memory peak.
+Sep 07 00:43:03 laptop systemd[1]: hp-fan-control.service: Scheduled restart job, restart counter is at 1.
+Sep 07 00:43:03 laptop systemd[1]: Starting Standalone HP 8D87 automatic fan controller...
+Sep 07 00:43:03 laptop hp_fan_control.py[520781]: 00:43:03 WARNING APPLY mode; board=8D87 curves=hp-vibrance-stx-n22x9-performance hp_hwmon=/sys/class/hwmon/hwmon8 log=/var/log/hp-fan-control/hp-fan-control-20260907-004303.csv
+Sep 07 00:43:03 laptop systemd[1]: Started Standalone HP 8D87 automatic fan controller.
+Sep 07 00:43:04 laptop hp_fan_control.py[520781]: 00:43:04 INFO state=manual    profile=performance CPU= 76.4 GPU= 50.0 GPUW=   7.0 IR= 39.0 ACPI=  n/a control= 76.4 winner=cpu  request=106 ( 41.6%) actual=1/0 fans=0/0
+Sep 07 00:43:34 laptop hp_fan_control.py[520781]: 00:43:34 INFO state=manual    profile=performance CPU= 76.8 GPU= 50.0 GPUW=   7.0 IR= 39.0 ACPI=  n/a control= 77.0 winner=cpu  request=106 ( 41.6%) actual=1/102 fans=2400/2600
+Sep 07 00:44:04 laptop hp_fan_control.py[520781]: 00:44:04 INFO state=manual    profile=performance CPU= 49.5 GPU= 47.0 GPUW=   7.3 IR= 39.0 ACPI=  n/a control= 64.8 winner=cpu  request= 89 ( 34.9%) actual=1/85 fans=2000/2200
+Sep 07 00:44:35 laptop hp_fan_control.py[520781]: 00:44:35 INFO state=manual    profile=performance CPU= 47.5 GPU= 45.0 GPUW=   7.1 IR= 39.0 ACPI=  n/a control= 52.2 winner=cpu  request= 81 ( 31.8%) actual=1/76 fans=1800/2000
+Sep 07 00:44:36 laptop hp_fan_control.py[520781]: 00:44:36 INFO restoring firmware Auto: temperature returned below release threshold
+Sep 07 00:44:36 laptop hp_fan_control.py[520781]: 00:44:36 INFO state=bios-auto profile=performance CPU= 47.2 GPU= 45.0 GPUW=   7.2 IR= 39.0 ACPI=  n/a control= 51.9 winner=-    request=  - (    -%) actual=2/76 fans=1800/2000
+Sep 07 00:45:06 laptop hp_fan_control.py[520781]: 00:45:06 INFO state=bios-auto profile=performance CPU= 48.1 GPU= 45.0 GPUW=   7.1 IR= 39.0 ACPI=  n/a control= 49.1 winner=-    request=  - (    -%) actual=2/0 fans=0/0
+Sep 07 00:45:30 laptop systemd[1]: hp-fan-control.service: Sent signal SIGSTOP to main process 520781 (python3) on client request.
+Sep 07 00:45:45 laptop systemd[1]: hp-fan-control.service: Watchdog timeout (limit 15s)!
+Sep 07 00:45:45 laptop systemd[1]: hp-fan-control.service: Killing process 520781 (python3) with signal SIGKILL.
+Sep 07 00:45:45 laptop systemd[1]: hp-fan-control.service: Main process exited, code=killed, status=9/KILL
+Sep 07 00:45:45 laptop hp_fan_control.py[525031]: 00:45:45 INFO firmware Auto verified; fans=0/0
+Sep 07 00:45:45 laptop systemd[1]: hp-fan-control.service: Failed with result 'watchdog'.
+Sep 07 00:45:45 laptop systemd[1]: hp-fan-control.service: Consumed 4.254s CPU time over 2min 47.103s wall clock time, 36.3M memory peak.
+Sep 07 00:45:50 laptop systemd[1]: hp-fan-control.service: Scheduled restart job, restart counter is at 2.
+Sep 07 00:45:50 laptop systemd[1]: Starting Standalone HP 8D87 automatic fan controller...
+Sep 07 00:45:50 laptop hp_fan_control.py[525141]: 00:45:50 WARNING APPLY mode; board=8D87 curves=hp-vibrance-stx-n22x9-performance hp_hwmon=/sys/class/hwmon/hwmon8 log=/var/log/hp-fan-control/hp-fan-control-20260907-004550.csv
+Sep 07 00:45:50 laptop systemd[1]: Started Standalone HP 8D87 automatic fan controller.
+Sep 07 00:45:50 laptop hp_fan_control.py[525141]: 00:45:50 INFO state=bios-auto profile=performance CPU= 49.5 GPU= 46.0 GPUW=   7.1 IR= 39.0 ACPI=  n/a control= 49.5 winner=-    request=  - (    -%) actual=2/0 fans=0/0
+Sep 07 00:46:21 laptop hp_fan_control.py[525141]: 00:46:21 INFO state=bios-auto profile=performance CPU= 50.0 GPU= 46.0 GPUW=   7.3 IR= 39.0 ACPI=  n/a control= 50.1 winner=-    request=  - (    -%) actual=2/0 fans=0/0
+Sep 07 00:46:51 laptop hp_fan_control.py[525141]: 00:46:51 INFO state=bios-auto profile=performance CPU= 49.8 GPU= 46.0 GPUW=   7.2 IR= 39.0 ACPI=  n/a control= 50.5 winner=-    request=  - (    -%) actual=2/93 fans=2200/2400
+Sep 07 00:47:21 laptop hp_fan_control.py[525141]: 00:47:21 INFO state=bios-auto profile=performance CPU= 47.8 GPU= 44.0 GPUW=   7.0 IR= 39.0 ACPI=  n/a control= 48.9 winner=-    request=  - (    -%) actual=2/93 fans=2200/2400
+Sep 07 00:47:39 laptop systemd[1]: Stopping Standalone HP 8D87 automatic fan controller...
+Sep 07 00:47:39 laptop hp_fan_control.py[525141]: 00:47:39 INFO received signal 15
+Sep 07 00:47:40 laptop hp_fan_control.py[528176]: 00:47:40 INFO firmware Auto verified; fans=2200/2400
+Sep 07 00:47:40 laptop systemd[1]: hp-fan-control.service: Deactivated successfully.
+Sep 07 00:47:40 laptop systemd[1]: Stopped Standalone HP 8D87 automatic fan controller.
+Sep 07 00:47:40 laptop systemd[1]: hp-fan-control.service: Consumed 3.110s CPU time over 1min 55.318s wall clock time, 36.6M memory peak.
