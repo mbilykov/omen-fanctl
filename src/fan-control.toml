@@ -9,10 +9,17 @@ required_profile = "performance"
 sample_interval_s = 1.0
 control_interval_s = 5.0
 
-# Below activation temperature the firmware remains in Auto. Once software
-# control is active it returns to Auto only after cooling below release_temp_c.
+# Below activation temperature the firmware remains in Auto. The release value
+# is an upper hysteresis limit; fan_stop_temp_c below is the stricter CPU/GPU
+# condition for returning active software control to Auto.
 activation_temp_c = 60.0
 release_temp_c = 52.0
+
+# Manual mode cannot reproduce the firmware's zero-RPM behavior: the lowest
+# supported software curve level still spins both fans. Hand control to Auto as
+# soon as raw CPU/GPU temperatures are at or below this threshold. EWMA does
+# not delay this decision; the post-Auto guard covers any thermal rebound.
+fan_stop_temp_c = 45.0
 
 # This firmware can stop both fans for roughly 90-120 seconds after Manual ->
 # Auto. After that transition, keep monitoring temperatures for three minutes

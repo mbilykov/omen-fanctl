@@ -20,6 +20,8 @@ the system service before checking the dry-run output.
   highest resulting target. `acpitz` remains an opt-in diagnostic proxy only.
 - Uses raw temperature for prompt ramp-up, and asymmetric EWMA plus the HP
   high/low thresholds for a slower ramp-down.
+- Uses raw CPU/GPU temperatures, not the slow falling EWMA, for the final
+  fan-stop handoff at `fan_stop_temp_c` (45 C by default).
 - Leaves BIOS Auto active while cool. Outside Performance, a controller that
   was already in Auto sleeps immediately; a Manual/Max controller first keeps
   cooling until the release thresholds are reached, selects Auto, and monitors
@@ -113,9 +115,11 @@ depending on desktop-specific hooks. Its fan controller is active only in
 Performance. Under any other profile it blocks in `poll(POLLPRI)` only when
 firmware Auto already owns the fans. If a profile change occurs during Manual
 or Max, it enters `handoff`, continues reading CPU/GPU/IR and controlling the
-fans, and selects Auto as soon as every active temperature reaches its release
-threshold. Because the tested F.07 firmware can then stop both fans for roughly
-90-120 seconds, the daemon enters `auto-guard` and continues sampling for
+fans, and selects Auto as soon as raw CPU/GPU temperatures reach
+`fan_stop_temp_c`. An IR source that activated control must also reach its own
+lower release threshold. Because the tested F.07 firmware can then stop both
+fans for roughly 90-120 seconds, the daemon enters `auto-guard` and continues
+sampling for
 `auto_guard_s` (180 seconds by default). New heat immediately re-enters Manual;
 after the next cooldown, Auto starts a fresh guard. Profile notifications remain
 effective throughout Manual, `handoff`, and `auto-guard`; only a completed guard

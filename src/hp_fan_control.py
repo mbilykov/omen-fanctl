@@ -291,6 +291,7 @@ class Settings:
     include_amd_gpu: bool
     include_nvidia_gpu: bool
     curve: Curve
+    fan_stop_temp_c: float = 45.0
     ir_release_hysteresis_c: float = 1.0
     auto_guard_s: float = 180.0
     include_hp_wmi_ir: bool = True
@@ -340,6 +341,7 @@ class Settings:
                 control_interval_s=float(daemon.get("control_interval_s", 5.0)),
                 activation_temp_c=float(daemon.get("activation_temp_c", 65.0)),
                 release_temp_c=float(daemon.get("release_temp_c", 55.0)),
+                fan_stop_temp_c=float(daemon.get("fan_stop_temp_c", 45.0)),
                 critical_temp_c=float(daemon.get("critical_temp_c", 92.0)),
                 critical_release_temp_c=float(
                     daemon.get("critical_release_temp_c", 82.0)
@@ -416,6 +418,10 @@ class Settings:
             raise ConfigurationError("control_interval_s must be >= sample_interval_s")
         if self.release_temp_c >= self.activation_temp_c:
             raise ConfigurationError("release_temp_c must be below activation_temp_c")
+        if not 0 < self.fan_stop_temp_c < self.activation_temp_c:
+            raise ConfigurationError(
+                "fan_stop_temp_c must be positive and below activation_temp_c"
+            )
         if self.critical_release_temp_c >= self.critical_temp_c:
             raise ConfigurationError(
                 "critical_release_temp_c must be below critical_temp_c"
@@ -844,7 +850,6 @@ class Controller:
     def _cool_enough_for_auto(
         self,
         snapshot: TemperatureSnapshot,
-        filtered: dict[str, float | None],
     ) -> bool:
         raw = {
             "cpu": snapshot.cpu,
@@ -852,16 +857,18 @@ class Controller:
             "ir": snapshot.ir,
             "acpi": snapshot.acpi,
         }
-        for name, filtered_value in filtered.items():
-            raw_value = raw[name]
-            if raw_value is None or filtered_value is None:
+        for name, raw_value in raw.items():
+            if raw_value is None:
                 continue
             # IR/acpitz use much lower curve temperatures than CPU/GPU. Do not
             # let a cool sensor that never activated control prevent a return
             # to firmware Auto after another sensor caused the Manual cycle.
             if name in ("ir", "acpi") and name not in self.activated_sensors:
                 continue
-            release = self.settings.release_temp_c
+            release = min(
+                self.settings.release_temp_c,
+                self.settings.fan_stop_temp_c,
+            )
             if name in ("ir", "acpi"):
                 curve = self.settings.curve_for(name)
                 activation = min(
@@ -871,7 +878,7 @@ class Controller:
                     release,
                     activation - self.settings.ir_release_hysteresis_c,
                 )
-            if raw_value > release or filtered_value > release:
+            if raw_value > release:
                 return False
         return True
 
@@ -1238,10 +1245,8 @@ class Controller:
                     requested = None
                     if auto_guard_active:
                         note = "monitoring firmware fan-stop window"
-                elif self.manual_active and self._cool_enough_for_auto(
-                    snapshot, filtered
-                ):
-                    reason = "temperatures returned below release thresholds"
+                elif self.manual_active and self._cool_enough_for_auto(snapshot):
+                    reason = "raw temperatures reached fan-stop thresholds"
                     if outside_required_profile:
                         reason += f" for profile {profile}"
                     self._restore_auto(reason, now)

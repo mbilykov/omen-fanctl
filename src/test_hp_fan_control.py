@@ -239,13 +239,11 @@ class ControlDecisionTests(unittest.TestCase):
         self.assertFalse(
             self.controller._cool_enough_for_auto(
                 TemperatureSnapshot(cpu=40.0, gpu=40.0, acpi=None, ir=42.0),
-                {"cpu": 40.0, "gpu": 40.0, "ir": 42.0, "acpi": None},
             )
         )
         self.assertTrue(
             self.controller._cool_enough_for_auto(
                 TemperatureSnapshot(cpu=41.0, gpu=41.0, acpi=None, ir=41.0),
-                {"cpu": 41.0, "gpu": 41.0, "ir": 41.0, "acpi": None},
             )
         )
 
@@ -260,21 +258,19 @@ class ControlDecisionTests(unittest.TestCase):
         self.controller.activated_sensors.add("cpu")
         self.assertTrue(
             self.controller._cool_enough_for_auto(
-                TemperatureSnapshot(cpu=51.0, gpu=50.0, acpi=None, ir=40.0),
-                {"cpu": 51.0, "gpu": 50.0, "ir": 40.0, "acpi": None},
+                TemperatureSnapshot(cpu=44.0, gpu=44.0, acpi=None, ir=40.0),
             )
         )
 
-    def test_does_not_restore_auto_while_raw_temperature_is_hot(self):
-        filtered = {"cpu": 51.0, "gpu": 50.0, "acpi": None}
+    def test_raw_fan_stop_threshold_controls_auto_handoff(self):
         self.assertFalse(
             self.controller._cool_enough_for_auto(
-                TemperatureSnapshot(70.0, 50.0, None), filtered
+                TemperatureSnapshot(46.0, 44.0, None)
             )
         )
         self.assertTrue(
             self.controller._cool_enough_for_auto(
-                TemperatureSnapshot(51.0, 50.0, None), filtered
+                TemperatureSnapshot(45.0, 45.0, None)
             )
         )
 
@@ -517,7 +513,7 @@ class ControllerLoopTests(unittest.TestCase):
                     "emergency_hold_s": 0.0,
                 }
             )
-            cool = TemperatureSnapshot(50, 50, None, None)
+            cool = TemperatureSnapshot(44, 44, None, None)
             hot = TemperatureSnapshot(70, 50, None, None)
             fan = FakeFan()
             fan.mode = 0
@@ -606,7 +602,7 @@ class ControllerLoopTests(unittest.TestCase):
             fan = FakeFan()
             fan.mode = 0
             sensors = Mock()
-            sensors.read.return_value = TemperatureSnapshot(50, 50, None, None)
+            sensors.read.return_value = TemperatureSnapshot(44, 44, None, None)
             controller = Controller(
                 settings=settings,
                 fan=fan,
