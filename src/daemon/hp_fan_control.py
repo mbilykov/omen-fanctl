@@ -19,13 +19,14 @@ import select
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import time
 import tomllib
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Iterable
+from typing import Iterable, TextIO
 
 
 LOG = logging.getLogger("hp-fan-control")
@@ -1315,17 +1316,51 @@ class Controller:
             self.profile_monitor.close()
 
 
-def acquire_lock(path: Path) -> object:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle = path.open("w", encoding="ascii")
+def acquire_lock(path: Path) -> TextIO:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(
+            path,
+            os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
+            0o600,
+        )
+    except OSError as exc:
+        raise HardwareError(f"cannot open lock {path}: {exc}") from exc
+
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid():
+            raise HardwareError(
+                f"lock must be a regular file owned by uid {os.geteuid()}: {path}"
+            )
+        os.fchmod(descriptor, 0o600)
+        handle = os.fdopen(descriptor, "r+", encoding="ascii")
+    except Exception:
+        os.close(descriptor)
+        raise
+
     try:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError as exc:
         handle.close()
         raise HardwareError(f"another controller holds {path}") from exc
-    handle.write(f"{os.getpid()}\n")
-    handle.flush()
+    except OSError as exc:
+        handle.close()
+        raise HardwareError(f"cannot acquire lock {path}: {exc}") from exc
+
+    try:
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"{os.getpid()}\n")
+        handle.flush()
+    except Exception:
+        handle.close()
+        raise
     return handle
+
+
+def dry_run_lock_path() -> Path:
+    return Path("/tmp") / f"hp-fan-control-dry-run-{os.geteuid()}.lock"
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
@@ -1554,7 +1589,7 @@ def main(argv: Iterable[str] | None = None) -> int:
 
         lock_path = Path("/run/hp-fan-control/control.lock")
         if not args.apply:
-            lock_path = Path("/tmp/hp-fan-control-dry-run.lock")
+            lock_path = dry_run_lock_path()
         # Keep the file object alive for the lifetime of main; closing it releases
         # the advisory lock.
         lock_handle = acquire_lock(lock_path)

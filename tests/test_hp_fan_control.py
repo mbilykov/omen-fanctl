@@ -2,6 +2,7 @@
 
 import os
 import select
+import stat
 import sys
 import tempfile
 import unittest
@@ -27,6 +28,8 @@ from hp_fan_control import (  # noqa: E402
     PlatformProfileMonitor,
     SystemdNotifier,
     TemperatureSnapshot,
+    acquire_lock,
+    dry_run_lock_path,
     ensure_failsafe_fan_state,
     hp_factory_performance_curves,
     hp_level_percent,
@@ -85,6 +88,134 @@ class ConversionTests(unittest.TestCase):
     def test_round_trip(self):
         for percent in (25, 35, 50, 75, 95):
             self.assertAlmostEqual(pwm_to_percent(percent_to_pwm(percent)), percent, delta=0.2)
+
+
+class LockTests(unittest.TestCase):
+    def test_wraps_lock_directory_creation_failure(self):
+        lock = Path("/unavailable/control.lock")
+
+        with (
+            patch.object(
+                Path,
+                "mkdir",
+                side_effect=PermissionError("permission denied"),
+            ),
+            self.assertRaisesRegex(HardwareError, "cannot open lock"),
+        ):
+            acquire_lock(lock)
+
+    def test_refuses_symlink_without_modifying_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            victim = directory / "victim"
+            victim.write_text("unchanged\n")
+            lock = directory / "control.lock"
+            lock.symlink_to(victim)
+
+            with self.assertRaisesRegex(HardwareError, "cannot open lock"):
+                acquire_lock(lock)
+
+            self.assertEqual(victim.read_text(), "unchanged\n")
+
+    def test_contended_lock_does_not_truncate_owner_pid(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lock = Path(temporary) / "control.lock"
+            owner = acquire_lock(lock)
+            expected = f"{os.getpid()}\n"
+            try:
+                self.assertEqual(lock.read_text(), expected)
+                self.assertEqual(lock.stat().st_mode & 0o777, 0o600)
+                with self.assertRaisesRegex(
+                    HardwareError, "another controller holds"
+                ):
+                    acquire_lock(lock)
+                self.assertEqual(lock.read_text(), expected)
+            finally:
+                owner.close()
+
+    def test_closes_handle_when_flock_fails(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lock = Path(temporary) / "control.lock"
+            real_fdopen = os.fdopen
+            handles = []
+
+            def capture_handle(*args, **kwargs):
+                handle = real_fdopen(*args, **kwargs)
+                handles.append(handle)
+                return handle
+
+            with (
+                patch("hp_fan_control.os.fdopen", side_effect=capture_handle),
+                patch(
+                    "hp_fan_control.fcntl.flock",
+                    side_effect=OSError("filesystem failure"),
+                ),
+                self.assertRaisesRegex(HardwareError, "cannot acquire lock"),
+            ):
+                acquire_lock(lock)
+
+            self.assertEqual(len(handles), 1)
+            self.assertTrue(handles[0].closed)
+
+    def test_closes_handle_when_lock_initialization_fails(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lock = Path(temporary) / "control.lock"
+            handle = Mock()
+            handle.write.side_effect = OSError("filesystem failure")
+
+            with (
+                patch("hp_fan_control.os.open", return_value=123),
+                patch(
+                    "hp_fan_control.os.fstat",
+                    return_value=SimpleNamespace(
+                        st_mode=0o100600,
+                        st_uid=os.geteuid(),
+                    ),
+                ),
+                patch("hp_fan_control.os.fchmod"),
+                patch("hp_fan_control.os.fdopen", return_value=handle),
+                patch("hp_fan_control.fcntl.flock"),
+                self.assertRaisesRegex(OSError, "filesystem failure"),
+            ):
+                acquire_lock(lock)
+
+            handle.close.assert_called_once_with()
+
+    def test_rejects_invalid_lock_metadata_and_closes_descriptor(self):
+        invalid_metadata = (
+            SimpleNamespace(
+                st_mode=stat.S_IFREG | 0o600,
+                st_uid=os.geteuid() + 1,
+            ),
+            SimpleNamespace(
+                st_mode=stat.S_IFIFO | 0o600,
+                st_uid=os.geteuid(),
+            ),
+        )
+
+        for metadata in invalid_metadata:
+            with self.subTest(mode=metadata.st_mode, uid=metadata.st_uid):
+                with tempfile.TemporaryDirectory() as temporary:
+                    lock = Path(temporary) / "control.lock"
+                    with (
+                        patch("hp_fan_control.os.open", return_value=123),
+                        patch("hp_fan_control.os.fstat", return_value=metadata),
+                        patch("hp_fan_control.os.close") as close,
+                        self.assertRaisesRegex(
+                            HardwareError,
+                            "lock must be a regular file owned by uid",
+                        ),
+                    ):
+                        acquire_lock(lock)
+
+                    close.assert_called_once_with(123)
+
+    def test_dry_run_lock_is_scoped_to_effective_uid(self):
+        with patch("hp_fan_control.os.geteuid", return_value=1234):
+            self.assertEqual(
+                dry_run_lock_path(),
+                Path("/tmp/hp-fan-control-dry-run-1234.lock"),
+            )
 
 
 class EwmaTests(unittest.TestCase):
