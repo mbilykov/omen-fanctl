@@ -53,6 +53,7 @@ if systemctl cat hp-fan-control.service >/dev/null 2>&1; then
         if [[ -e /run/hp-fan-control/auto-guard ]]; then
             echo "ERROR: refusing to stop the existing service during Auto guard" >&2
             echo "Wait for 'state=sleeping', then retry." >&2
+            echo "Monitor with: journalctl -fu hp-fan-control.service" >&2
             exit 1
         fi
         HP_HWMON=
