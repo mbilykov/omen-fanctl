@@ -37,8 +37,9 @@ emergency_hold_s = 10.0
 # Extra temperature applied only when considering a PWM decrease.
 decrease_hysteresis_c = 3.0
 
-# WMI IR is reported in whole degrees. Once IR itself activates its curve, it
-# releases the Manual cycle one degree below the first IR curve point (42 C).
+# WMI IR is reported in whole degrees. IR activates on the first curve step
+# above minimum_manual_percent (44 C for the factory curve), then releases the
+# Manual cycle one degree below that activation point (43 C).
 ir_release_hysteresis_c = 1.0
 
 # PWM rate limits per control update. A critical-temperature transition ignores

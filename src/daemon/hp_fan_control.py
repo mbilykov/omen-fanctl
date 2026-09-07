@@ -854,6 +854,17 @@ class Controller:
             result[name] = None if value is None else self.filters[name].update(value)
         return result
 
+    def _activation_threshold(self, sensor: str) -> float:
+        if sensor != "ir":
+            return self.settings.activation_temp_c
+
+        curve = self.settings.curve_for(sensor)
+        manual_floor = percent_to_pwm(self.settings.minimum_manual_percent)
+        for temperature, target in zip(curve.temperatures, curve.pwm_percent):
+            if percent_to_pwm(target) > manual_floor:
+                return temperature
+        return float("inf")
+
     def _cool_enough_for_auto(
         self,
         snapshot: TemperatureSnapshot,
@@ -871,13 +882,10 @@ class Controller:
                 self.settings.fan_stop_temp_c,
             )
             if name == "ir":
-                curve = self.settings.curve_for(name)
-                activation = min(
-                    self.settings.activation_temp_c, curve.temperatures[0]
-                )
                 release = min(
                     release,
-                    activation - self.settings.ir_release_hysteresis_c,
+                    self._activation_threshold(name)
+                    - self.settings.ir_release_hysteresis_c,
                 )
             if raw_value > release:
                 return False
@@ -888,14 +896,7 @@ class Controller:
             name
             for name, value in snapshot.control_temperatures().items()
             if value is not None
-            and value >= (
-                min(
-                    self.settings.activation_temp_c,
-                    self.settings.curve_for(name).temperatures[0],
-                )
-                if name == "ir"
-                else self.settings.activation_temp_c
-            )
+            and value >= self._activation_threshold(name)
         }
 
     def _should_activate(self, snapshot: TemperatureSnapshot) -> bool:

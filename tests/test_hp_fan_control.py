@@ -215,22 +215,24 @@ class ControlDecisionTests(unittest.TestCase):
         self.assertEqual(self.controller.winning_sensor, "ir")
         self.assertAlmostEqual(pwm_to_percent(pwm), hp_level_percent(28), delta=0.3)
 
-    def test_ir_uses_its_first_curve_point_for_activation(self):
+    def test_ir_activates_at_first_curve_step_above_manual_floor(self):
         self.controller.settings = Settings(
             **{
                 **self.controller.settings.__dict__,
                 "curves": hp_factory_performance_curves(),
                 "curve_source": "test-factory",
+                "minimum_manual_percent": hp_level_percent(19),
             }
         )
+        self.assertEqual(self.controller._activation_threshold("ir"), 44.0)
         self.assertFalse(
             self.controller._should_activate(
-                TemperatureSnapshot(cpu=55.0, gpu=40.0, acpi=None, ir=41.0)
+                TemperatureSnapshot(cpu=55.0, gpu=40.0, acpi=None, ir=43.0)
             )
         )
         self.assertTrue(
             self.controller._should_activate(
-                TemperatureSnapshot(cpu=55.0, gpu=40.0, acpi=None, ir=42.0)
+                TemperatureSnapshot(cpu=55.0, gpu=40.0, acpi=None, ir=44.0)
             )
         )
 
@@ -240,17 +242,18 @@ class ControlDecisionTests(unittest.TestCase):
                 **self.controller.settings.__dict__,
                 "curves": hp_factory_performance_curves(),
                 "curve_source": "test-factory",
+                "minimum_manual_percent": hp_level_percent(19),
             }
         )
         self.controller.activated_sensors.add("ir")
         self.assertFalse(
             self.controller._cool_enough_for_auto(
-                TemperatureSnapshot(cpu=40.0, gpu=40.0, acpi=None, ir=42.0),
+                TemperatureSnapshot(cpu=40.0, gpu=40.0, acpi=None, ir=44.0),
             )
         )
         self.assertTrue(
             self.controller._cool_enough_for_auto(
-                TemperatureSnapshot(cpu=41.0, gpu=41.0, acpi=None, ir=41.0),
+                TemperatureSnapshot(cpu=41.0, gpu=41.0, acpi=None, ir=43.0),
             )
         )
 
@@ -265,7 +268,7 @@ class ControlDecisionTests(unittest.TestCase):
         self.controller.activated_sensors.add("cpu")
         self.assertTrue(
             self.controller._cool_enough_for_auto(
-                TemperatureSnapshot(cpu=44.0, gpu=44.0, acpi=None, ir=40.0),
+                TemperatureSnapshot(cpu=44.0, gpu=44.0, acpi=None, ir=43.0),
             )
         )
 
@@ -467,6 +470,38 @@ class SequenceSensors:
 
 
 class ControllerLoopTests(unittest.TestCase):
+    def test_ir_manual_floor_bucket_stays_in_firmware_auto(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "platform_profile"
+            profile.write_text("performance\n")
+            settings = Settings.load(CONFIG_PATH)
+            settings = Settings(
+                **{
+                    **settings.__dict__,
+                    "sample_interval_s": 0.01,
+                    "control_interval_s": 0.01,
+                }
+            )
+            sensors = Mock()
+            sensors.read.return_value = TemperatureSnapshot(
+                cpu=44.0, gpu=44.0, acpi=None, ir=43.0
+            )
+            fan = FakeFan()
+            controller = Controller(
+                settings=settings,
+                fan=fan,
+                sensors=sensors,
+                apply=True,
+                duration_s=0.025,
+                csv_log=CsvLog(None),
+                profile_path=profile,
+            )
+
+            controller.run()
+
+        self.assertEqual(fan.mode, AUTO_MODE)
+        self.assertEqual(fan.actions, [])
+
     def test_acpi_proxy_above_critical_cannot_leave_firmware_auto(self):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "platform_profile"

@@ -197,8 +197,9 @@ work run only when required.
    handoff. It blocks on the kernel `platform_profile` notification instead of
    polling the profile file.
 2. In Performance, firmware Auto remains active while temperatures are below
-   the activation thresholds. CPU and GPU control activate at 60 C by default;
-   the optional IR curve activates at 42 C.
+   the activation thresholds. CPU and GPU control activate at 60 C by default.
+   Optional IR control activates at the first curve step above the minimum
+   Manual PWM, 44 C with the supplied factory curve.
 3. Raw temperatures permit immediate fan-speed increases. Asymmetric EWMA,
    curve hysteresis, and PWM rate limits prevent rapid decreases or oscillation.
 4. CPU, GPU, and IR are evaluated against independent curves. The highest fan
@@ -209,7 +210,7 @@ work run only when required.
    (`pwm1_enable=0`, PWM 255).
 6. Manual control returns to firmware Auto when raw CPU and GPU temperatures
    are at or below `fan_stop_temp_c` (45 C by default). If IR activated the
-   cycle, it must also fall to its release threshold, 41 C by default.
+   cycle, it must also fall to its release threshold, 43 C by default.
 7. After selecting Auto, `auto-guard` monitors the complete observed firmware
    fan-stop window for 180 seconds. New heat immediately restores Manual
    control. A profile change during this interval does not cancel protection.
