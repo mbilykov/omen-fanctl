@@ -42,8 +42,9 @@ decrease_hysteresis_c = 3.0
 # Manual cycle one degree below that activation point (43 C).
 ir_release_hysteresis_c = 1.0
 
-# PWM rate limits per control update. A critical-temperature transition ignores
-# the rise limit and immediately requests maximum.
+# PWM rate limits per applied command. Rising commands may be applied on every
+# sample; reductions remain limited to control_interval_s. A critical-temperature
+# transition ignores the rise limit and immediately requests maximum.
 max_rise_percent_per_update = 20.0
 max_fall_percent_per_update = 8.0
 minimum_manual_percent = 31.6667

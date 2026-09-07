@@ -303,7 +303,7 @@ class ControlDecisionTests(unittest.TestCase):
     def test_raw_temperature_bypasses_ewma_lag_on_rise(self):
         pwm, hottest = self.controller._desired_pwm(
             {"cpu": 55.0, "gpu": 50.0, "acpi": 50.0},
-            raw_control_hottest=80.0,
+            raw_temperatures={"cpu": 80.0, "gpu": 50.0, "acpi": 50.0},
         )
         self.assertEqual(hottest, 80)
         self.assertAlmostEqual(pwm_to_percent(pwm), 75, delta=0.2)
@@ -451,7 +451,6 @@ class ControlDecisionTests(unittest.TestCase):
 
         pwm, hottest = self.controller._desired_pwm(
             {"cpu": 44.0, "gpu": 44.0, "ir": None, "acpi": 95.0},
-            snapshot.raw_control_hottest,
             {"cpu": 44.0, "gpu": 44.0, "ir": None, "acpi": 95.0},
         )
         self.assertEqual(hottest, 44.0)

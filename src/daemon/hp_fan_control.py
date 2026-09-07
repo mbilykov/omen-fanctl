@@ -1004,7 +1004,6 @@ class Controller:
     def _desired_pwm(
         self,
         filtered: dict[str, float | None],
-        raw_control_hottest: float | None = None,
         raw_temperatures: dict[str, float | None] | None = None,
     ) -> tuple[int, float]:
         temperatures = [
@@ -1016,20 +1015,16 @@ class Controller:
             raise HardwareError("no valid temperature is available for fan control")
         # Raw temperature gives prompt fan ramp-up. The filtered value remains
         # higher during cooldown and therefore controls the slower ramp-down.
-        hottest = max(temperatures)
-        if raw_control_hottest is not None:
-            hottest = max(hottest, raw_control_hottest)
-        if raw_control_hottest is not None and raw_temperatures is None:
-            raw_temperatures = {
-                max(
-                    (
-                        name
-                        for name, value in filtered.items()
-                        if name in CONTROL_SENSORS and value is not None
-                    ),
-                    key=lambda name: filtered[name],
-                ): raw_control_hottest
-            }
+        raw_control_temperatures = (
+            []
+            if raw_temperatures is None
+            else [
+                value
+                for name, value in raw_temperatures.items()
+                if name in CONTROL_SENSORS and value is not None
+            ]
+        )
+        hottest = max(temperatures + raw_control_temperatures)
 
         targets: dict[str, float] = {}
         for name, filtered_temperature in filtered.items():
@@ -1373,7 +1368,6 @@ class Controller:
                 else:
                     candidate, hottest = self._desired_pwm(
                         filtered,
-                        snapshot.raw_control_hottest,
                         {
                             **snapshot.control_temperatures(),
                             "acpi": snapshot.acpi,
