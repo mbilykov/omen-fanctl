@@ -1,5 +1,5 @@
 [daemon]
-# This prototype refuses to run on any unlisted system board.
+# This daemon refuses to run on any unlisted system board.
 allowed_boards = ["8D87"]
 required_profile = "performance"
 
@@ -54,8 +54,9 @@ fall_alpha = 0.05
 
 [sensors]
 # Optional experimental extension providing Gaming Hub's IR source on 8D87.
-# When the read-only probe is absent or invalid, the daemon logs one warning
-# and continues with CPU/GPU. IR joins automatically whenever it is available.
+# When the optional procfs interface is absent or invalid, the daemon logs one
+# warning and continues with CPU/GPU. IR joins automatically whenever it is
+# available.
 include_hp_wmi_ir = true
 hp_wmi_sensors_path = "/proc/hp_wmi_sensors"
 
@@ -69,7 +70,7 @@ include_nvidia_gpu = true
 [curves]
 # Extracted from HP.Omen.Core.Common.dll resource
 # PowerControl.JSON.Vibrance_STX_N22X9.json, version 20250930. CPU, GPU, and
-# IR use independent stepped tables. IR is read from index 0 of the probe's
-# /proc/hp_wmi_sensors output. Normal factory Performance tops out at HP fan
+# IR use independent stepped tables. IR is read from index 0 of the optional
+# /proc/hp_wmi_sensors interface. Normal factory Performance tops out at HP fan
 # level 47/60 (~78.3%); the daemon's 92 C emergency remains 60/60 (100%).
 preset = "hp-vibrance-stx-n22x9-performance"

@@ -3,13 +3,4 @@ __pycache__/
 *.py[cod]
 
 # Locally built CUDA helper
-/src/cuda_gpu_stress
-
-# Out-of-tree Linux kernel module build products
-/src/hp-wmi-sensor-probe/*.ko
-/src/hp-wmi-sensor-probe/*.o
-/src/hp-wmi-sensor-probe/*.mod
-/src/hp-wmi-sensor-probe/*.mod.c
-/src/hp-wmi-sensor-probe/Module.symvers
-/src/hp-wmi-sensor-probe/modules.order
-/src/hp-wmi-sensor-probe/.*.cmd
+/utils/cuda_gpu_stress

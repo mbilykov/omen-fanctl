@@ -1,4 +1,4 @@
-# Feature request: automatic software fan curves when BIOS Auto under-cools in Performance mode
+# Hardware research: BIOS Auto under-cooling in Performance mode
 
 ## TL;DR
 
@@ -17,8 +17,8 @@
 - A standalone Linux prototype reproduced the factory curve through `hp-wmi`:
   fan speed increased to about 4,600/4,800 RPM and sustained CPU temperature
   stabilized around 85.5 C instead of the firmware-Auto result.
-- Proposal: add an opt-in, safety-gated automatic curve controller to OmenCore,
-  initially for explicitly validated systems.
+- Result: an opt-in, safety-gated standalone controller for the explicitly
+  validated `8D87` system.
 
 ## System and Linux reproduction
 
@@ -240,8 +240,7 @@ maps to GPU `49`, while CPU `60` maps to GPU `58`.
 
 ## Standalone Linux prototype
 
-An independent Python prototype uses only the `hp-wmi` hwmon ABI; it neither
-calls nor links to OmenCore. It implements:
+An independent Python daemon uses only the `hp-wmi` hwmon ABI. It implements:
 
 - the extracted CPU/GPU/IR factory tables and asymmetric coefficients;
 - maximum-of-available-sensors selection;
@@ -341,7 +340,8 @@ under an unusually heavy synthetic load, not a failure to command fans.
 A GPU-only run advanced the GPU target from level 19 to 28 at 74 C. CPU still
 became the final controller because CUDA host overhead and shared cooling
 raised it to 87.5 C. This exposed a brief Auto-return race while raw CPU was hot
-but EWMA was cool; cleanup now requires both temperatures below release.
+but EWMA was cool. The daemon now uses raw temperatures for the final fan-stop
+handoff and monitors the subsequent firmware Auto window for renewed heat.
 
 A power-instrumented repeat measured 174.6 W maximum dGPU draw, with 111
 samples at or above 170 W and 119 at or above 160 W. `power.limit` was not
@@ -353,7 +353,7 @@ manual request and maximum speed could take roughly 20 seconds from pre-spin.
 A temperature-only controller cannot eliminate an instantaneous synthetic
 transient, but it removes the sustained firmware-Auto ceiling.
 
-## Proposed OmenCore feature
+## Standalone daemon design
 
 Add an opt-in automatic controller with this control path:
 
@@ -363,8 +363,9 @@ Add an opt-in automatic controller with this control path:
 3. Apply configurable asymmetric smoothing and per-sensor rise/fall curves.
 4. Select the highest request and map physical fans through `0x2f`.
 5. Write only changed levels at a conservative cadence; allow immediate rises.
-6. Enable only for selected profiles and restore Auto on exit, profile change,
-   suspend, service failure, reboot, or shutdown.
+6. Enable only for selected profiles, guard the unsafe Manual-to-Auto firmware
+   window, and select maximum fans when a process failure prevents a safe
+   handoff.
 
 Daemon-enforced safety invariants should include strict curve validation,
 model allowlisting, a raw critical-temperature override, sensor-loss handling,
@@ -372,13 +373,13 @@ a watchdog/fail-open path, rate limiting, and clear telemetry. Curve files must
 not disable them, and userspace control does not replace hardware throttling or
 shutdown.
 
-The same backend can support custom curves through a small privileged daemon
-and unprivileged CLI/TUI. Human-readable configuration should support
+The daemon can support custom curves and a future unprivileged CLI/TUI.
+Human-readable configuration should support
 per-profile CPU/GPU/IR curves, import/export, live raw/filtered temperatures,
 the winning curve, mapped levels/RPM, and offline CSV replay. Invalid changes
 must be rejected atomically while the last known-good configuration remains
-active. The standalone prototype already supports separate curves and the
-factory preset in TOML; it is evidence, not proposed OmenCore code.
+active. The standalone daemon already supports separate curves and the factory
+preset in TOML.
 
 ## Applicability beyond `8D87`
 
@@ -405,16 +406,14 @@ Kernel references:
 Linux 7.1 answers the refresh question explicitly: HP firmware expires its
 user-defined fan state after 120 seconds, while `hp-wmi` re-applies the cached
 Max/Manual state every 90 seconds. The standalone daemon therefore uses a
-separate systemd recovery path for process failures: `ExecStopPost` restores
-Auto after an unexpected exit or `SIGKILL`, a 15-second service watchdog turns
-a stuck loop into that same recovery path, and only the firmware timeout is
-relied upon when the kernel itself can no longer execute its keep-alive work.
+separate systemd recovery path for process failures: `ExecStopPost` selects
+maximum fans after an unsafe exit or `SIGKILL`, a 15-second service watchdog
+turns a stuck loop into that same recovery path, and only the firmware timeout
+is relied upon when the kernel itself can no longer execute its keep-alive work.
 
 ## Remaining questions
 
 - What `0x2f` variants exist on other supported generations?
-- Can OmenCore already expose the full per-fan mapping, or is a backend API
-  needed?
 - Should curves be profile-indexed or run only in Performance?
 - Actuator/restoration behavior and mappings remain unvalidated outside `8D87`.
 

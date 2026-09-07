@@ -14,7 +14,8 @@ usage() {
 Usage: sudo ./install.sh [--enable-now]
 
 Installs the daemon, default configuration, documentation, and systemd unit.
-The optional WMI IR probe is not installed. Existing configuration is kept.
+The optional WMI IR procfs provider is not installed. Existing configuration
+is kept.
 EOF
 }
 
@@ -38,8 +39,8 @@ fi
 
 for required in \
     "$SCRIPT_DIR/src/hp_fan_control.py" \
-    "$SCRIPT_DIR/src/fan-control.toml" \
-    "$SCRIPT_DIR/src/README.md" \
+    "$SCRIPT_DIR/config/fan-control.toml" \
+    "$SCRIPT_DIR/README.md" \
     "$SCRIPT_DIR/systemd/hp-fan-control.service" \
     "$SCRIPT_DIR/systemd/hp-fan-control.logrotate"; do
     if [[ ! -f "$required" ]]; then
@@ -84,7 +85,7 @@ fi
 
 install -D -m 0755 "$SCRIPT_DIR/src/hp_fan_control.py" \
     "$INSTALL_DIR/hp_fan_control.py"
-install -D -m 0644 "$SCRIPT_DIR/src/README.md" "$DOC_DIR/README.md"
+install -D -m 0644 "$SCRIPT_DIR/README.md" "$DOC_DIR/README.md"
 install -D -m 0644 "$SCRIPT_DIR/systemd/hp-fan-control.service" "$UNIT_PATH"
 install -D -m 0644 "$SCRIPT_DIR/systemd/hp-fan-control.logrotate" \
     "$LOGROTATE_PATH"
@@ -92,7 +93,7 @@ install -D -m 0644 "$SCRIPT_DIR/systemd/hp-fan-control.logrotate" \
 if [[ -e "$CONFIG_DIR/fan-control.toml" ]]; then
     echo "Keeping existing configuration: $CONFIG_DIR/fan-control.toml"
 else
-    install -D -m 0644 "$SCRIPT_DIR/src/fan-control.toml" \
+    install -D -m 0644 "$SCRIPT_DIR/config/fan-control.toml" \
         "$CONFIG_DIR/fan-control.toml"
 fi
 

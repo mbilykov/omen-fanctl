@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Experimental automatic fan controller for HP 8D87.
 
-This prototype uses the Linux hp-wmi hwmon/sysfs ABI for fan control and the
-read-only hp_wmi_sensor_probe procfs ABI for HP's IR temperature. It has no
-OmenCore runtime dependency. Writes are disabled unless --apply is explicitly
+This daemon uses the Linux hp-wmi hwmon/sysfs ABI for fan control and an
+optional read-only /proc/hp_wmi_sensors ABI for HP's IR temperature. It has no
+external runtime dependency. Writes are disabled unless --apply is explicitly
 supplied.
 """
 
@@ -492,7 +492,7 @@ def read_hwmon_temperatures(directory: Path) -> list[float]:
 
 
 def read_hp_wmi_ir_temperature(path: Path) -> float:
-    """Read index 0 (IR) from hp_wmi_sensor_probe's text procfs ABI."""
+    """Read index 0 (IR) from the optional text procfs ABI."""
     try:
         lines = path.read_text(encoding="ascii").splitlines()
     except OSError as exc:
@@ -1321,13 +1321,19 @@ def acquire_lock(path: Path) -> object:
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     source_dir = Path(__file__).resolve().parent
+    project_config = source_dir.parent / "config" / "fan-control.toml"
+    default_config = (
+        project_config
+        if project_config.is_file()
+        else Path("/etc/hp-fan-control/fan-control.toml")
+    )
     parser = argparse.ArgumentParser(
         description="Experimental standalone automatic fan controller for HP 8D87"
     )
     parser.add_argument(
         "--config",
         type=Path,
-        default=source_dir / "fan-control.toml",
+        default=default_config,
         help="configuration file",
     )
     operation_group = parser.add_mutually_exclusive_group()

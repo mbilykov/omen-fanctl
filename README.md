@@ -2,11 +2,20 @@
 
 This is an experimental standalone automatic fan controller for HP system board
 `8D87`. It uses the Linux `hp-wmi` hwmon interface for fan control and the
-project's read-only WMI sensor probe for HP's IR temperature. It does not run,
-link to, or depend on OmenCore.
+optional `/proc/hp_wmi_sensors` interface for HP's IR temperature when an
+external provider exposes it. The project is fully standalone.
 
 Direct invocation defaults to read-only. Do not start with `--apply` or enable
 the system service before checking the dry-run output.
+
+## Repository layout
+
+- `src/` contains only the daemon source.
+- `config/` contains the default configuration.
+- `tests/` contains the unit test suite.
+- `systemd/` contains the service and logrotate definitions.
+- `utils/` contains optional research and stress-test helpers.
+- `docs/` and `logs/` preserve the hardware research and validation evidence.
 
 ## What it controls
 
@@ -14,7 +23,7 @@ the system service before checking the dry-run output.
 - Optionally reads the AMD GPU hwmon sensor and NVIDIA temperature through
   `nvidia-smi`.
 - Optionally reads Gaming Hub's exact IR input (WMI group `0x20008`, query
-  `0x23`, index `0`) from `/proc/hp_wmi_sensors` when the experimental probe is
+  `0x23`, index `0`) from `/proc/hp_wmi_sensors` when that optional interface is
   available.
 - Evaluates CPU, GPU, and IR temperatures against separate curves and uses the
   highest resulting target. `acpitz` remains an opt-in diagnostic proxy only.
@@ -24,8 +33,8 @@ the system service before checking the dry-run output.
   fan-stop handoff at `fan_stop_temp_c` (45 C by default).
 - Leaves BIOS Auto active while cool. Outside Performance, a controller that
   was already in Auto sleeps immediately; a Manual/Max controller first keeps
-  cooling until the release thresholds are reached, selects Auto, and monitors
-  the complete firmware fan-stop window before sleeping.
+  cooling until the fan-stop thresholds are reached, selects Auto, and
+  monitors the complete firmware fan-stop window before sleeping.
 - While sleeping outside Performance, blocks on the kernel's `platform_profile`
   sysfs notification and does not query CPU/GPU/IR, invoke `nvidia-smi`, or run
   the control algorithm. A profile-change event wakes it immediately.
@@ -58,16 +67,16 @@ unknown; the WMI value itself is confirmed to be Gaming Hub's IR input.
 
 The CSV log contains raw and filtered `ir` values, each sensor's target, and
 `winning_sensor`, so a run can verify which curve controlled the fans. WMI IR
-probing is enabled by default but optional at runtime: a missing or invalid
-probe produces one warning while CPU/GPU control continues, and IR joins
-automatically if the probe appears. Neither available `acpitz` zone is the same
-input; one can still be enabled explicitly with `--include-acpi-proxy` for
+discovery is enabled by default but optional at runtime: a missing or invalid
+interface produces one warning while CPU/GPU control continues, and IR joins
+automatically if the interface appears. Neither available `acpitz` zone is the
+same input; one can still be enabled explicitly with `--include-acpi-proxy` for
 comparisons.
 An IR reading below its first curve point does not hold the daemon in Manual
 after a CPU/GPU-triggered cycle; IR release hysteresis is latched only after IR
 itself reaches its activation point. Because WMI IR has whole-degree resolution,
 its separate default release hysteresis is 1 C (activate at 42 C, release at or
-below 41 C once both raw and EWMA readings cool sufficiently).
+below 41 C according to the raw reading).
 When NVIDIA telemetry is available, every sample also records
 `nvidia_power_draw_w` and `nvidia_power_limit_w` from `nvidia-smi`. Empty values
 mean that the dGPU was asleep or its driver did not expose the metric.
@@ -75,18 +84,18 @@ mean that the dGPU was asleep or its driver did not expose the metric.
 ## 1. Run unit tests
 
 ```bash
-cd fan-control-daemon-research/src
-python3 -m unittest -v
+cd fan-control-daemon-research
+python3 -m unittest discover -s tests -v
 ```
 
 ## Install as a system service
 
 The repository root contains explicit install and uninstall scripts. Installing
-does not load the optional WMI IR probe. Existing configuration is never
-overwritten. During an upgrade, `install.sh` stops an existing service before
-replacing any files. For safety it refuses to stop an active controller until
-that controller has completed its Auto guard, entered `state=sleeping`, and
-`pwm1_enable=2`.
+does not provide the optional WMI IR procfs interface. Existing configuration
+is never overwritten. During an upgrade, `install.sh` stops an existing service
+before replacing any files. For safety it refuses to stop an active controller
+until that controller has completed its Auto guard, entered `state=sleeping`,
+and `pwm1_enable=2`.
 
 Install the files without starting fan control:
 
@@ -119,9 +128,9 @@ fans, and selects Auto as soon as raw CPU/GPU temperatures reach
 `fan_stop_temp_c`. An IR source that activated control must also reach its own
 lower release threshold. Because the tested F.07 firmware can then stop both
 fans for roughly 90-120 seconds, the daemon enters `auto-guard` and continues
-sampling for
-`auto_guard_s` (180 seconds by default). New heat immediately re-enters Manual;
-after the next cooldown, Auto starts a fresh guard. Profile notifications remain
+sampling for `auto_guard_s` (180 seconds by default). New heat immediately
+re-enters Manual; after the next cooldown, Auto starts a fresh guard. Profile
+notifications remain
 effective throughout Manual, `handoff`, and `auto-guard`; only a completed guard
 outside Performance permits `state=sleeping`. Linux calls
 `sysfs_notify` when the profile changes, so this does not poll the file. The
@@ -205,7 +214,7 @@ should also be removed. Telemetry remains preserved in both modes.
 
 ## Capture the raw firmware fan table (`0x2f`)
 
-`dump_hp_wmi_2f.sh` uses an eBPF probe on the WMI core and reloads `hp_wmi`
+`utils/dump_hp_wmi_2f.sh` uses an eBPF probe on the WMI core and reloads `hp_wmi`
 once to capture the read-only query performed during driver initialization. It
 refuses to run unless board `8D87` is cool, firmware Auto is active, and the fan
 controller is stopped. It restores the module, Auto mode, and the original
@@ -214,7 +223,7 @@ platform profile on exit. The script requires `bpftrace`, `perl`, and
 
 ```bash
 sudo pacman -S bpftrace
-sudo ./dump_hp_wmi_2f.sh
+sudo ./utils/dump_hp_wmi_2f.sh
 ```
 
 The output consists of a validated 128-byte `.bin`, an annotated `.hex.txt`,
@@ -223,21 +232,21 @@ captures the arguments of `wmi_evaluate_method` by calling convention.
 
 ## 2. Read-only dry run
 
-To include the optional IR input, load and verify the read-only sensor probe:
+If an external kernel component provides the optional IR interface, verify it
+before starting the daemon:
 
 ```bash
-cd fan-control-daemon-research/src
-sudo ./probe_hp_ir_sensor.sh --load-only
+cat /proc/hp_wmi_sensors
 ```
 
 Index 0 must appear as a valid row such as `0 IR 39`. Then run:
 
 ```bash
-cd fan-control-daemon-research/src
-python3 hp_fan_control.py --duration 60
+cd fan-control-daemon-research
+python3 src/hp_fan_control.py --duration 60
 ```
 
-Without the probe, the same command logs one warning and runs from CPU/GPU;
+Without that interface, the same command logs one warning and runs from CPU/GPU;
 `ir` fields remain empty. In either case, this prints temperatures and decisions
 without changing fan state. A timestamped CSV file is created in the current
 directory.
@@ -248,8 +257,8 @@ Only after the dry run looks reasonable, verify that the kernel interface can
 hold an intermediate level and return to Auto:
 
 ```bash
-cd fan-control-daemon-research/src
-sudo python3 hp_fan_control.py --apply --actuator-test 60 --duration 15
+cd fan-control-daemon-research
+sudo python3 src/hp_fan_control.py --apply --actuator-test 60 --duration 15
 ```
 
 This requests 60% PWM for 15 seconds, prints actual RPM once per second, then
@@ -265,8 +274,8 @@ currently reached level rather than immediately displaying the requested one.
 With Performance selected, run the actual controller without a workload:
 
 ```bash
-cd fan-control-daemon-research/src
-sudo python3 hp_fan_control.py --apply --duration 60
+cd fan-control-daemon-research
+sudo python3 src/hp_fan_control.py --apply --duration 60
 ```
 
 At temperatures below 60 C this should remain in `bios-auto`. This verifies
@@ -277,8 +286,8 @@ profile gating and clean shutdown before a thermal test.
 Keep the controller visible in one terminal:
 
 ```bash
-cd fan-control-daemon-research/src
-sudo python3 hp_fan_control.py --apply --duration 300
+cd fan-control-daemon-research
+sudo python3 src/hp_fan_control.py --apply --duration 300
 ```
 
 Start the workload in another terminal. Stop the workload, switch to Balanced,
@@ -297,15 +306,18 @@ Expected states:
 | State | Meaning |
 |---|---|
 | `bios-auto` | No writes; firmware owns the curve |
+| `sleeping` | Non-Performance profile; waiting for a profile-change event |
 | `manual` | Daemon owns the curve and writes intermediate PWM values |
 | `emergency` | Raw temperature reached 92 C; maximum fans requested |
+| `handoff` | Cooling continues outside Performance before selecting Auto |
+| `auto-guard` | Firmware owns the fans while the daemon watches for renewed heat |
 
 ### CPU-only control test
 
 For a clean CPU-curve validation, disable GPU, WMI IR, and the ACPI proxy:
 
 ```bash
-sudo python3 hp_fan_control.py --apply --cpu-only --duration 240 \
+sudo python3 src/hp_fan_control.py --apply --cpu-only --duration 240 \
   --log-file factory-performance-cpu-only.csv
 ```
 
@@ -319,10 +331,10 @@ The included CUDA stress helper provides a reproducible GPU workload when no
 GPU benchmark is installed. Build it locally with:
 
 ```bash
-/opt/cuda/bin/nvcc -O3 -o cuda_gpu_stress cuda_gpu_stress.cu
+/opt/cuda/bin/nvcc -O3 -o utils/cuda_gpu_stress utils/cuda_gpu_stress.cu
 ```
 
-Run the controller for 240 seconds, then run `cuda_gpu_stress 150` and the
+Run the controller for 240 seconds, then run `utils/cuda_gpu_stress 150` and the
 existing 150-second CPU stress command at approximately the same time in two
 other terminals. Stop either workload immediately if the controller reports a
 sensor failure or cannot retain fan control.
@@ -365,10 +377,11 @@ stepped = true
   the systemd watchdog. If userspace or the kernel cannot perform either path,
   the HP firmware's 120-second user-defined-state timeout is the last fallback;
   sudden power loss naturally cannot run any software cleanup.
-- The WMI IR probe is an optional experimental extension. If it is absent,
-  malformed, or lost later, the daemon logs the degraded state and continues
-  safely from CPU/GPU; IR joins or rejoins automatically when available. Loss
-  of the mandatory CPU source still invokes the maximum-fan fail-safe.
+- The WMI IR input is an optional experimental extension. If its procfs
+  interface is absent, malformed, or lost later, the daemon logs the degraded
+  state and continues safely from CPU/GPU; IR joins or rejoins automatically
+  when available. Loss of the mandatory CPU source still invokes the
+  maximum-fan fail-safe.
 - The physical make/model of the IR sensor chip cannot be inferred from WMI.
 - `acpitz` is not Gaming Hub's IR input and is disabled by default.
 - Never run this daemon together with another fan-control program.

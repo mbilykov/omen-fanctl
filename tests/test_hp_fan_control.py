@@ -2,13 +2,18 @@
 
 import os
 import select
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, call, patch
 
-from hp_fan_control import (
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CONFIG_PATH = PROJECT_ROOT / "config" / "fan-control.toml"
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+from hp_fan_control import (  # noqa: E402
     AUTO_MODE,
     MANUAL_MODE,
     Controller,
@@ -26,6 +31,7 @@ from hp_fan_control import (
     hp_factory_performance_curves,
     hp_level_percent,
     main,
+    parse_args,
     percent_to_pwm,
     pwm_to_percent,
     read_hp_wmi_ir_temperature,
@@ -276,8 +282,11 @@ class ControlDecisionTests(unittest.TestCase):
 
 
 class SettingsTests(unittest.TestCase):
+    def test_source_tree_defaults_to_repository_config(self):
+        self.assertEqual(parse_args([]).config, CONFIG_PATH)
+
     def test_loads_factory_preset(self):
-        config = Path(__file__).with_name("fan-control.toml")
+        config = CONFIG_PATH
         settings = Settings.load(config)
         self.assertEqual(
             settings.curve_source, "hp-vibrance-stx-n22x9-performance"
@@ -289,21 +298,21 @@ class SettingsTests(unittest.TestCase):
 
 
 class SensorMetricTests(unittest.TestCase):
-    def test_missing_optional_ir_probe_does_not_block_sensor_startup(self):
+    def test_missing_optional_ir_interface_does_not_block_sensor_startup(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             cpu = root / "hwmon0"
             cpu.mkdir()
             (cpu / "name").write_text("k10temp\n")
             (cpu / "temp1_input").write_text("50000\n")
-            settings = Settings.load(Path(__file__).with_name("fan-control.toml"))
+            settings = Settings.load(CONFIG_PATH)
             settings = Settings(
                 **{
                     **settings.__dict__,
                     "include_acpi": False,
                     "include_amd_gpu": False,
                     "include_nvidia_gpu": False,
-                    "hp_wmi_sensors_path": root / "missing-probe",
+                    "hp_wmi_sensors_path": root / "missing-interface",
                 }
             )
             sensors = Sensors(settings, root)
@@ -418,7 +427,7 @@ class SequenceSensors:
 
 class ControllerLoopTests(unittest.TestCase):
     def test_repeated_status_note_is_rate_limited(self):
-        settings = Settings.load(Path(__file__).with_name("fan-control.toml"))
+        settings = Settings.load(CONFIG_PATH)
         controller = Controller(
             settings=settings,
             fan=FakeFan(),
@@ -452,7 +461,7 @@ class ControllerLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "platform_profile"
             profile.write_text("balanced\n")
-            settings = Settings.load(Path(__file__).with_name("fan-control.toml"))
+            settings = Settings.load(CONFIG_PATH)
             sensors = Mock()
             notifier = Mock(spec=SystemdNotifier)
             controller = Controller(
@@ -475,7 +484,7 @@ class ControllerLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "platform_profile"
             profile.write_text("balanced\n")
-            settings = Settings.load(Path(__file__).with_name("fan-control.toml"))
+            settings = Settings.load(CONFIG_PATH)
             settings = Settings(
                 **{
                     **settings.__dict__,
@@ -503,7 +512,7 @@ class ControllerLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "platform_profile"
             profile.write_text("balanced\n")
-            settings = Settings.load(Path(__file__).with_name("fan-control.toml"))
+            settings = Settings.load(CONFIG_PATH)
             settings = Settings(
                 **{
                     **settings.__dict__,
@@ -536,7 +545,7 @@ class ControllerLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "platform_profile"
             profile.write_text("balanced\n")
-            settings = Settings.load(Path(__file__).with_name("fan-control.toml"))
+            settings = Settings.load(CONFIG_PATH)
             settings = Settings(
                 **{
                     **settings.__dict__,
@@ -566,7 +575,7 @@ class ControllerLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "platform_profile"
             profile.write_text("balanced\n")
-            settings = Settings.load(Path(__file__).with_name("fan-control.toml"))
+            settings = Settings.load(CONFIG_PATH)
             fan = FakeFan()
             fan.mode = 0
             sensors = FakeSensors(70)
@@ -589,7 +598,7 @@ class ControllerLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "platform_profile"
             profile.write_text("balanced\n")
-            settings = Settings.load(Path(__file__).with_name("fan-control.toml"))
+            settings = Settings.load(CONFIG_PATH)
             settings = Settings(
                 **{
                     **settings.__dict__,
@@ -661,7 +670,7 @@ class ControllerLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "platform_profile"
             profile.write_text("performance\n")
-            settings = Settings.load(Path(__file__).with_name("fan-control.toml"))
+            settings = Settings.load(CONFIG_PATH)
             settings = Settings(
                 **{
                     **settings.__dict__,
@@ -689,7 +698,7 @@ class ControllerLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "platform_profile"
             profile.write_text("performance\n")
-            settings = Settings.load(Path(__file__).with_name("fan-control.toml"))
+            settings = Settings.load(CONFIG_PATH)
             settings = Settings(
                 **{
                     **settings.__dict__,
