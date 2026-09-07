@@ -24,6 +24,7 @@ from hp_fan_control import (  # noqa: E402
     CsvLog,
     Ewma,
     HardwareError,
+    HardwareNotReadyError,
     HpFanHwmon,
     Settings,
     Sensors,
@@ -42,6 +43,7 @@ from hp_fan_control import (  # noqa: E402
     read_hp_wmi_ir_temperature,
     restore_firmware_auto,
     run_actuator_test,
+    wait_for_hp_fan_hwmon,
 )
 
 
@@ -1046,13 +1048,47 @@ class ControllerLoopTests(unittest.TestCase):
                 patch("hp_fan_control.os.geteuid", return_value=0),
                 patch("hp_fan_control.acquire_lock", return_value=lock),
                 patch("hp_fan_control.HpFanHwmon", return_value=fan),
+                patch("hp_fan_control.wait_for_hp_fan_hwmon") as wait_for_hwmon,
                 patch("hp_fan_control.AUTO_GUARD_PATH", guard),
                 patch("hp_fan_control.Settings.load") as load_settings,
             ):
                 self.assertEqual(main(["--failsafe"]), 0)
         load_settings.assert_not_called()
+        wait_for_hwmon.assert_not_called()
         lock.close.assert_called_once_with()
         self.assertEqual(fan.mode, 0)
+
+    def test_main_closes_lock_when_hwmon_startup_times_out(self):
+        lock = Mock()
+        with (
+            patch("hp_fan_control.read_text", return_value="8D87"),
+            patch("hp_fan_control.acquire_lock", return_value=lock),
+            patch(
+                "hp_fan_control.wait_for_hp_fan_hwmon",
+                side_effect=HardwareError("hp hwmon startup timeout"),
+            ),
+        ):
+            self.assertEqual(
+                main(["--config", str(CONFIG_PATH), "--no-log-file"]),
+                1,
+            )
+
+        lock.close.assert_called_once_with()
+
+    def test_failsafe_closes_lock_when_hwmon_initialization_fails(self):
+        lock = Mock()
+        with (
+            patch("hp_fan_control.read_text", return_value="8D87"),
+            patch("hp_fan_control.os.geteuid", return_value=0),
+            patch("hp_fan_control.acquire_lock", return_value=lock),
+            patch(
+                "hp_fan_control.HpFanHwmon",
+                side_effect=HardwareError("hp hwmon unavailable"),
+            ),
+        ):
+            self.assertEqual(main(["--failsafe"]), 1)
+
+        lock.close.assert_called_once_with()
 
 
 class SystemdNotifierTests(unittest.TestCase):
@@ -1101,6 +1137,36 @@ class PlatformProfileMonitorTests(unittest.TestCase):
 
 
 class FakeHwmonTests(unittest.TestCase):
+    def test_missing_hp_hwmon_is_temporarily_not_ready(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(HardwareNotReadyError, "was not found"):
+                HpFanHwmon(Path(temporary))
+
+    def test_incomplete_hp_hwmon_is_temporarily_not_ready(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            hp = Path(temporary) / "hwmon7"
+            hp.mkdir()
+            (hp / "name").write_text("hp\n")
+
+            with self.assertRaisesRegex(
+                HardwareNotReadyError,
+                "required hp-wmi attribute is missing",
+            ):
+                HpFanHwmon(Path(temporary))
+
+    def test_multiple_hp_hwmon_devices_fail_without_retry(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name in ("hwmon7", "hwmon8"):
+                directory = root / name
+                directory.mkdir()
+                (directory / "name").write_text("hp\n")
+
+            with self.assertRaisesRegex(HardwareError, "found 2") as caught:
+                HpFanHwmon(root)
+
+            self.assertNotIsInstance(caught.exception, HardwareNotReadyError)
+
     def test_safe_manual_transition_and_restore(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1224,6 +1290,83 @@ class FakeHwmonTests(unittest.TestCase):
             fan.update_manual(100)
 
         write.assert_not_called()
+
+
+class HwmonStartupTests(unittest.TestCase):
+    def test_waits_for_hwmon_attributes_on_real_filesystem(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            hp = root / "hwmon7"
+            hp.mkdir()
+            (hp / "name").write_text("hp\n")
+
+            def publish_attributes(_delay):
+                (hp / "pwm1").write_text("0\n")
+                (hp / "pwm1_enable").write_text(f"{AUTO_MODE}\n")
+                (hp / "fan1_input").write_text("0\n")
+                (hp / "fan2_input").write_text("0\n")
+
+            with (
+                patch(
+                    "hp_fan_control.time.monotonic",
+                    side_effect=[100.0, 100.0],
+                ),
+                patch(
+                    "hp_fan_control.time.sleep",
+                    side_effect=publish_attributes,
+                ) as sleep,
+                patch("hp_fan_control.LOG.info") as log_info,
+            ):
+                fan = wait_for_hp_fan_hwmon(root=root)
+
+            self.assertEqual(fan.path, hp)
+            sleep.assert_called_once_with(1.0)
+            log_info.assert_called_once_with("hp hwmon interface became ready")
+
+    def test_retries_transient_hp_hwmon_absence(self):
+        fan = Mock(spec=HpFanHwmon)
+        with (
+            patch(
+                "hp_fan_control.HpFanHwmon",
+                side_effect=[HardwareNotReadyError("not ready"), fan],
+            ) as constructor,
+            patch("hp_fan_control.time.monotonic", side_effect=[100.0, 100.0]),
+            patch("hp_fan_control.time.sleep") as sleep,
+        ):
+            self.assertIs(wait_for_hp_fan_hwmon(), fan)
+
+        self.assertEqual(constructor.call_count, 2)
+        sleep.assert_called_once_with(1.0)
+
+    def test_fails_after_hp_hwmon_startup_timeout(self):
+        with (
+            patch(
+                "hp_fan_control.HpFanHwmon",
+                side_effect=HardwareNotReadyError("not ready"),
+            ),
+            patch("hp_fan_control.time.monotonic", side_effect=[100.0, 120.0]),
+            patch("hp_fan_control.time.sleep") as sleep,
+            self.assertRaisesRegex(
+                HardwareError,
+                "did not become ready within 20 seconds",
+            ),
+        ):
+            wait_for_hp_fan_hwmon()
+
+        sleep.assert_not_called()
+
+    def test_does_not_retry_non_transient_hwmon_error(self):
+        with (
+            patch(
+                "hp_fan_control.HpFanHwmon",
+                side_effect=HardwareError("multiple hp devices"),
+            ),
+            patch("hp_fan_control.time.sleep") as sleep,
+            self.assertRaisesRegex(HardwareError, "multiple hp devices"),
+        ):
+            wait_for_hp_fan_hwmon()
+
+        sleep.assert_not_called()
 
 
 class SystemdUnitTests(unittest.TestCase):

@@ -37,6 +37,8 @@ MAX_MODE = 0
 HP_FAN_LEVEL_MAX = 60.0
 AUTO_GUARD_PATH = Path("/run/hp-fan-control/auto-guard")
 CONTROL_SENSORS = ("cpu", "gpu", "ir")
+HP_HWMON_STARTUP_TIMEOUT_S = 20.0
+HP_HWMON_STARTUP_RETRY_S = 1.0
 
 
 class ConfigurationError(ValueError):
@@ -45,6 +47,10 @@ class ConfigurationError(ValueError):
 
 class HardwareError(RuntimeError):
     pass
+
+
+class HardwareNotReadyError(HardwareError):
+    """Required hardware is still being initialized."""
 
 
 class SystemdNotifier:
@@ -677,8 +683,12 @@ class Sensors:
 class HpFanHwmon:
     def __init__(self, root: Path = Path("/sys/class/hwmon")):
         matches = find_hwmon("hp", root)
-        if len(matches) != 1:
-            raise HardwareError(f"expected exactly one hp hwmon device, found {len(matches)}")
+        if not matches:
+            raise HardwareNotReadyError("hp hwmon device was not found")
+        if len(matches) > 1:
+            raise HardwareError(
+                f"expected exactly one hp hwmon device, found {len(matches)}"
+            )
         self.path = matches[0]
         self.pwm = self.path / "pwm1"
         self.enable = self.path / "pwm1_enable"
@@ -687,7 +697,9 @@ class HpFanHwmon:
         self._manual_recovery_pending = False
         for required in (self.pwm, self.enable, self.fan1, self.fan2):
             if not required.exists():
-                raise HardwareError(f"required hp-wmi attribute is missing: {required}")
+                raise HardwareNotReadyError(
+                    f"required hp-wmi attribute is missing: {required}"
+                )
 
     def status(self) -> tuple[int, int, int, int]:
         return (
@@ -753,6 +765,36 @@ class HpFanHwmon:
     def restore_auto(self) -> None:
         write_int(self.enable, AUTO_MODE)
         self._manual_recovery_pending = False
+
+
+def wait_for_hp_fan_hwmon(
+    root: Path = Path("/sys/class/hwmon"),
+    timeout_s: float = HP_HWMON_STARTUP_TIMEOUT_S,
+    retry_s: float = HP_HWMON_STARTUP_RETRY_S,
+) -> HpFanHwmon:
+    """Wait briefly for hp-wmi to finish publishing its hwmon interface."""
+    deadline = time.monotonic() + timeout_s
+    waiting_logged = False
+    while True:
+        try:
+            fan = HpFanHwmon(root=root)
+            if waiting_logged:
+                LOG.info("hp hwmon interface became ready")
+            return fan
+        except HardwareNotReadyError as exc:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise HardwareError(
+                    f"hp hwmon did not become ready within {timeout_s:g} seconds: {exc}"
+                ) from exc
+            if not waiting_logged:
+                LOG.warning(
+                    "hp hwmon is not ready; waiting up to %g seconds: %s",
+                    timeout_s,
+                    exc,
+                )
+                waiting_logged = True
+            time.sleep(min(retry_s, remaining))
 
 
 class CsvLog:
@@ -1575,6 +1617,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
+    lock_handle: TextIO | None = None
     try:
         if args.restore_auto or args.failsafe:
             board = read_text(Path("/sys/class/dmi/id/board_name"))
@@ -1585,12 +1628,13 @@ def main(argv: Iterable[str] | None = None) -> int:
             if os.geteuid() != 0:
                 raise HardwareError("fan-control writes must be run as root (use sudo)")
             lock_handle = acquire_lock(Path("/run/hp-fan-control/control.lock"))
+            # Recovery commands deliberately do not wait for hwmon: --failsafe
+            # runs from ExecStopPost and must never delay service shutdown.
             fan = HpFanHwmon()
             if args.failsafe:
                 ensure_failsafe_fan_state(fan, AUTO_GUARD_PATH)
             else:
                 restore_firmware_auto(fan)
-            lock_handle.close()
             return 0
 
         settings = Settings.load(args.config)
@@ -1625,14 +1669,13 @@ def main(argv: Iterable[str] | None = None) -> int:
         # the advisory lock.
         lock_handle = acquire_lock(lock_path)
 
-        fan = HpFanHwmon()
+        fan = wait_for_hp_fan_hwmon()
         sensors = Sensors(settings)
         if args.actuator_test is not None:
             if not args.apply:
                 raise ConfigurationError("--actuator-test also requires --apply")
             test_duration = 15.0 if args.duration is None else args.duration
             run_actuator_test(fan, sensors, args.actuator_test, test_duration)
-            lock_handle.close()
             return 0
         if args.no_log_file:
             log_path = None
@@ -1668,11 +1711,16 @@ def main(argv: Iterable[str] | None = None) -> int:
             controller.run()
         finally:
             csv_log.close()
-        lock_handle.close()
         return 0
     except (ConfigurationError, HardwareError, OSError) as exc:
         LOG.error("%s", exc)
         return 1
+    finally:
+        if lock_handle is not None:
+            try:
+                lock_handle.close()
+            except OSError as exc:
+                LOG.error("cannot close controller lock: %s", exc)
 
 
 if __name__ == "__main__":
