@@ -17,6 +17,10 @@ the system service before checking the dry-run output.
 - `utils/` contains optional research and stress-test helpers.
 - `docs/` and `logs/` preserve the hardware research and validation evidence.
 
+## License
+
+This project is available under the [MIT License](LICENSE).
+
 ## What it controls
 
 - Reads CPU temperature from `k10temp`.
