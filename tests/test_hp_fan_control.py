@@ -1109,14 +1109,50 @@ class SystemdNotifierTests(unittest.TestCase):
             notifier.watchdog()
         connection.sendto.assert_called_once_with(b"WATCHDOG=1", "\0notify")
 
-    def test_watchdog_for_another_pid_is_ignored(self):
-        with patch.dict(
-            "hp_fan_control.os.environ",
-            {"NOTIFY_SOCKET": "/run/notify", "WATCHDOG_PID": "999999"},
-            clear=True,
+    def test_watchdog_for_another_pid_does_not_suppress_ready(self):
+        connection = Mock()
+        context = Mock()
+        context.__enter__ = Mock(return_value=connection)
+        context.__exit__ = Mock(return_value=False)
+        with (
+            patch.dict(
+                "hp_fan_control.os.environ",
+                {"NOTIFY_SOCKET": "/run/notify", "WATCHDOG_PID": "999999"},
+                clear=True,
+            ),
+            patch("hp_fan_control.socket.socket", return_value=context),
         ):
             notifier = SystemdNotifier.from_environment()
-        self.assertIsNone(notifier.address)
+            notifier.ready()
+            notifier.watchdog()
+
+        self.assertEqual(notifier.address, "/run/notify")
+        self.assertFalse(notifier.watchdog_enabled)
+        connection.sendto.assert_called_once_with(b"READY=1", "/run/notify")
+
+    def test_transient_notification_failure_is_retried(self):
+        connection = Mock()
+        context = Mock()
+        context.__enter__ = Mock(return_value=connection)
+        context.__exit__ = Mock(return_value=False)
+        notifier = SystemdNotifier("/run/notify")
+
+        with (
+            patch(
+                "hp_fan_control.socket.socket",
+                side_effect=[OSError("temporary failure"), context],
+            ) as socket_factory,
+            patch("hp_fan_control.LOG.warning") as warning,
+            patch("hp_fan_control.LOG.info") as info,
+        ):
+            notifier.ready()
+            notifier.watchdog()
+
+        self.assertEqual(socket_factory.call_count, 2)
+        warning.assert_called_once()
+        info.assert_called_once_with("systemd notification channel recovered")
+        connection.sendto.assert_called_once_with(b"WATCHDOG=1", "/run/notify")
+        self.assertFalse(notifier.failed)
 
 
 class PlatformProfileMonitorTests(unittest.TestCase):

@@ -56,39 +56,47 @@ class HardwareNotReadyError(HardwareError):
 class SystemdNotifier:
     """Minimal sd_notify client; inert outside a systemd notify service."""
 
-    def __init__(self, address: str | None):
+    def __init__(self, address: str | None, watchdog_enabled: bool = True):
         self.address = address
+        self.watchdog_enabled = watchdog_enabled
         self.failed = False
 
     @classmethod
     def from_environment(cls) -> "SystemdNotifier":
         address = os.environ.get("NOTIFY_SOCKET")
         watchdog_pid = os.environ.get("WATCHDOG_PID")
+        watchdog_enabled = True
         if watchdog_pid:
             try:
                 if int(watchdog_pid) != os.getpid():
-                    address = None
+                    watchdog_enabled = False
             except ValueError:
-                address = None
+                watchdog_enabled = False
         if address and address.startswith("@"):
             address = "\0" + address[1:]
-        return cls(address)
+        return cls(address, watchdog_enabled)
 
     def notify(self, message: str) -> None:
-        if self.address is None or self.failed:
+        if self.address is None:
             return
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as connection:
                 connection.sendto(message.encode("utf-8"), self.address)
         except OSError as exc:
+            if not self.failed:
+                LOG.warning("cannot notify systemd: %s", exc)
             self.failed = True
-            LOG.warning("cannot notify systemd watchdog: %s", exc)
+        else:
+            if self.failed:
+                LOG.info("systemd notification channel recovered")
+            self.failed = False
 
     def ready(self) -> None:
         self.notify("READY=1")
 
     def watchdog(self) -> None:
-        self.notify("WATCHDOG=1")
+        if self.watchdog_enabled:
+            self.notify("WATCHDOG=1")
 
     def stopping(self) -> None:
         self.notify("STOPPING=1")
