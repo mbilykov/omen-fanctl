@@ -631,7 +631,7 @@ class FakeFan:
 
     def set_maximum(self):
         self.actions.append(("maximum", 255))
-        self.mode = 0
+        self.mode = MAX_MODE
         self.pwm = 255
 
     def restore_auto(self):
@@ -672,6 +672,41 @@ class SequenceSensors:
 
 
 class ControllerLoopTests(unittest.TestCase):
+    def test_csv_fields_match_log_sample_row(self):
+        csv_log = Mock(spec=CsvLog)
+        controller = Controller(
+            settings=Settings.load(CONFIG_PATH),
+            fan=FakeFan(),
+            sensors=FakeSensors(70),
+            apply=False,
+            duration_s=None,
+            csv_log=csv_log,
+        )
+        snapshot = TemperatureSnapshot(
+            cpu=70.0,
+            gpu=60.0,
+            acpi=50.0,
+            ir=55.0,
+            nvidia_power_draw_w=100.0,
+            nvidia_power_limit_w=150.0,
+        )
+        filtered = {"cpu": 69.0, "gpu": 59.0, "ir": 54.0, "acpi": 49.0}
+
+        controller._log_sample(
+            0.0,
+            "performance",
+            "manual",
+            snapshot,
+            filtered,
+            70.0,
+            180,
+            "contract check",
+        )
+
+        csv_log.write.assert_called_once()
+        row = csv_log.write.call_args.args[0]
+        self.assertCountEqual(row, CsvLog.FIELDS)
+
     def test_ir_manual_floor_bucket_stays_in_firmware_auto(self):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "platform_profile"
@@ -737,6 +772,48 @@ class ControllerLoopTests(unittest.TestCase):
         self.assertEqual(fan.mode, AUTO_MODE)
         self.assertFalse(controller.emergency)
         self.assertEqual(fan.actions, [])
+
+    def test_raw_cpu_or_gpu_at_critical_threshold_selects_maximum(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "platform_profile"
+            profile.write_text("performance\n")
+            settings = Settings.load(CONFIG_PATH)
+            settings = Settings(
+                **{
+                    **settings.__dict__,
+                    "sample_interval_s": 0.01,
+                    "control_interval_s": 0.01,
+                }
+            )
+
+            for sensor_name in ("cpu", "gpu"):
+                with self.subTest(sensor=sensor_name):
+                    temperatures = {"cpu": 50.0, "gpu": 50.0}
+                    temperatures[sensor_name] = settings.critical_temp_c
+                    sensors = Mock()
+                    sensors.read.return_value = TemperatureSnapshot(
+                        cpu=temperatures["cpu"],
+                        gpu=temperatures["gpu"],
+                        acpi=None,
+                        ir=None,
+                    )
+                    fan = FakeFan()
+                    controller = Controller(
+                        settings=settings,
+                        fan=fan,
+                        sensors=sensors,
+                        apply=True,
+                        duration_s=0.025,
+                        csv_log=CsvLog(None),
+                        profile_path=profile,
+                    )
+
+                    controller.run()
+
+                    self.assertTrue(controller.emergency)
+                    self.assertEqual(fan.actions[0], ("maximum", 255))
+                    self.assertNotIn("manual", (action for action, _ in fan.actions))
+                    self.assertEqual(fan.mode, MAX_MODE)
 
     def test_repeated_status_note_is_rate_limited(self):
         settings = Settings.load(CONFIG_PATH)
