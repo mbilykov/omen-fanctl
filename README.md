@@ -119,6 +119,29 @@ sudo ./install.sh --enable-now
 The configuration is installed at `/etc/hp-fan-control/fan-control.toml`.
 Existing configuration is preserved during upgrades.
 
+### Service management
+
+Start or stop the installed service:
+
+```bash
+sudo systemctl start hp-fan-control.service
+sudo systemctl stop hp-fan-control.service
+```
+
+Enable or disable automatic startup at boot. These commands do not change the
+current running state:
+
+```bash
+sudo systemctl enable hp-fan-control.service
+sudo systemctl disable hp-fan-control.service
+```
+
+Show the current service status:
+
+```bash
+systemctl status hp-fan-control.service
+```
+
 ## Uninstallation
 
 Remove the service while preserving its configuration and telemetry:
