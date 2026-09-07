@@ -180,6 +180,11 @@ under `/var/log/hp-fan-control/`. Records include:
 - the target from each sensor curve and the winning sensor;
 - requested PWM, actual fan mode, and both fan RPM values.
 
+`--include-acpi-proxy` adds `acpitz` readings and their hypothetical IR-curve
+target to this telemetry for comparison. The proxy cannot activate Manual
+mode, change the requested PWM, trigger emergency cooling, or delay the return
+to firmware Auto.
+
 The supplied logrotate policy rotates CSV files daily, keeps 14 archives, and
 compresses old files.
 

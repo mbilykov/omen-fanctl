@@ -143,7 +143,8 @@ class ControlDecisionTests(unittest.TestCase):
 
     def test_raw_temperature_bypasses_ewma_lag_on_rise(self):
         pwm, hottest = self.controller._desired_pwm(
-            {"cpu": 55.0, "gpu": 50.0, "acpi": 50.0}, raw_hottest=80.0
+            {"cpu": 55.0, "gpu": 50.0, "acpi": 50.0},
+            raw_control_hottest=80.0,
         )
         self.assertEqual(hottest, 80)
         self.assertAlmostEqual(pwm_to_percent(pwm), 75, delta=0.2)
@@ -267,6 +268,46 @@ class ControlDecisionTests(unittest.TestCase):
                 TemperatureSnapshot(cpu=44.0, gpu=44.0, acpi=None, ir=40.0),
             )
         )
+
+    def test_acpi_proxy_is_telemetry_only(self):
+        self.controller.settings = Settings(
+            **{
+                **self.controller.settings.__dict__,
+                "curves": hp_factory_performance_curves(),
+                "curve_source": "test-factory",
+                "minimum_manual_percent": hp_level_percent(19),
+            }
+        )
+        snapshot = TemperatureSnapshot(
+            cpu=44.0, gpu=44.0, acpi=95.0, ir=None
+        )
+
+        self.assertEqual(self.controller._activation_sources(snapshot), set())
+        self.controller.activated_sensors.add("acpi")
+        self.assertTrue(self.controller._cool_enough_for_auto(snapshot))
+        self.assertEqual(snapshot.raw_control_hottest, 44.0)
+
+        pwm, hottest = self.controller._desired_pwm(
+            {"cpu": 44.0, "gpu": 44.0, "ir": None, "acpi": 95.0},
+            snapshot.raw_control_hottest,
+            {"cpu": 44.0, "gpu": 44.0, "ir": None, "acpi": 95.0},
+        )
+        self.assertEqual(hottest, 44.0)
+        self.assertEqual(self.controller.winning_sensor, "cpu")
+        self.assertAlmostEqual(
+            pwm_to_percent(pwm), hp_level_percent(19), delta=0.3
+        )
+        self.assertAlmostEqual(
+            self.controller.sensor_targets["acpi"], hp_level_percent(47)
+        )
+
+    def test_acpi_only_input_raises_hardware_error(self):
+        with self.assertRaisesRegex(
+            HardwareError, "no valid temperature is available for fan control"
+        ):
+            self.controller._desired_pwm(
+                {"cpu": None, "gpu": None, "ir": None, "acpi": 45.0}
+            )
 
     def test_raw_fan_stop_threshold_controls_auto_handoff(self):
         self.assertFalse(
@@ -426,6 +467,40 @@ class SequenceSensors:
 
 
 class ControllerLoopTests(unittest.TestCase):
+    def test_acpi_proxy_above_critical_cannot_leave_firmware_auto(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "platform_profile"
+            profile.write_text("performance\n")
+            settings = Settings.load(CONFIG_PATH)
+            settings = Settings(
+                **{
+                    **settings.__dict__,
+                    "sample_interval_s": 0.01,
+                    "control_interval_s": 0.01,
+                    "include_acpi": True,
+                }
+            )
+            sensors = Mock()
+            sensors.read.return_value = TemperatureSnapshot(
+                cpu=44.0, gpu=44.0, acpi=95.0, ir=None
+            )
+            fan = FakeFan()
+            controller = Controller(
+                settings=settings,
+                fan=fan,
+                sensors=sensors,
+                apply=True,
+                duration_s=0.025,
+                csv_log=CsvLog(None),
+                profile_path=profile,
+            )
+
+            controller.run()
+
+        self.assertEqual(fan.mode, AUTO_MODE)
+        self.assertFalse(controller.emergency)
+        self.assertEqual(fan.actions, [])
+
     def test_repeated_status_note_is_rate_limited(self):
         settings = Settings.load(CONFIG_PATH)
         controller = Controller(

@@ -35,6 +35,7 @@ MANUAL_MODE = 1
 MAX_MODE = 0
 HP_FAN_LEVEL_MAX = 60.0
 AUTO_GUARD_PATH = Path("/run/hp-fan-control/auto-guard")
+CONTROL_SENSORS = ("cpu", "gpu", "ir")
 
 
 class ConfigurationError(ValueError):
@@ -536,10 +537,16 @@ class TemperatureSnapshot:
     nvidia_power_draw_w: float | None = None
     nvidia_power_limit_w: float | None = None
 
+    def control_temperatures(self) -> dict[str, float | None]:
+        return {name: getattr(self, name) for name in CONTROL_SENSORS}
+
     @property
-    def raw_hottest(self) -> float:
+    def raw_control_hottest(self) -> float:
+        """Return the hottest sensor that is allowed to control the fans."""
         return max(
-            v for v in (self.cpu, self.gpu, self.ir, self.acpi) if v is not None
+            value
+            for value in self.control_temperatures().values()
+            if value is not None
         )
 
 
@@ -851,25 +858,19 @@ class Controller:
         self,
         snapshot: TemperatureSnapshot,
     ) -> bool:
-        raw = {
-            "cpu": snapshot.cpu,
-            "gpu": snapshot.gpu,
-            "ir": snapshot.ir,
-            "acpi": snapshot.acpi,
-        }
-        for name, raw_value in raw.items():
+        for name, raw_value in snapshot.control_temperatures().items():
             if raw_value is None:
                 continue
-            # IR/acpitz use much lower curve temperatures than CPU/GPU. Do not
+            # IR uses much lower curve temperatures than CPU/GPU. Do not
             # let a cool sensor that never activated control prevent a return
             # to firmware Auto after another sensor caused the Manual cycle.
-            if name in ("ir", "acpi") and name not in self.activated_sensors:
+            if name == "ir" and name not in self.activated_sensors:
                 continue
             release = min(
                 self.settings.release_temp_c,
                 self.settings.fan_stop_temp_c,
             )
-            if name in ("ir", "acpi"):
+            if name == "ir":
                 curve = self.settings.curve_for(name)
                 activation = min(
                     self.settings.activation_temp_c, curve.temperatures[0]
@@ -883,22 +884,16 @@ class Controller:
         return True
 
     def _activation_sources(self, snapshot: TemperatureSnapshot) -> set[str]:
-        raw = {
-            "cpu": snapshot.cpu,
-            "gpu": snapshot.gpu,
-            "ir": snapshot.ir,
-            "acpi": snapshot.acpi,
-        }
         return {
             name
-            for name, value in raw.items()
+            for name, value in snapshot.control_temperatures().items()
             if value is not None
             and value >= (
                 min(
                     self.settings.activation_temp_c,
                     self.settings.curve_for(name).temperatures[0],
                 )
-                if name in ("ir", "acpi")
+                if name == "ir"
                 else self.settings.activation_temp_c
             )
         }
@@ -909,21 +904,31 @@ class Controller:
     def _desired_pwm(
         self,
         filtered: dict[str, float | None],
-        raw_hottest: float | None = None,
+        raw_control_hottest: float | None = None,
         raw_temperatures: dict[str, float | None] | None = None,
     ) -> tuple[int, float]:
-        temperatures = [value for value in filtered.values() if value is not None]
+        temperatures = [
+            value
+            for name, value in filtered.items()
+            if name in CONTROL_SENSORS and value is not None
+        ]
+        if not temperatures:
+            raise HardwareError("no valid temperature is available for fan control")
         # Raw temperature gives prompt fan ramp-up. The filtered value remains
         # higher during cooldown and therefore controls the slower ramp-down.
         hottest = max(temperatures)
-        if raw_hottest is not None:
-            hottest = max(hottest, raw_hottest)
-        if raw_hottest is not None and raw_temperatures is None:
+        if raw_control_hottest is not None:
+            hottest = max(hottest, raw_control_hottest)
+        if raw_control_hottest is not None and raw_temperatures is None:
             raw_temperatures = {
                 max(
-                    (name for name, value in filtered.items() if value is not None),
+                    (
+                        name
+                        for name, value in filtered.items()
+                        if name in CONTROL_SENSORS and value is not None
+                    ),
                     key=lambda name: filtered[name],
-                ): raw_hottest
+                ): raw_control_hottest
             }
 
         targets: dict[str, float] = {}
@@ -954,10 +959,11 @@ class Controller:
                     previous,
                 )
             self.sensor_targets[name] = target
-            targets[name] = target
+            # acpitz is an opt-in diagnostic proxy. Preserve its evaluated
+            # target in telemetry, but never let it drive fan state or PWM.
+            if name in CONTROL_SENSORS:
+                targets[name] = target
 
-        if not targets:
-            raise HardwareError("no valid temperature is available for fan control")
         self.winning_sensor = max(targets, key=targets.get)
         candidate = percent_to_pwm(targets[self.winning_sensor])
 
@@ -1192,18 +1198,22 @@ class Controller:
                     continue
 
                 filtered = self._filtered(snapshot)
-                hottest = max(v for v in filtered.values() if v is not None)
+                hottest = max(
+                    value
+                    for name, value in filtered.items()
+                    if name in CONTROL_SENSORS and value is not None
+                )
                 note = ""
 
                 self.activated_sensors.update(
                     self._activation_sources(snapshot)
                 )
 
-                if snapshot.raw_hottest >= self.settings.critical_temp_c:
+                if snapshot.raw_control_hottest >= self.settings.critical_temp_c:
                     if not self.emergency:
                         LOG.warning(
                             "critical raw temperature %.1f C; selecting maximum fans",
-                            snapshot.raw_hottest,
+                            snapshot.raw_control_hottest,
                         )
                     self._maximum()
                     self.emergency = True
@@ -1257,11 +1267,9 @@ class Controller:
                 else:
                     candidate, hottest = self._desired_pwm(
                         filtered,
-                        snapshot.raw_hottest,
+                        snapshot.raw_control_hottest,
                         {
-                            "cpu": snapshot.cpu,
-                            "gpu": snapshot.gpu,
-                            "ir": snapshot.ir,
+                            **snapshot.control_temperatures(),
                             "acpi": snapshot.acpi,
                         },
                     )
@@ -1386,7 +1394,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     sensor_group.add_argument(
         "--include-acpi-proxy",
         action="store_true",
-        help="also evaluate acpitz as an experimental proxy for HP IR",
+        help="log and compare acpitz as a diagnostic proxy; never control fans",
     )
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args(argv)

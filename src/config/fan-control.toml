@@ -61,7 +61,8 @@ include_hp_wmi_ir = true
 hp_wmi_sensors_path = "/proc/hp_wmi_sensors"
 
 # Neither Linux acpitz zone is Gaming Hub's IR input. Keep this disabled for
-# normal control; --include-acpi-proxy enables it only for comparisons.
+# normal telemetry; --include-acpi-proxy logs and evaluates it only for
+# comparison, without allowing it to affect fan control.
 include_acpi = false
 include_amd_gpu = true
 # Uses nvidia-smi when present. Failure is non-fatal as long as CPU is readable.
