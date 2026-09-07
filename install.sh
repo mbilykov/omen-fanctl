@@ -65,11 +65,11 @@ fi
 
 log "Verifying source files"
 for required in \
-    "$SCRIPT_DIR/src/hp_fan_control.py" \
-    "$SCRIPT_DIR/config/fan-control.toml" \
+    "$SCRIPT_DIR/src/daemon/hp_fan_control.py" \
+    "$SCRIPT_DIR/src/config/fan-control.toml" \
     "$SCRIPT_DIR/README.md" \
-    "$SCRIPT_DIR/systemd/hp-fan-control.service" \
-    "$SCRIPT_DIR/systemd/hp-fan-control.logrotate"; do
+    "$SCRIPT_DIR/src/systemd/hp-fan-control.service" \
+    "$SCRIPT_DIR/src/logrotate/hp-fan-control"; do
     if [[ ! -f "$required" ]]; then
         echo "ERROR: required source file is missing: $required" >&2
         exit 1
@@ -117,17 +117,17 @@ else
     log "No existing hp-fan-control installation detected"
 fi
 
-install_file 0755 "$SCRIPT_DIR/src/hp_fan_control.py" \
+install_file 0755 "$SCRIPT_DIR/src/daemon/hp_fan_control.py" \
     "$INSTALL_DIR/hp_fan_control.py"
 install_file 0644 "$SCRIPT_DIR/README.md" "$DOC_DIR/README.md"
-install_file 0644 "$SCRIPT_DIR/systemd/hp-fan-control.service" "$UNIT_PATH"
-install_file 0644 "$SCRIPT_DIR/systemd/hp-fan-control.logrotate" \
+install_file 0644 "$SCRIPT_DIR/src/systemd/hp-fan-control.service" "$UNIT_PATH"
+install_file 0644 "$SCRIPT_DIR/src/logrotate/hp-fan-control" \
     "$LOGROTATE_PATH"
 
 if [[ -e "$CONFIG_DIR/fan-control.toml" ]]; then
     log "Preserving existing configuration: $CONFIG_DIR/fan-control.toml"
 else
-    install_file 0644 "$SCRIPT_DIR/config/fan-control.toml" \
+    install_file 0644 "$SCRIPT_DIR/src/config/fan-control.toml" \
         "$CONFIG_DIR/fan-control.toml"
 fi
 

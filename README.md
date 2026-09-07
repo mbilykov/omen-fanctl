@@ -254,7 +254,7 @@ index name temp_c
 ### 2. Run read-only mode
 
 ```bash
-python3 src/hp_fan_control.py --duration 60
+python3 src/daemon/hp_fan_control.py --duration 60
 ```
 
 Review sensor selection, temperatures, requested PWM, and warnings. This mode
@@ -265,7 +265,7 @@ does not write fan controls.
 Only on an allowlisted and reviewed board:
 
 ```bash
-sudo python3 src/hp_fan_control.py \
+sudo python3 src/daemon/hp_fan_control.py \
   --apply --actuator-test 60 --duration 15
 ```
 

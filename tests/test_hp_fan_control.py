@@ -10,8 +10,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock, call, patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CONFIG_PATH = PROJECT_ROOT / "config" / "fan-control.toml"
-sys.path.insert(0, str(PROJECT_ROOT / "src"))
+CONFIG_PATH = PROJECT_ROOT / "src" / "config" / "fan-control.toml"
+sys.path.insert(0, str(PROJECT_ROOT / "src" / "daemon"))
 
 from hp_fan_control import (  # noqa: E402
     AUTO_MODE,
