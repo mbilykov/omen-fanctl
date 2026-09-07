@@ -6,6 +6,7 @@ import stat
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, call, patch
@@ -20,6 +21,7 @@ from hp_fan_control import (  # noqa: E402
     MANUAL_MODE,
     MAX_MODE,
     ConfigurationError,
+    ControlPolicy,
     Controller,
     Curve,
     CsvLog,
@@ -47,6 +49,64 @@ from hp_fan_control import (  # noqa: E402
     validate_required_profile,
     wait_for_hp_fan_hwmon,
 )
+
+
+def settings_with(settings=None, **changes):
+    updated = replace(settings or Settings.load(CONFIG_PATH), **changes)
+    updated.validate()
+    return updated
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+    def wait(self, timeout_s):
+        self.now += timeout_s
+
+
+def controller_with_fake_time(**kwargs):
+    clock = FakeClock()
+    return Controller(clock=clock, wait_for_change=clock.wait, **kwargs)
+
+
+def initialized_sensors(test, **changes):
+    temporary = tempfile.TemporaryDirectory()
+    test.addCleanup(temporary.cleanup)
+    root = Path(temporary.name)
+    cpu = root / "hwmon0"
+    cpu.mkdir()
+    (cpu / "name").write_text("k10temp\n")
+    (cpu / "temp1_input").write_text("50000\n")
+    defaults = {
+        "include_acpi": False,
+        "include_amd_gpu": False,
+        "include_nvidia_gpu": False,
+        "include_hp_wmi_ir": False,
+    }
+    defaults.update(changes)
+    settings = settings_with(**defaults)
+    return Sensors(settings, root)
+
+
+def initialized_fan(test):
+    temporary = tempfile.TemporaryDirectory()
+    test.addCleanup(temporary.cleanup)
+    root = Path(temporary.name)
+    hp = root / "hwmon0"
+    hp.mkdir()
+    (hp / "name").write_text("hp\n")
+    for name, value in (
+        ("pwm1", "100\n"),
+        ("pwm1_enable", f"{AUTO_MODE}\n"),
+        ("fan1_input", "2400\n"),
+        ("fan2_input", "2600\n"),
+    ):
+        (hp / name).write_text(value)
+    return HpFanHwmon(root)
 
 
 class CurveTests(unittest.TestCase):
@@ -245,239 +305,181 @@ class EwmaTests(unittest.TestCase):
 
 class ControlDecisionTests(unittest.TestCase):
     def setUp(self):
-        settings = Settings(
-            allowed_boards=("8D87",),
-            required_profile="performance",
-            sample_interval_s=1,
-            control_interval_s=5,
-            activation_temp_c=65,
-            release_temp_c=55,
-            critical_temp_c=92,
-            critical_release_temp_c=82,
-            emergency_hold_s=10,
-            decrease_hysteresis_c=3,
-            max_rise_percent_per_update=20,
-            max_fall_percent_per_update=8,
-            minimum_manual_percent=35,
-            ewma_rise_alpha=0.25,
-            ewma_fall_alpha=0.10,
-            include_acpi=True,
-            include_amd_gpu=True,
-            include_nvidia_gpu=True,
-            curve=Curve((50, 60, 70, 80, 90), (25, 35, 55, 75, 95)),
-        )
-        self.controller = Controller(
-            settings=settings,
-            fan=None,
-            sensors=None,
-            apply=False,
-            duration_s=None,
-            csv_log=CsvLog(None),
-        )
+        self.policy = ControlPolicy(Settings.load(CONFIG_PATH))
+
+    def test_policy_state_views_are_read_only(self):
+        with self.assertRaises(AttributeError):
+            self.policy.commanded_pwm = 120
+        with self.assertRaises(TypeError):
+            self.policy.sensor_targets["cpu"] = 50.0
 
     def test_uses_hottest_sensor(self):
-        pwm, hottest = self.controller._desired_pwm(
+        pwm, hottest = self.policy.desired_pwm(
             {"cpu": 65.0, "gpu": 70.0, "acpi": 60.0}
         )
         self.assertEqual(hottest, 70)
-        self.assertAlmostEqual(pwm_to_percent(pwm), 55, delta=0.2)
+        self.assertAlmostEqual(pwm_to_percent(pwm), hp_level_percent(23), delta=0.3)
+        self.assertEqual(self.policy.winning_sensor, "gpu")
 
     def test_limits_fan_speed_decrease(self):
-        self.controller.commanded_pwm = percent_to_pwm(80)
-        pwm, _ = self.controller._desired_pwm(
+        self.policy.set_commanded_pwm(percent_to_pwm(80))
+        pwm, _ = self.policy.desired_pwm(
             {"cpu": 60.0, "gpu": 50.0, "acpi": 50.0}
         )
         self.assertAlmostEqual(pwm_to_percent(pwm), 72, delta=0.4)
 
     def test_rechecks_manual_mode_when_pwm_is_unchanged(self):
+        settings = Settings.load(CONFIG_PATH)
         fan = Mock()
-        self.controller.fan = fan
-        self.controller.apply = True
-        self.controller.manual_active = True
-        self.controller.commanded_pwm = 120
+        controller = Controller(
+            settings=settings,
+            fan=fan,
+            sensors=None,
+            apply=True,
+            duration_s=None,
+            csv_log=CsvLog(None),
+        )
+        controller.manual_active = True
+        controller.policy.set_commanded_pwm(120)
 
-        self.assertEqual(self.controller._apply_manual(120), 120)
+        self.assertEqual(controller._apply_manual(120), 120)
 
         fan.update_manual.assert_called_once_with(120, write_pwm=False)
 
     def test_raw_temperature_bypasses_ewma_lag_on_rise(self):
-        pwm, hottest = self.controller._desired_pwm(
+        pwm, hottest = self.policy.desired_pwm(
             {"cpu": 55.0, "gpu": 50.0, "acpi": 50.0},
             raw_temperatures={"cpu": 80.0, "gpu": 50.0, "acpi": 50.0},
         )
         self.assertEqual(hottest, 80)
-        self.assertAlmostEqual(pwm_to_percent(pwm), 75, delta=0.2)
+        self.assertAlmostEqual(pwm_to_percent(pwm), hp_level_percent(31), delta=0.3)
 
     def test_auto_guard_expires_at_configured_deadline(self):
-        self.controller.settings = Settings(
-            **{
-                **self.controller.settings.__dict__,
-                "auto_guard_s": 180.0,
-            }
+        controller = Controller(
+            Settings.load(CONFIG_PATH), None, None, False, None, CsvLog(None)
         )
-        self.controller._start_auto_guard(10.0)
-        self.assertTrue(self.controller._auto_guard_active(189.9))
-        self.assertFalse(self.controller._auto_guard_active(190.0))
+        controller._start_auto_guard(10.0)
+        self.assertTrue(controller._auto_guard_active(189.9))
+        self.assertFalse(controller._auto_guard_active(190.0))
 
     def test_auto_guard_marker_lives_until_deadline(self):
         with tempfile.TemporaryDirectory() as temporary:
             guard = Path(temporary) / "auto-guard"
-            self.controller.auto_guard_path = guard
-            self.controller._start_auto_guard(10.0)
+            controller = Controller(
+                Settings.load(CONFIG_PATH),
+                None,
+                None,
+                False,
+                None,
+                CsvLog(None),
+                auto_guard_path=guard,
+            )
+            controller._start_auto_guard(10.0)
             self.assertTrue(guard.exists())
-            self.assertTrue(self.controller._auto_guard_active(100.0))
+            self.assertTrue(controller._auto_guard_active(100.0))
             self.assertTrue(guard.exists())
-            self.assertFalse(self.controller._auto_guard_active(190.0))
+            self.assertFalse(controller._auto_guard_active(190.0))
             self.assertFalse(guard.exists())
 
-    def test_rejects_auto_guard_shorter_than_firmware_window(self):
-        settings = Settings(
-            **{
-                **self.controller.settings.__dict__,
-                "auto_guard_s": 119.0,
-            }
-        )
+    def test_controller_rejects_auto_guard_shorter_than_firmware_window(self):
+        settings = replace(Settings.load(CONFIG_PATH), auto_guard_s=119.0)
         with self.assertRaisesRegex(
-            ValueError, "auto_guard_s must be at least 120 seconds"
+            ConfigurationError, "auto_guard_s must be at least 120 seconds"
         ):
-            settings.validate()
+            Controller(settings, None, None, False, None, CsvLog(None))
 
     def test_independent_gpu_curve_can_win(self):
-        self.controller.settings = Settings(
-            **{
-                **self.controller.settings.__dict__,
-                "curves": tuple(hp_factory_performance_curves().items()),
-                "curve_source": "test-factory",
-                "minimum_manual_percent": hp_level_percent(19),
-            }
-        )
-        pwm, _ = self.controller._desired_pwm(
+        pwm, _ = self.policy.desired_pwm(
             {"cpu": 65.0, "gpu": 75.0, "acpi": 45.0},
             raw_temperatures={"cpu": 65.0, "gpu": 75.0, "acpi": 45.0},
         )
-        self.assertEqual(self.controller.winning_sensor, "gpu")
+        self.assertEqual(self.policy.winning_sensor, "gpu")
         self.assertAlmostEqual(pwm_to_percent(pwm), hp_level_percent(31), delta=0.3)
 
     def test_confirmed_wmi_ir_curve_can_win(self):
-        self.controller.settings = Settings(
-            **{
-                **self.controller.settings.__dict__,
-                "curves": tuple(hp_factory_performance_curves().items()),
-                "curve_source": "test-factory",
-                "minimum_manual_percent": hp_level_percent(19),
-            }
-        )
-        pwm, _ = self.controller._desired_pwm(
+        pwm, _ = self.policy.desired_pwm(
             {"cpu": 55.0, "gpu": 50.0, "ir": 54.0, "acpi": None},
             raw_temperatures={"cpu": 55.0, "gpu": 50.0, "ir": 54.0, "acpi": None},
         )
-        self.assertEqual(self.controller.winning_sensor, "ir")
+        self.assertEqual(self.policy.winning_sensor, "ir")
         self.assertAlmostEqual(pwm_to_percent(pwm), hp_level_percent(28), delta=0.3)
 
     def test_ir_activates_at_first_curve_step_above_manual_floor(self):
-        self.controller.settings = Settings(
-            **{
-                **self.controller.settings.__dict__,
-                "curves": tuple(hp_factory_performance_curves().items()),
-                "curve_source": "test-factory",
-                "minimum_manual_percent": hp_level_percent(19),
-            }
-        )
-        self.assertEqual(self.controller._activation_threshold("ir"), 44.0)
+        self.assertEqual(self.policy.activation_threshold("ir"), 44.0)
         self.assertFalse(
-            self.controller._should_activate(
+            self.policy.should_activate(
                 TemperatureSnapshot(cpu=55.0, gpu=40.0, acpi=None, ir=43.0)
             )
         )
         self.assertTrue(
-            self.controller._should_activate(
+            self.policy.should_activate(
                 TemperatureSnapshot(cpu=55.0, gpu=40.0, acpi=None, ir=44.0)
             )
         )
 
     def test_ir_release_threshold_prevents_auto_manual_oscillation(self):
-        self.controller.settings = Settings(
-            **{
-                **self.controller.settings.__dict__,
-                "curves": tuple(hp_factory_performance_curves().items()),
-                "curve_source": "test-factory",
-                "minimum_manual_percent": hp_level_percent(19),
-            }
+        self.policy.observe_activations(
+            TemperatureSnapshot(cpu=40.0, gpu=40.0, acpi=None, ir=44.0)
         )
-        self.controller.activated_sensors.add("ir")
         self.assertFalse(
-            self.controller._cool_enough_for_auto(
+            self.policy.cool_enough_for_auto(
                 TemperatureSnapshot(cpu=40.0, gpu=40.0, acpi=None, ir=44.0),
             )
         )
         self.assertTrue(
-            self.controller._cool_enough_for_auto(
+            self.policy.cool_enough_for_auto(
                 TemperatureSnapshot(cpu=41.0, gpu=41.0, acpi=None, ir=43.0),
             )
         )
 
     def test_ir_below_activation_does_not_block_cpu_triggered_auto_release(self):
-        self.controller.settings = Settings(
-            **{
-                **self.controller.settings.__dict__,
-                "curves": tuple(hp_factory_performance_curves().items()),
-                "curve_source": "test-factory",
-            }
+        self.policy.observe_activations(
+            TemperatureSnapshot(cpu=60.0, gpu=40.0, acpi=None, ir=43.0)
         )
-        self.controller.activated_sensors.add("cpu")
         self.assertTrue(
-            self.controller._cool_enough_for_auto(
+            self.policy.cool_enough_for_auto(
                 TemperatureSnapshot(cpu=44.0, gpu=44.0, acpi=None, ir=43.0),
             )
         )
 
     def test_acpi_proxy_is_telemetry_only(self):
-        self.controller.settings = Settings(
-            **{
-                **self.controller.settings.__dict__,
-                "curves": tuple(hp_factory_performance_curves().items()),
-                "curve_source": "test-factory",
-                "minimum_manual_percent": hp_level_percent(19),
-            }
-        )
         snapshot = TemperatureSnapshot(
             cpu=44.0, gpu=44.0, acpi=95.0, ir=None
         )
 
-        self.assertEqual(self.controller._activation_sources(snapshot), set())
-        self.controller.activated_sensors.add("acpi")
-        self.assertTrue(self.controller._cool_enough_for_auto(snapshot))
+        self.assertEqual(self.policy.activation_sources(snapshot), set())
+        self.assertTrue(self.policy.cool_enough_for_auto(snapshot))
         self.assertEqual(snapshot.raw_control_hottest, 44.0)
 
-        pwm, hottest = self.controller._desired_pwm(
+        pwm, hottest = self.policy.desired_pwm(
             {"cpu": 44.0, "gpu": 44.0, "ir": None, "acpi": 95.0},
             {"cpu": 44.0, "gpu": 44.0, "ir": None, "acpi": 95.0},
         )
         self.assertEqual(hottest, 44.0)
-        self.assertEqual(self.controller.winning_sensor, "cpu")
+        self.assertEqual(self.policy.winning_sensor, "cpu")
         self.assertAlmostEqual(
             pwm_to_percent(pwm), hp_level_percent(19), delta=0.3
         )
         self.assertAlmostEqual(
-            self.controller.sensor_targets["acpi"], hp_level_percent(47)
+            self.policy.sensor_targets["acpi"], hp_level_percent(47)
         )
 
     def test_acpi_only_input_raises_hardware_error(self):
         with self.assertRaisesRegex(
             HardwareError, "no valid temperature is available for fan control"
         ):
-            self.controller._desired_pwm(
+            self.policy.desired_pwm(
                 {"cpu": None, "gpu": None, "ir": None, "acpi": 45.0}
             )
 
     def test_raw_fan_stop_threshold_controls_auto_handoff(self):
         self.assertFalse(
-            self.controller._cool_enough_for_auto(
+            self.policy.cool_enough_for_auto(
                 TemperatureSnapshot(46.0, 44.0, None)
             )
         )
         self.assertTrue(
-            self.controller._cool_enough_for_auto(
+            self.policy.cool_enough_for_auto(
                 TemperatureSnapshot(45.0, 45.0, None)
             )
         )
@@ -551,14 +553,12 @@ class SensorMetricTests(unittest.TestCase):
             (cpu / "name").write_text("k10temp\n")
             (cpu / "temp1_input").write_text("50000\n")
             settings = Settings.load(CONFIG_PATH)
-            settings = Settings(
-                **{
-                    **settings.__dict__,
-                    "include_acpi": False,
-                    "include_amd_gpu": False,
-                    "include_nvidia_gpu": False,
-                    "hp_wmi_sensors_path": root / "missing-interface",
-                }
+            settings = settings_with(
+                settings,
+                include_acpi=False,
+                include_amd_gpu=False,
+                include_nvidia_gpu=False,
+                hp_wmi_sensors_path=root / "missing-interface",
             )
             sensors = Sensors(settings, root)
             snapshot = sensors.read()
@@ -582,32 +582,41 @@ class SensorMetricTests(unittest.TestCase):
                 read_hp_wmi_ir_temperature(path)
 
     def test_runtime_ir_loss_falls_back_to_cpu_gpu_and_recovers(self):
-        sensors = object.__new__(Sensors)
-        sensors.settings = SimpleNamespace(include_hp_wmi_ir=True)
-        sensors.hp_wmi_sensors_path = Path("/proc/hp_wmi_sensors")
-        sensors.hp_wmi_ir_failed = False
+        sensors = initialized_sensors(
+            self,
+            include_hp_wmi_ir=True,
+            hp_wmi_sensors_path=Path("/proc/hp_wmi_sensors"),
+        )
         with patch(
             "hp_fan_control.read_hp_wmi_ir_temperature",
             side_effect=[HardwareError("missing"), 41.0],
         ):
-            self.assertIsNone(sensors._hp_wmi_ir_temperature())
+            first = sensors.read()
             self.assertTrue(sensors.hp_wmi_ir_failed)
-            self.assertEqual(sensors._hp_wmi_ir_temperature(), 41.0)
+            second = sensors.read()
             self.assertFalse(sensors.hp_wmi_ir_failed)
+        self.assertIsNone(first.ir)
+        self.assertEqual(second.ir, 41.0)
 
     def test_reads_nvidia_temperature_draw_and_limit(self):
-        sensors = object.__new__(Sensors)
+        sensors = initialized_sensors(self)
         sensors.nvidia_smi = "/usr/bin/nvidia-smi"
         result = SimpleNamespace(returncode=0, stdout="72, 174.5, 175.0\n")
         with patch("hp_fan_control.subprocess.run", return_value=result):
-            self.assertEqual(sensors._nvidia_metrics(), (72.0, 174.5, 175.0))
+            snapshot = sensors.read()
+        self.assertEqual(snapshot.gpu, 72.0)
+        self.assertEqual(snapshot.nvidia_power_draw_w, 174.5)
+        self.assertEqual(snapshot.nvidia_power_limit_w, 175.0)
 
     def test_keeps_temperature_when_power_is_unavailable(self):
-        sensors = object.__new__(Sensors)
+        sensors = initialized_sensors(self)
         sensors.nvidia_smi = "/usr/bin/nvidia-smi"
         result = SimpleNamespace(returncode=0, stdout="61, [N/A], [N/A]\n")
         with patch("hp_fan_control.subprocess.run", return_value=result):
-            self.assertEqual(sensors._nvidia_metrics(), (61.0, None, None))
+            snapshot = sensors.read()
+        self.assertEqual(snapshot.gpu, 61.0)
+        self.assertIsNone(snapshot.nvidia_power_draw_w)
+        self.assertIsNone(snapshot.nvidia_power_limit_w)
 
 
 class FakeFan:
@@ -692,7 +701,7 @@ class ControllerLoopTests(unittest.TestCase):
         )
         filtered = {"cpu": 69.0, "gpu": 59.0, "ir": 54.0, "acpi": 49.0}
 
-        controller._log_sample(
+        controller.log_sample(
             0.0,
             "performance",
             "manual",
@@ -712,24 +721,17 @@ class ControllerLoopTests(unittest.TestCase):
             profile = Path(temporary) / "platform_profile"
             profile.write_text("performance\n")
             settings = Settings.load(CONFIG_PATH)
-            settings = Settings(
-                **{
-                    **settings.__dict__,
-                    "sample_interval_s": 0.01,
-                    "control_interval_s": 0.01,
-                }
-            )
             sensors = Mock()
             sensors.read.return_value = TemperatureSnapshot(
                 cpu=44.0, gpu=44.0, acpi=None, ir=43.0
             )
             fan = FakeFan()
-            controller = Controller(
+            controller = controller_with_fake_time(
                 settings=settings,
                 fan=fan,
                 sensors=sensors,
                 apply=True,
-                duration_s=0.025,
+                duration_s=2.5,
                 csv_log=CsvLog(None),
                 profile_path=profile,
             )
@@ -744,25 +746,18 @@ class ControllerLoopTests(unittest.TestCase):
             profile = Path(temporary) / "platform_profile"
             profile.write_text("performance\n")
             settings = Settings.load(CONFIG_PATH)
-            settings = Settings(
-                **{
-                    **settings.__dict__,
-                    "sample_interval_s": 0.01,
-                    "control_interval_s": 0.01,
-                    "include_acpi": True,
-                }
-            )
+            settings = settings_with(settings, include_acpi=True)
             sensors = Mock()
             sensors.read.return_value = TemperatureSnapshot(
                 cpu=44.0, gpu=44.0, acpi=95.0, ir=None
             )
             fan = FakeFan()
-            controller = Controller(
+            controller = controller_with_fake_time(
                 settings=settings,
                 fan=fan,
                 sensors=sensors,
                 apply=True,
-                duration_s=0.025,
+                duration_s=2.5,
                 csv_log=CsvLog(None),
                 profile_path=profile,
             )
@@ -778,13 +773,6 @@ class ControllerLoopTests(unittest.TestCase):
             profile = Path(temporary) / "platform_profile"
             profile.write_text("performance\n")
             settings = Settings.load(CONFIG_PATH)
-            settings = Settings(
-                **{
-                    **settings.__dict__,
-                    "sample_interval_s": 0.01,
-                    "control_interval_s": 0.01,
-                }
-            )
 
             for sensor_name in ("cpu", "gpu"):
                 with self.subTest(sensor=sensor_name):
@@ -798,12 +786,12 @@ class ControllerLoopTests(unittest.TestCase):
                         ir=None,
                     )
                     fan = FakeFan()
-                    controller = Controller(
+                    controller = controller_with_fake_time(
                         settings=settings,
                         fan=fan,
                         sensors=sensors,
                         apply=True,
-                        duration_s=0.025,
+                        duration_s=2.5,
                         csv_log=CsvLog(None),
                         profile_path=profile,
                     )
@@ -832,15 +820,15 @@ class ControllerLoopTests(unittest.TestCase):
             patch("hp_fan_control.LOG.info") as log_info,
             patch("hp_fan_control.time.monotonic", return_value=1.0),
         ):
-            controller._log_sample(
+            controller.log_sample(
                 0, "balanced", "handoff", snapshot, filtered, 70, 100,
                 "cooling before firmware Auto",
             )
-            controller._log_sample(
+            controller.log_sample(
                 0, "balanced", "handoff", snapshot, filtered, 70, 100,
                 "cooling before firmware Auto",
             )
-            controller._log_sample(
+            controller.log_sample(
                 0, "balanced", "handoff", snapshot, filtered, 70, 100,
                 "new handoff detail",
             )
@@ -853,16 +841,16 @@ class ControllerLoopTests(unittest.TestCase):
             settings = Settings.load(CONFIG_PATH)
             sensors = Mock()
             notifier = Mock(spec=SystemdNotifier)
-            controller = Controller(
+            controller = controller_with_fake_time(
                 settings=settings,
                 fan=FakeFan(),
                 sensors=sensors,
                 apply=True,
-                duration_s=0.025,
+                duration_s=2.5,
                 csv_log=CsvLog(None),
                 profile_path=profile,
                 notifier=notifier,
-                inactive_event_wait_s=0.01,
+                inactive_event_wait_s=1.0,
             )
             controller.run()
         sensors.read.assert_not_called()
@@ -874,23 +862,16 @@ class ControllerLoopTests(unittest.TestCase):
             profile = Path(temporary) / "platform_profile"
             profile.write_text("balanced\n")
             settings = Settings.load(CONFIG_PATH)
-            settings = Settings(
-                **{
-                    **settings.__dict__,
-                    "sample_interval_s": 0.01,
-                    "control_interval_s": 0.01,
-                }
-            )
             fan = FakeFan()
-            controller = Controller(
+            controller = controller_with_fake_time(
                 settings=settings,
                 fan=fan,
                 sensors=FakeSensors(70),
                 apply=True,
-                duration_s=0.025,
+                duration_s=2.5,
                 csv_log=CsvLog(None),
                 profile_path=profile,
-                inactive_event_wait_s=0.01,
+                inactive_event_wait_s=1.0,
             )
             controller.auto_guard_until = float("inf")
             controller.run()
@@ -902,28 +883,20 @@ class ControllerLoopTests(unittest.TestCase):
             profile = Path(temporary) / "platform_profile"
             profile.write_text("balanced\n")
             settings = Settings.load(CONFIG_PATH)
-            settings = Settings(
-                **{
-                    **settings.__dict__,
-                    "sample_interval_s": 0.01,
-                    "control_interval_s": 0.01,
-                    "auto_guard_s": 1.0,
-                    "emergency_hold_s": 0.0,
-                }
-            )
+            settings = settings_with(settings, emergency_hold_s=0.0)
             cool = TemperatureSnapshot(44, 44, None, None)
             hot = TemperatureSnapshot(70, 50, None, None)
             fan = FakeFan()
-            fan.mode = 0
-            controller = Controller(
+            fan.mode = MAX_MODE
+            controller = controller_with_fake_time(
                 settings=settings,
                 fan=fan,
                 sensors=SequenceSensors([cool, cool, hot]),
                 apply=True,
-                duration_s=0.055,
+                duration_s=3.0,
                 csv_log=CsvLog(None),
                 profile_path=profile,
-                inactive_event_wait_s=0.01,
+                inactive_event_wait_s=1.0,
             )
             controller.run()
         auto_index = fan.actions.index(("auto", None))
@@ -935,30 +908,23 @@ class ControllerLoopTests(unittest.TestCase):
             profile = Path(temporary) / "platform_profile"
             profile.write_text("balanced\n")
             settings = Settings.load(CONFIG_PATH)
-            settings = Settings(
-                **{
-                    **settings.__dict__,
-                    "sample_interval_s": 0.01,
-                    "control_interval_s": 0.01,
-                }
-            )
             fan = FakeFan()
             sensors = Mock()
             sensors.read.side_effect = HardwareError("CPU unavailable")
-            controller = Controller(
+            controller = controller_with_fake_time(
                 settings=settings,
                 fan=fan,
                 sensors=sensors,
                 apply=True,
-                duration_s=0.025,
+                duration_s=2.5,
                 csv_log=CsvLog(None),
                 profile_path=profile,
-                inactive_event_wait_s=0.01,
+                inactive_event_wait_s=1.0,
             )
             controller.auto_guard_until = float("inf")
             controller.run()
         self.assertIn(("maximum", 255), fan.actions)
-        self.assertEqual(fan.mode, 0)
+        self.assertEqual(fan.mode, MAX_MODE)
 
     def test_leaving_performance_keeps_hot_manual_control(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -966,50 +932,47 @@ class ControllerLoopTests(unittest.TestCase):
             profile.write_text("balanced\n")
             settings = Settings.load(CONFIG_PATH)
             fan = FakeFan()
-            fan.mode = 0
+            fan.mode = MAX_MODE
             sensors = FakeSensors(70)
-            controller = Controller(
+            controller = controller_with_fake_time(
                 settings=settings,
                 fan=fan,
                 sensors=sensors,
                 apply=True,
-                duration_s=0.025,
+                duration_s=2.5,
                 csv_log=CsvLog(None),
                 profile_path=profile,
-                inactive_event_wait_s=0.01,
+                inactive_event_wait_s=1.0,
             )
             controller.run()
         self.assertNotIn(("auto", None), fan.actions)
         self.assertEqual(fan.actions[-1], ("maximum", 255))
-        self.assertEqual(fan.mode, 0)
+        self.assertEqual(fan.mode, MAX_MODE)
 
     def test_cool_handoff_monitors_auto_before_sleeping(self):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "platform_profile"
             profile.write_text("balanced\n")
             settings = Settings.load(CONFIG_PATH)
-            settings = Settings(
-                **{
-                    **settings.__dict__,
-                    "sample_interval_s": 0.01,
-                    "control_interval_s": 0.01,
-                    "auto_guard_s": 0.01,
-                    "emergency_hold_s": 0.0,
-                }
+            settings = settings_with(
+                settings,
+                emergency_hold_s=0.0,
+                auto_guard_s=120.0,
             )
             fan = FakeFan()
-            fan.mode = 0
+            fan.mode = MAX_MODE
             sensors = Mock()
             sensors.read.return_value = TemperatureSnapshot(44, 44, None, None)
-            controller = Controller(
+            controller = controller_with_fake_time(
                 settings=settings,
                 fan=fan,
                 sensors=sensors,
                 apply=True,
-                duration_s=0.04,
+                duration_s=122.0,
                 csv_log=CsvLog(None),
                 profile_path=profile,
-                inactive_event_wait_s=0.01,
+                status_interval_s=1000.0,
+                inactive_event_wait_s=1.0,
             )
             controller.run()
         self.assertIn(("auto", None), fan.actions)
@@ -1019,61 +982,34 @@ class ControllerLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "platform_profile"
             profile.write_text("performance\n")
-            settings = Settings(
-                allowed_boards=("8D87",),
-                required_profile="performance",
-                sample_interval_s=0.01,
-                control_interval_s=0.01,
-                activation_temp_c=65,
-                release_temp_c=55,
-                critical_temp_c=92,
-                critical_release_temp_c=82,
-                emergency_hold_s=0,
-                decrease_hysteresis_c=3,
-                max_rise_percent_per_update=20,
-                max_fall_percent_per_update=8,
-                minimum_manual_percent=35,
-                ewma_rise_alpha=0.25,
-                ewma_fall_alpha=0.1,
-                include_acpi=True,
-                include_amd_gpu=True,
-                include_nvidia_gpu=True,
-                curve=Curve((50, 60, 70, 80, 90), (25, 35, 55, 75, 100)),
-            )
+            settings = Settings.load(CONFIG_PATH)
             fan = FakeFan()
-            controller = Controller(
+            controller = controller_with_fake_time(
                 settings=settings,
                 fan=fan,
                 sensors=FakeSensors(70),
                 apply=True,
-                duration_s=0.04,
+                duration_s=2.5,
                 csv_log=CsvLog(None),
                 profile_path=profile,
             )
             controller.run()
             self.assertEqual(fan.actions[0][0], "manual")
             self.assertEqual(fan.actions[-1][0], "maximum")
-            self.assertEqual(fan.mode, 0)
+            self.assertEqual(fan.mode, MAX_MODE)
 
     def test_systemd_watchdog_tracks_controller_progress_and_stop(self):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "platform_profile"
             profile.write_text("performance\n")
             settings = Settings.load(CONFIG_PATH)
-            settings = Settings(
-                **{
-                    **settings.__dict__,
-                    "sample_interval_s": 0.01,
-                    "control_interval_s": 0.01,
-                }
-            )
             notifier = Mock(spec=SystemdNotifier)
-            controller = Controller(
+            controller = controller_with_fake_time(
                 settings=settings,
                 fan=FakeFan(),
                 sensors=FakeSensors(50),
                 apply=True,
-                duration_s=0.025,
+                duration_s=2.5,
                 csv_log=CsvLog(None),
                 profile_path=profile,
                 notifier=notifier,
@@ -1088,20 +1024,13 @@ class ControllerLoopTests(unittest.TestCase):
             profile = Path(temporary) / "platform_profile"
             profile.write_text("performance\n")
             settings = Settings.load(CONFIG_PATH)
-            settings = Settings(
-                **{
-                    **settings.__dict__,
-                    "sample_interval_s": 0.01,
-                    "control_interval_s": 0.01,
-                }
-            )
             fan = FakeFan()
-            controller = Controller(
+            controller = controller_with_fake_time(
                 settings=settings,
                 fan=fan,
                 sensors=FailingAfterFirstSample(),
                 apply=True,
-                duration_s=0.04,
+                duration_s=3.5,
                 csv_log=CsvLog(None),
                 profile_path=profile,
             )
@@ -1109,7 +1038,7 @@ class ControllerLoopTests(unittest.TestCase):
             self.assertEqual(fan.actions[0][0], "manual")
             self.assertIn(("maximum", 255), fan.actions)
             self.assertEqual(fan.actions[-1][0], "maximum")
-            self.assertEqual(fan.mode, 0)
+            self.assertEqual(fan.mode, MAX_MODE)
 
     def test_actuator_test_restores_auto(self):
         fan = FakeFan()
@@ -1135,7 +1064,7 @@ class ControllerLoopTests(unittest.TestCase):
         fan.mode = MANUAL_MODE
         ensure_failsafe_fan_state(fan)
         self.assertEqual(fan.actions, [("maximum", 255)])
-        self.assertEqual(fan.mode, 0)
+        self.assertEqual(fan.mode, MAX_MODE)
 
     def test_failsafe_recovery_preserves_existing_auto(self):
         fan = FakeFan()
@@ -1150,7 +1079,7 @@ class ControllerLoopTests(unittest.TestCase):
             fan = FakeFan()
             ensure_failsafe_fan_state(fan, guard)
         self.assertEqual(fan.actions, [("maximum", 255)])
-        self.assertEqual(fan.mode, 0)
+        self.assertEqual(fan.mode, MAX_MODE)
         self.assertFalse(guard.exists())
 
     def test_restore_auto_does_not_depend_on_configuration(self):
@@ -1188,7 +1117,7 @@ class ControllerLoopTests(unittest.TestCase):
         load_settings.assert_not_called()
         wait_for_hwmon.assert_not_called()
         lock.close.assert_called_once_with()
-        self.assertEqual(fan.mode, 0)
+        self.assertEqual(fan.mode, MAX_MODE)
 
     def test_main_closes_lock_when_hwmon_startup_times_out(self):
         lock = Mock()
@@ -1217,12 +1146,7 @@ class ControllerLoopTests(unittest.TestCase):
 
     def test_main_rejects_unavailable_required_profile_before_locking(self):
         settings = Settings.load(CONFIG_PATH)
-        settings = Settings(
-            **{
-                **settings.__dict__,
-                "required_profile": "performnce",
-            }
-        )
+        settings = settings_with(settings, required_profile="performnce")
         acquire = Mock()
 
         def fake_read_text(path):
@@ -1388,9 +1312,7 @@ class FakeHwmonTests(unittest.TestCase):
             self.assertEqual(int((hp / "pwm1_enable").read_text()), AUTO_MODE)
 
     def test_failed_initial_pwm_write_rolls_manual_mode_back_to_auto(self):
-        fan = object.__new__(HpFanHwmon)
-        fan.enable = Path("/fake/pwm1_enable")
-        fan.pwm = Path("/fake/pwm1")
+        fan = initialized_fan(self)
         failure = HardwareError("PWM write failed")
         with patch(
             "hp_fan_control.write_int",
@@ -1408,9 +1330,7 @@ class FakeHwmonTests(unittest.TestCase):
         )
 
     def test_update_attempts_single_manual_mode_recovery(self):
-        fan = object.__new__(HpFanHwmon)
-        fan.enable = Path("/fake/pwm1_enable")
-        fan.pwm = Path("/fake/pwm1")
+        fan = initialized_fan(self)
 
         with (
             patch("hp_fan_control.read_int", return_value=AUTO_MODE),
@@ -1425,13 +1345,9 @@ class FakeHwmonTests(unittest.TestCase):
                 call(fan.pwm, 120),
             ],
         )
-        self.assertTrue(fan._manual_recovery_pending)
 
     def test_update_fails_if_manual_mode_is_lost_again_after_recovery(self):
-        fan = object.__new__(HpFanHwmon)
-        fan.enable = Path("/fake/pwm1_enable")
-        fan.pwm = Path("/fake/pwm1")
-        fan._manual_recovery_pending = False
+        fan = initialized_fan(self)
 
         with (
             patch("hp_fan_control.read_int", return_value=AUTO_MODE),
@@ -1453,9 +1369,7 @@ class FakeHwmonTests(unittest.TestCase):
         )
 
     def test_update_does_not_rewrite_unchanged_manual_pwm(self):
-        fan = object.__new__(HpFanHwmon)
-        fan.enable = Path("/fake/pwm1_enable")
-        fan.pwm = Path("/fake/pwm1")
+        fan = initialized_fan(self)
 
         with (
             patch("hp_fan_control.read_int", return_value=MANUAL_MODE),
@@ -1464,12 +1378,9 @@ class FakeHwmonTests(unittest.TestCase):
             fan.update_manual(120, write_pwm=False)
 
         write.assert_not_called()
-        self.assertFalse(fan._manual_recovery_pending)
 
     def test_update_preserves_externally_asserted_maximum_mode(self):
-        fan = object.__new__(HpFanHwmon)
-        fan.enable = Path("/fake/pwm1_enable")
-        fan.pwm = Path("/fake/pwm1")
+        fan = initialized_fan(self)
 
         with (
             patch("hp_fan_control.read_int", return_value=MAX_MODE),
@@ -1480,9 +1391,7 @@ class FakeHwmonTests(unittest.TestCase):
         write.assert_not_called()
 
     def test_update_rejects_unknown_mode_without_writing(self):
-        fan = object.__new__(HpFanHwmon)
-        fan.enable = Path("/fake/pwm1_enable")
-        fan.pwm = Path("/fake/pwm1")
+        fan = initialized_fan(self)
 
         with (
             patch("hp_fan_control.read_int", return_value=3),

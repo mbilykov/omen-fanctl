@@ -26,7 +26,8 @@ import time
 import tomllib
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Iterable, TextIO
+from types import MappingProxyType
+from typing import Callable, Iterable, Mapping, TextIO
 
 
 LOG = logging.getLogger("hp-fan-control")
@@ -882,78 +883,62 @@ class CsvLog:
             self.handle.close()
 
 
-class Controller:
-    def __init__(
-        self,
-        settings: Settings,
-        fan: HpFanHwmon,
-        sensors: Sensors,
-        apply: bool,
-        duration_s: float | None,
-        csv_log: CsvLog,
-        profile_path: Path = Path("/sys/firmware/acpi/platform_profile"),
-        status_interval_s: float = 1.0,
-        notifier: SystemdNotifier | None = None,
-        inactive_event_wait_s: float = 5.0,
-        auto_guard_path: Path | None = None,
-    ):
+class ControlPolicy:
+    """Stateful fan-control decisions, independent of hardware and scheduling."""
+
+    def __init__(self, settings: Settings):
         self.settings = settings
-        self.fan = fan
-        self.sensors = sensors
-        self.apply = apply
-        self.duration_s = duration_s
-        self.csv_log = csv_log
-        self.profile_path = profile_path
-        self.status_interval_s = status_interval_s
-        self.notifier = notifier or SystemdNotifier(None)
-        self.profile_monitor: PlatformProfileMonitor | None = None
-        self.inactive_event_wait_s = inactive_event_wait_s
-        self.auto_guard_path = auto_guard_path
-        self.next_status_log = 0.0
-        self.last_status_state = ""
-        self.last_status_note = ""
-        self.stop_requested = False
-        self.manual_active = False
-        self.emergency = False
-        self.emergency_since: float | None = None
-        self.commanded_pwm: int | None = None
-        self.auto_guard_until: float | None = None
-        self.filters = {
-            "cpu": Ewma(settings.ewma_rise_alpha, settings.ewma_fall_alpha),
-            "gpu": Ewma(settings.ewma_rise_alpha, settings.ewma_fall_alpha),
-            "ir": Ewma(settings.ewma_rise_alpha, settings.ewma_fall_alpha),
-            "acpi": Ewma(settings.ewma_rise_alpha, settings.ewma_fall_alpha),
-        }
-        self.sensor_targets: dict[str, float | None] = {
+        self._commanded_pwm: int | None = None
+        self._sensor_targets: dict[str, float | None] = {
             "cpu": None,
             "gpu": None,
             "ir": None,
             "acpi": None,
         }
-        self.activated_sensors: set[str] = set()
-        self.winning_sensor = ""
+        self._activated_sensors: set[str] = set()
+        self._winning_sensor = ""
 
-    def request_stop(self, signum: int, _frame: object) -> None:
-        LOG.info("received signal %s", signum)
-        self.stop_requested = True
+    @property
+    def commanded_pwm(self) -> int | None:
+        return self._commanded_pwm
 
-    def _profile(self) -> str:
-        if self.profile_monitor is None:
-            raise HardwareError("platform profile monitor is not initialized")
-        return self.profile_monitor.current
+    @property
+    def sensor_targets(self) -> Mapping[str, float | None]:
+        return MappingProxyType(self._sensor_targets)
 
-    def _filtered(self, snapshot: TemperatureSnapshot) -> dict[str, float | None]:
-        result: dict[str, float | None] = {}
-        for name, value in (
-            ("cpu", snapshot.cpu),
-            ("gpu", snapshot.gpu),
-            ("ir", snapshot.ir),
-            ("acpi", snapshot.acpi),
-        ):
-            result[name] = None if value is None else self.filters[name].update(value)
-        return result
+    @property
+    def winning_sensor(self) -> str:
+        return self._winning_sensor
 
-    def _activation_threshold(self, sensor: str) -> float:
+    def set_commanded_pwm(self, pwm: int | None) -> None:
+        self._commanded_pwm = pwm
+
+    def observe_activations(self, snapshot: TemperatureSnapshot) -> None:
+        self._activated_sensors.update(self.activation_sources(snapshot))
+
+    def exit_emergency(self, snapshot: TemperatureSnapshot) -> None:
+        self._commanded_pwm = None
+        self._sensor_targets = {
+            "cpu": None,
+            "gpu": None,
+            "ir": None,
+            "acpi": None,
+        }
+        self._activated_sensors = self.activation_sources(snapshot)
+        self._winning_sensor = ""
+
+    def reset(self) -> None:
+        self._commanded_pwm = None
+        self._sensor_targets = {
+            "cpu": None,
+            "gpu": None,
+            "ir": None,
+            "acpi": None,
+        }
+        self._activated_sensors.clear()
+        self._winning_sensor = ""
+
+    def activation_threshold(self, sensor: str) -> float:
         if sensor != "ir":
             return self.settings.activation_temp_c
 
@@ -964,17 +949,14 @@ class Controller:
                 return temperature
         return float("inf")
 
-    def _cool_enough_for_auto(
-        self,
-        snapshot: TemperatureSnapshot,
-    ) -> bool:
+    def cool_enough_for_auto(self, snapshot: TemperatureSnapshot) -> bool:
         for name, raw_value in snapshot.control_temperatures().items():
             if raw_value is None:
                 continue
             # IR uses much lower curve temperatures than CPU/GPU. Do not
             # let a cool sensor that never activated control prevent a return
             # to firmware Auto after another sensor caused the Manual cycle.
-            if name == "ir" and name not in self.activated_sensors:
+            if name == "ir" and name not in self._activated_sensors:
                 continue
             release = min(
                 self.settings.release_temp_c,
@@ -983,25 +965,24 @@ class Controller:
             if name == "ir":
                 release = min(
                     release,
-                    self._activation_threshold(name)
+                    self.activation_threshold(name)
                     - self.settings.ir_release_hysteresis_c,
                 )
             if raw_value > release:
                 return False
         return True
 
-    def _activation_sources(self, snapshot: TemperatureSnapshot) -> set[str]:
+    def activation_sources(self, snapshot: TemperatureSnapshot) -> set[str]:
         return {
             name
             for name, value in snapshot.control_temperatures().items()
-            if value is not None
-            and value >= self._activation_threshold(name)
+            if value is not None and value >= self.activation_threshold(name)
         }
 
-    def _should_activate(self, snapshot: TemperatureSnapshot) -> bool:
-        return bool(self._activation_sources(snapshot))
+    def should_activate(self, snapshot: TemperatureSnapshot) -> bool:
+        return bool(self.activation_sources(snapshot))
 
-    def _desired_pwm(
+    def desired_pwm(
         self,
         filtered: dict[str, float | None],
         raw_temperatures: dict[str, float | None] | None = None,
@@ -1029,7 +1010,7 @@ class Controller:
         targets: dict[str, float] = {}
         for name, filtered_temperature in filtered.items():
             if filtered_temperature is None:
-                self.sensor_targets[name] = None
+                self._sensor_targets[name] = None
                 continue
             raw_temperature = (
                 None if raw_temperatures is None else raw_temperatures.get(name)
@@ -1039,7 +1020,7 @@ class Controller:
                 filtered_temperature if raw_temperature is None else raw_temperature,
             )
             curve = self.settings.curve_for(name)
-            previous = self.sensor_targets[name]
+            previous = self._sensor_targets[name]
             target = curve.target_percent(evaluating, previous)
 
             # Custom/legacy linear curves use the original generic decrease
@@ -1053,29 +1034,105 @@ class Controller:
                     filtered_temperature + self.settings.decrease_hysteresis_c,
                     previous,
                 )
-            self.sensor_targets[name] = target
+            self._sensor_targets[name] = target
             # acpitz is an opt-in diagnostic proxy. Preserve its evaluated
             # target in telemetry, but never let it drive fan state or PWM.
             if name in CONTROL_SENSORS:
                 targets[name] = target
 
-        self.winning_sensor = max(targets, key=targets.get)
-        candidate = percent_to_pwm(targets[self.winning_sensor])
+        self._winning_sensor = max(targets, key=targets.get)
+        candidate = percent_to_pwm(targets[self._winning_sensor])
 
         minimum = percent_to_pwm(self.settings.minimum_manual_percent)
         candidate = max(candidate, minimum)
 
-        if self.commanded_pwm is not None:
+        if self._commanded_pwm is not None:
             rise = percent_to_pwm(self.settings.max_rise_percent_per_update)
             fall = percent_to_pwm(self.settings.max_fall_percent_per_update)
-            candidate = min(candidate, self.commanded_pwm + rise)
-            candidate = max(candidate, self.commanded_pwm - fall)
+            candidate = min(candidate, self._commanded_pwm + rise)
+            candidate = max(candidate, self._commanded_pwm - fall)
         return int(clamp(candidate, 1, PWM_MAX)), hottest
+
+
+class Controller:
+    def __init__(
+        self,
+        settings: Settings,
+        fan: HpFanHwmon,
+        sensors: Sensors,
+        apply: bool,
+        duration_s: float | None,
+        csv_log: CsvLog,
+        profile_path: Path = Path("/sys/firmware/acpi/platform_profile"),
+        status_interval_s: float = 1.0,
+        notifier: SystemdNotifier | None = None,
+        inactive_event_wait_s: float = 5.0,
+        auto_guard_path: Path | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        wait_for_change: Callable[[float], object] | None = None,
+    ):
+        settings.validate()
+        self.settings = settings
+        self.fan = fan
+        self.sensors = sensors
+        self.apply = apply
+        self.duration_s = duration_s
+        self.csv_log = csv_log
+        self.profile_path = profile_path
+        self.status_interval_s = status_interval_s
+        self.notifier = notifier or SystemdNotifier(None)
+        self.profile_monitor: PlatformProfileMonitor | None = None
+        self.inactive_event_wait_s = inactive_event_wait_s
+        self.auto_guard_path = auto_guard_path
+        self.clock = clock
+        self.wait_for_change = wait_for_change
+        self.next_status_log = 0.0
+        self.last_status_state = ""
+        self.last_status_note = ""
+        self.stop_requested = False
+        self.manual_active = False
+        self.emergency = False
+        self.emergency_since: float | None = None
+        self.auto_guard_until: float | None = None
+        self.filters = {
+            "cpu": Ewma(settings.ewma_rise_alpha, settings.ewma_fall_alpha),
+            "gpu": Ewma(settings.ewma_rise_alpha, settings.ewma_fall_alpha),
+            "ir": Ewma(settings.ewma_rise_alpha, settings.ewma_fall_alpha),
+            "acpi": Ewma(settings.ewma_rise_alpha, settings.ewma_fall_alpha),
+        }
+        self.policy = ControlPolicy(settings)
+
+    def request_stop(self, signum: int, _frame: object) -> None:
+        LOG.info("received signal %s", signum)
+        self.stop_requested = True
+
+    def _profile(self) -> str:
+        if self.profile_monitor is None:
+            raise HardwareError("platform profile monitor is not initialized")
+        return self.profile_monitor.current
+
+    def _wait_for_profile_change(self, timeout_s: float) -> None:
+        if self.wait_for_change is not None:
+            self.wait_for_change(timeout_s)
+            return
+        assert self.profile_monitor is not None
+        self.profile_monitor.wait_for_change(timeout_s)
+
+    def _filtered(self, snapshot: TemperatureSnapshot) -> dict[str, float | None]:
+        result: dict[str, float | None] = {}
+        for name, value in (
+            ("cpu", snapshot.cpu),
+            ("gpu", snapshot.gpu),
+            ("ir", snapshot.ir),
+            ("acpi", snapshot.acpi),
+        ):
+            result[name] = None if value is None else self.filters[name].update(value)
+        return result
 
     def _apply_manual(self, pwm: int) -> int:
         if not self.apply:
             self.manual_active = True
-            self.commanded_pwm = pwm
+            self.policy.set_commanded_pwm(pwm)
             self._clear_auto_guard()
             return pwm
         if not self.manual_active:
@@ -1092,9 +1149,9 @@ class Controller:
             # reset pwm1_enable behind the controller's back.
             self.fan.update_manual(
                 pwm,
-                write_pwm=pwm != self.commanded_pwm,
+                write_pwm=pwm != self.policy.commanded_pwm,
             )
-        self.commanded_pwm = pwm
+        self.policy.set_commanded_pwm(pwm)
         return pwm
 
     def _maximum(self) -> None:
@@ -1103,7 +1160,7 @@ class Controller:
             if mode != MAX_MODE:
                 self.fan.set_maximum()
         self.manual_active = True
-        self.commanded_pwm = PWM_MAX
+        self.policy.set_commanded_pwm(PWM_MAX)
         self._clear_auto_guard()
 
     def _start_auto_guard(self, now: float) -> None:
@@ -1145,13 +1202,10 @@ class Controller:
         self.manual_active = False
         self.emergency = False
         self.emergency_since = None
-        self.commanded_pwm = None
-        self.sensor_targets = {"cpu": None, "gpu": None, "ir": None, "acpi": None}
-        self.activated_sensors.clear()
-        self.winning_sensor = ""
+        self.policy.reset()
         self._start_auto_guard(now)
 
-    def _log_sample(
+    def log_sample(
         self,
         started: float,
         profile: str,
@@ -1170,7 +1224,7 @@ class Controller:
         def fmt(value: float | None) -> str:
             return "" if value is None else f"{value:.1f}"
 
-        now = time.monotonic()
+        now = self.clock()
         if (
             state != self.last_status_state
             or note != self.last_status_note
@@ -1188,7 +1242,7 @@ class Controller:
                 fmt(snapshot.ir) or "n/a",
                 fmt(snapshot.acpi) or "n/a",
                 hottest,
-                self.winning_sensor or "-",
+                self.policy.winning_sensor or "-",
                 "-" if requested is None else requested,
                 "-" if requested is None else f"{pwm_to_percent(requested):.1f}",
                 mode,
@@ -1203,7 +1257,7 @@ class Controller:
         self.csv_log.write(
             {
                 "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
-                "elapsed_s": f"{time.monotonic() - started:.1f}",
+                "elapsed_s": f"{self.clock() - started:.1f}",
                 "profile": profile,
                 "state": state,
                 "cpu_raw_c": fmt(snapshot.cpu),
@@ -1218,11 +1272,11 @@ class Controller:
                 "acpi_ewma_c": fmt(filtered["acpi"]),
                 "hottest_control_c": f"{hottest:.1f}",
                 "curve_source": self.settings.curve_source,
-                "winning_sensor": self.winning_sensor,
-                "cpu_target_percent": fmt(self.sensor_targets["cpu"]),
-                "gpu_target_percent": fmt(self.sensor_targets["gpu"]),
-                "ir_target_percent": fmt(self.sensor_targets["ir"]),
-                "acpi_target_percent": fmt(self.sensor_targets["acpi"]),
+                "winning_sensor": self.policy.winning_sensor,
+                "cpu_target_percent": fmt(self.policy.sensor_targets["cpu"]),
+                "gpu_target_percent": fmt(self.policy.sensor_targets["gpu"]),
+                "ir_target_percent": fmt(self.policy.sensor_targets["ir"]),
+                "acpi_target_percent": fmt(self.policy.sensor_targets["acpi"]),
                 "requested_pwm": "" if requested is None else requested,
                 "requested_percent": (
                     "" if requested is None else f"{pwm_to_percent(requested):.1f}"
@@ -1236,7 +1290,7 @@ class Controller:
         )
 
     def run(self) -> None:
-        started = time.monotonic()
+        started = self.clock()
         next_control = started
         if self.apply:
             initial_mode, _, _, _ = self.fan.status()
@@ -1244,7 +1298,7 @@ class Controller:
                 self.manual_active = True
                 self.emergency = True
                 self.emergency_since = started
-                self.commanded_pwm = PWM_MAX
+                self.policy.set_commanded_pwm(PWM_MAX)
                 LOG.warning("adopting maximum-fan fail-safe from previous service run")
             elif initial_mode != AUTO_MODE:
                 raise HardwareError(
@@ -1258,7 +1312,7 @@ class Controller:
         try:
             while not self.stop_requested:
                 self.notifier.watchdog()
-                now = time.monotonic()
+                now = self.clock()
                 if self.duration_s is not None and now - started >= self.duration_s:
                     LOG.info("configured duration completed")
                     break
@@ -1278,9 +1332,7 @@ class Controller:
                             self.settings.required_profile,
                         )
                         self.last_status_state = "sleeping"
-                    self.profile_monitor.wait_for_change(
-                        self.inactive_event_wait_s
-                    )
+                    self._wait_for_profile_change(self.inactive_event_wait_s)
                     continue
 
                 try:
@@ -1293,9 +1345,7 @@ class Controller:
                         self.emergency_since = self.emergency_since or now
                     else:
                         LOG.error("sensor failure while BIOS Auto is active: %s", exc)
-                    self.profile_monitor.wait_for_change(
-                        self.settings.sample_interval_s
-                    )
+                    self._wait_for_profile_change(self.settings.sample_interval_s)
                     continue
 
                 filtered = self._filtered(snapshot)
@@ -1306,9 +1356,7 @@ class Controller:
                 )
                 note = ""
 
-                self.activated_sensors.update(
-                    self._activation_sources(snapshot)
-                )
+                self.policy.observe_activations(snapshot)
 
                 if snapshot.raw_control_hottest >= self.settings.critical_temp_c:
                     if not self.emergency:
@@ -1330,16 +1378,9 @@ class Controller:
                     if hottest <= self.settings.critical_release_temp_c and held_long_enough:
                         self.emergency = False
                         self.manual_active = False
-                        self.commanded_pwm = None
+                        self.policy.exit_emergency(snapshot)
                         self._clear_auto_guard()
-                        self.sensor_targets = {
-                            "cpu": None,
-                            "gpu": None,
-                            "ir": None,
-                            "acpi": None,
-                        }
-                        self.activated_sensors = self._activation_sources(snapshot)
-                        requested, hottest = self._desired_pwm(filtered)
+                        requested, hottest = self.policy.desired_pwm(filtered)
                         requested = self._apply_manual(requested)
                         state = "manual"
                         note = "left emergency state"
@@ -1350,13 +1391,13 @@ class Controller:
                         note = "waiting for critical release"
                 elif (
                     not self.manual_active
-                    and not self._should_activate(snapshot)
+                    and not self.policy.should_activate(snapshot)
                 ):
                     state = "auto-guard" if auto_guard_active else "bios-auto"
                     requested = None
                     if auto_guard_active:
                         note = "monitoring firmware fan-stop window"
-                elif self.manual_active and self._cool_enough_for_auto(snapshot):
+                elif self.manual_active and self.policy.cool_enough_for_auto(snapshot):
                     reason = "raw temperatures reached fan-stop thresholds"
                     if outside_required_profile:
                         reason += f" for profile {profile}"
@@ -1366,7 +1407,7 @@ class Controller:
                     requested = None
                     note = "monitoring firmware fan-stop window"
                 else:
-                    candidate, hottest = self._desired_pwm(
+                    candidate, hottest = self.policy.desired_pwm(
                         filtered,
                         {
                             **snapshot.control_temperatures(),
@@ -1376,28 +1417,26 @@ class Controller:
                     # Heating may raise the target on every sample. Fan-speed
                     # reductions remain limited to the normal control cadence.
                     should_update = (
-                        self.commanded_pwm is None
-                        or candidate > self.commanded_pwm
+                        self.policy.commanded_pwm is None
+                        or candidate > self.policy.commanded_pwm
                         or now >= next_control
                     )
                     if should_update:
                         requested = self._apply_manual(candidate)
                         next_control = now + self.settings.control_interval_s
                     else:
-                        requested = self.commanded_pwm
+                        requested = self.policy.commanded_pwm
                     state = "handoff" if outside_required_profile else "manual"
                     if outside_required_profile:
                         note = "cooling before firmware Auto"
 
-                self._log_sample(
+                self.log_sample(
                     started, profile, state, snapshot, filtered, hottest, requested, note
                 )
-                self.profile_monitor.wait_for_change(
-                    self.settings.sample_interval_s
-                )
+                self._wait_for_profile_change(self.settings.sample_interval_s)
         finally:
             try:
-                guard_active_at_stop = self._auto_guard_active(time.monotonic())
+                guard_active_at_stop = self._auto_guard_active(self.clock())
                 if self.apply and (
                     self.manual_active or self.emergency or guard_active_at_stop
                 ):
