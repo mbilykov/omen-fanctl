@@ -1,7 +1,6 @@
 [Unit]
 Description=Standalone HP 8D87 automatic fan controller
 Documentation=file:/usr/local/share/doc/hp-fan-control/README.md
-After=multi-user.target
 ConditionPathExists=/sys/firmware/acpi/platform_profile
 StartLimitIntervalSec=60
 StartLimitBurst=10
@@ -26,6 +25,7 @@ WorkingDirectory=/var/log/hp-fan-control
 UMask=0027
 
 NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_DAC_OVERRIDE
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -34,8 +34,14 @@ ProtectClock=yes
 ProtectKernelLogs=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
 RestrictRealtime=yes
+RestrictSUIDSGID=yes
 LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
 
 [Install]
 WantedBy=multi-user.target
