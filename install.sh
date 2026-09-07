@@ -50,6 +50,11 @@ done
 
 if systemctl cat hp-fan-control.service >/dev/null 2>&1; then
     if systemctl is-active --quiet hp-fan-control.service; then
+        if [[ -e /run/hp-fan-control/auto-guard ]]; then
+            echo "ERROR: refusing to stop the existing service during Auto guard" >&2
+            echo "Wait for 'state=sleeping', then retry." >&2
+            exit 1
+        fi
         HP_HWMON=
         for candidate in /sys/class/hwmon/hwmon*; do
             if [[ -r "$candidate/name" ]] && [[ "$(<"$candidate/name")" == hp ]]; then
@@ -69,6 +74,11 @@ if systemctl cat hp-fan-control.service >/dev/null 2>&1; then
     fi
     echo "Stopping existing hp-fan-control.service before installation..."
     systemctl stop hp-fan-control.service
+    if [[ -n "${HP_HWMON:-}" ]] && [[ "$(<"$HP_HWMON/pwm1_enable")" != 2 ]]; then
+        echo "ERROR: service stopped in maximum fail-safe; files were not replaced" >&2
+        echo "Start the service again and wait for 'state=sleeping'." >&2
+        exit 1
+    fi
 fi
 
 install -D -m 0755 "$SCRIPT_DIR/src/hp_fan_control.py" \

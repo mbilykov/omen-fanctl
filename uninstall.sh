@@ -35,6 +35,12 @@ if (( EUID != 0 )); then
     exit 1
 fi
 
+if [[ -e /run/hp-fan-control/auto-guard ]]; then
+    echo "ERROR: refusing to uninstall during Auto guard" >&2
+    echo "Wait for 'state=sleeping', then retry." >&2
+    exit 1
+fi
+
 HP_HWMON=
 for candidate in /sys/class/hwmon/hwmon*; do
     if [[ -r "$candidate/name" ]] && [[ "$(<"$candidate/name")" == hp ]]; then

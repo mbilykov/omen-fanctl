@@ -142,23 +142,39 @@ class ControlDecisionTests(unittest.TestCase):
         self.assertEqual(hottest, 80)
         self.assertAlmostEqual(pwm_to_percent(pwm), 75, delta=0.2)
 
-    def test_auto_handoff_requires_continuous_cool_dwell(self):
+    def test_auto_guard_expires_at_configured_deadline(self):
         self.controller.settings = Settings(
             **{
                 **self.controller.settings.__dict__,
-                "auto_handoff_hold_s": 90.0,
+                "auto_guard_s": 180.0,
             }
         )
-        self.controller.activated_sensors.add("cpu")
-        cool = TemperatureSnapshot(50, 50, None, None)
-        hot = TemperatureSnapshot(60, 50, None, None)
-        cool_filtered = {"cpu": 50.0, "gpu": 50.0, "ir": None, "acpi": None}
-        hot_filtered = {"cpu": 60.0, "gpu": 50.0, "ir": None, "acpi": None}
+        self.controller._start_auto_guard(10.0)
+        self.assertTrue(self.controller._auto_guard_active(189.9))
+        self.assertFalse(self.controller._auto_guard_active(190.0))
 
-        self.assertFalse(self.controller._auto_handoff_ready(cool, cool_filtered, 0))
-        self.assertFalse(self.controller._auto_handoff_ready(hot, hot_filtered, 80))
-        self.assertFalse(self.controller._auto_handoff_ready(cool, cool_filtered, 100))
-        self.assertTrue(self.controller._auto_handoff_ready(cool, cool_filtered, 190))
+    def test_auto_guard_marker_lives_until_deadline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            guard = Path(temporary) / "auto-guard"
+            self.controller.auto_guard_path = guard
+            self.controller._start_auto_guard(10.0)
+            self.assertTrue(guard.exists())
+            self.assertTrue(self.controller._auto_guard_active(100.0))
+            self.assertTrue(guard.exists())
+            self.assertFalse(self.controller._auto_guard_active(190.0))
+            self.assertFalse(guard.exists())
+
+    def test_rejects_auto_guard_shorter_than_firmware_window(self):
+        settings = Settings(
+            **{
+                **self.controller.settings.__dict__,
+                "auto_guard_s": 119.0,
+            }
+        )
+        with self.assertRaisesRegex(
+            ValueError, "auto_guard_s must be at least 120 seconds"
+        ):
+            settings.validate()
 
     def test_independent_gpu_curve_can_win(self):
         self.controller.settings = Settings(
@@ -391,6 +407,19 @@ class FailingAfterFirstSample:
         raise HardwareError("mandatory CPU source disappeared")
 
 
+class SequenceSensors:
+    def __init__(self, snapshots):
+        self.snapshots = iter(snapshots)
+        self.last = None
+
+    def read(self):
+        try:
+            self.last = next(self.snapshots)
+        except StopIteration:
+            pass
+        return self.last
+
+
 class ControllerLoopTests(unittest.TestCase):
     def test_repeated_status_note_is_rate_limited(self):
         settings = Settings.load(Path(__file__).with_name("fan-control.toml"))
@@ -446,6 +475,97 @@ class ControllerLoopTests(unittest.TestCase):
         notifier.ready.assert_called_once_with()
         self.assertGreaterEqual(notifier.watchdog.call_count, 1)
 
+    def test_new_heat_during_auto_guard_reclaims_manual_control(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "platform_profile"
+            profile.write_text("balanced\n")
+            settings = Settings.load(Path(__file__).with_name("fan-control.toml"))
+            settings = Settings(
+                **{
+                    **settings.__dict__,
+                    "sample_interval_s": 0.01,
+                    "control_interval_s": 0.01,
+                }
+            )
+            fan = FakeFan()
+            controller = Controller(
+                settings=settings,
+                fan=fan,
+                sensors=FakeSensors(70),
+                apply=True,
+                duration_s=0.025,
+                csv_log=CsvLog(None),
+                profile_path=profile,
+                inactive_event_wait_s=0.01,
+            )
+            controller.auto_guard_until = float("inf")
+            controller.run()
+        self.assertEqual(fan.actions[0][0], "manual")
+        self.assertNotIn(("auto", None), fan.actions)
+
+    def test_new_heat_after_auto_handoff_starts_a_new_manual_cycle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "platform_profile"
+            profile.write_text("balanced\n")
+            settings = Settings.load(Path(__file__).with_name("fan-control.toml"))
+            settings = Settings(
+                **{
+                    **settings.__dict__,
+                    "sample_interval_s": 0.01,
+                    "control_interval_s": 0.01,
+                    "auto_guard_s": 1.0,
+                    "emergency_hold_s": 0.0,
+                }
+            )
+            cool = TemperatureSnapshot(50, 50, None, None)
+            hot = TemperatureSnapshot(70, 50, None, None)
+            fan = FakeFan()
+            fan.mode = 0
+            controller = Controller(
+                settings=settings,
+                fan=fan,
+                sensors=SequenceSensors([cool, cool, hot]),
+                apply=True,
+                duration_s=0.055,
+                csv_log=CsvLog(None),
+                profile_path=profile,
+                inactive_event_wait_s=0.01,
+            )
+            controller.run()
+        auto_index = fan.actions.index(("auto", None))
+        later_actions = fan.actions[auto_index + 1 :]
+        self.assertTrue(any(action == "manual" for action, _ in later_actions))
+
+    def test_cpu_sensor_loss_during_auto_guard_selects_maximum(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "platform_profile"
+            profile.write_text("balanced\n")
+            settings = Settings.load(Path(__file__).with_name("fan-control.toml"))
+            settings = Settings(
+                **{
+                    **settings.__dict__,
+                    "sample_interval_s": 0.01,
+                    "control_interval_s": 0.01,
+                }
+            )
+            fan = FakeFan()
+            sensors = Mock()
+            sensors.read.side_effect = HardwareError("CPU unavailable")
+            controller = Controller(
+                settings=settings,
+                fan=fan,
+                sensors=sensors,
+                apply=True,
+                duration_s=0.025,
+                csv_log=CsvLog(None),
+                profile_path=profile,
+                inactive_event_wait_s=0.01,
+            )
+            controller.auto_guard_until = float("inf")
+            controller.run()
+        self.assertIn(("maximum", 255), fan.actions)
+        self.assertEqual(fan.mode, 0)
+
     def test_leaving_performance_keeps_hot_manual_control(self):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "platform_profile"
@@ -469,7 +589,7 @@ class ControllerLoopTests(unittest.TestCase):
         self.assertEqual(fan.actions[-1], ("maximum", 255))
         self.assertEqual(fan.mode, 0)
 
-    def test_leaving_performance_restores_auto_after_cool_dwell(self):
+    def test_cool_handoff_monitors_auto_before_sleeping(self):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "platform_profile"
             profile.write_text("balanced\n")
@@ -479,7 +599,7 @@ class ControllerLoopTests(unittest.TestCase):
                     **settings.__dict__,
                     "sample_interval_s": 0.01,
                     "control_interval_s": 0.01,
-                    "auto_handoff_hold_s": 0.01,
+                    "auto_guard_s": 0.01,
                     "emergency_hold_s": 0.0,
                 }
             )
@@ -501,7 +621,7 @@ class ControllerLoopTests(unittest.TestCase):
         self.assertIn(("auto", None), fan.actions)
         self.assertEqual(fan.mode, AUTO_MODE)
 
-    def test_enters_manual_and_restores_auto_at_exit(self):
+    def test_hot_timed_exit_selects_maximum(self):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "platform_profile"
             profile.write_text("performance\n")
@@ -629,6 +749,16 @@ class ControllerLoopTests(unittest.TestCase):
         self.assertEqual(fan.actions, [])
         self.assertEqual(fan.mode, AUTO_MODE)
 
+    def test_failsafe_recovery_replaces_guarded_auto_with_maximum(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            guard = Path(temporary) / "auto-guard"
+            guard.write_text("123\n")
+            fan = FakeFan()
+            ensure_failsafe_fan_state(fan, guard)
+        self.assertEqual(fan.actions, [("maximum", 255)])
+        self.assertEqual(fan.mode, 0)
+        self.assertFalse(guard.exists())
+
     def test_restore_auto_does_not_depend_on_configuration(self):
         lock = Mock()
         fan = FakeFan()
@@ -649,14 +779,17 @@ class ControllerLoopTests(unittest.TestCase):
         lock = Mock()
         fan = FakeFan()
         fan.mode = MANUAL_MODE
-        with (
-            patch("hp_fan_control.read_text", return_value="8D87"),
-            patch("hp_fan_control.os.geteuid", return_value=0),
-            patch("hp_fan_control.acquire_lock", return_value=lock),
-            patch("hp_fan_control.HpFanHwmon", return_value=fan),
-            patch("hp_fan_control.Settings.load") as load_settings,
-        ):
-            self.assertEqual(main(["--failsafe"]), 0)
+        with tempfile.TemporaryDirectory() as temporary:
+            guard = Path(temporary) / "missing-auto-guard"
+            with (
+                patch("hp_fan_control.read_text", return_value="8D87"),
+                patch("hp_fan_control.os.geteuid", return_value=0),
+                patch("hp_fan_control.acquire_lock", return_value=lock),
+                patch("hp_fan_control.HpFanHwmon", return_value=fan),
+                patch("hp_fan_control.AUTO_GUARD_PATH", guard),
+                patch("hp_fan_control.Settings.load") as load_settings,
+            ):
+                self.assertEqual(main(["--failsafe"]), 0)
         load_settings.assert_not_called()
         lock.close.assert_called_once_with()
         self.assertEqual(fan.mode, 0)

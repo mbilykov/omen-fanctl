@@ -14,10 +14,11 @@ control_interval_s = 5.0
 activation_temp_c = 60.0
 release_temp_c = 52.0
 
-# This firmware can stop both fans for roughly 90 seconds after Manual -> Auto.
-# Require continuous thermal headroom before handing control back. Any rise
-# above a release threshold resets this timer.
-auto_handoff_hold_s = 90.0
+# This firmware can stop both fans for roughly 90-120 seconds after Manual ->
+# Auto. After that transition, keep monitoring temperatures for three minutes
+# before sleeping. New heat immediately reactivates userspace fan control. The
+# daemon refuses values below the observed 120-second firmware window.
+auto_guard_s = 180.0
 
 # Raw (not smoothed) temperature overrides the curve and requests maximum fans.
 # Maximum remains selected for at least emergency_hold_s and until the smoothed

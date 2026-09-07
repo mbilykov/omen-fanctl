@@ -34,6 +34,7 @@ AUTO_MODE = 2
 MANUAL_MODE = 1
 MAX_MODE = 0
 HP_FAN_LEVEL_MAX = 60.0
+AUTO_GUARD_PATH = Path("/run/hp-fan-control/auto-guard")
 
 
 class ConfigurationError(ValueError):
@@ -291,7 +292,7 @@ class Settings:
     include_nvidia_gpu: bool
     curve: Curve
     ir_release_hysteresis_c: float = 1.0
-    auto_handoff_hold_s: float = 90.0
+    auto_guard_s: float = 180.0
     include_hp_wmi_ir: bool = True
     hp_wmi_sensors_path: Path = Path("/proc/hp_wmi_sensors")
     curves: dict[str, Curve] | None = None
@@ -365,8 +366,8 @@ class Settings:
                 ir_release_hysteresis_c=float(
                     daemon.get("ir_release_hysteresis_c", 1.0)
                 ),
-                auto_handoff_hold_s=float(
-                    daemon.get("auto_handoff_hold_s", 90.0)
+                auto_guard_s=float(
+                    daemon.get("auto_guard_s", 180.0)
                 ),
                 include_hp_wmi_ir=bool(sensors.get("include_hp_wmi_ir", True)),
                 hp_wmi_sensors_path=Path(
@@ -425,8 +426,8 @@ class Settings:
             raise ConfigurationError(
                 "ir_release_hysteresis_c must be positive and below activation_temp_c"
             )
-        if self.auto_handoff_hold_s < 0:
-            raise ConfigurationError("auto_handoff_hold_s must not be negative")
+        if self.auto_guard_s < 120:
+            raise ConfigurationError("auto_guard_s must be at least 120 seconds")
         for name, value in (
             ("ewma.rise_alpha", self.ewma_rise_alpha),
             ("ewma.fall_alpha", self.ewma_fall_alpha),
@@ -782,6 +783,7 @@ class Controller:
         status_interval_s: float = 1.0,
         notifier: SystemdNotifier | None = None,
         inactive_event_wait_s: float = 5.0,
+        auto_guard_path: Path | None = None,
     ):
         self.settings = settings
         self.fan = fan
@@ -794,6 +796,7 @@ class Controller:
         self.notifier = notifier or SystemdNotifier(None)
         self.profile_monitor: PlatformProfileMonitor | None = None
         self.inactive_event_wait_s = inactive_event_wait_s
+        self.auto_guard_path = auto_guard_path
         self.next_status_log = 0.0
         self.last_status_state = ""
         self.last_status_note = ""
@@ -802,7 +805,7 @@ class Controller:
         self.emergency = False
         self.emergency_since: float | None = None
         self.commanded_pwm: int | None = None
-        self.auto_handoff_since: float | None = None
+        self.auto_guard_until: float | None = None
         self.filters = {
             "cpu": Ewma(settings.ewma_rise_alpha, settings.ewma_fall_alpha),
             "gpu": Ewma(settings.ewma_rise_alpha, settings.ewma_fall_alpha),
@@ -965,6 +968,7 @@ class Controller:
         if not self.apply:
             self.manual_active = True
             self.commanded_pwm = pwm
+            self._clear_auto_guard()
             return pwm
         if not self.manual_active:
             # Never reduce airflow at the Auto -> Manual boundary. hp-wmi's
@@ -973,7 +977,7 @@ class Controller:
             pwm = max(pwm, current_pwm)
             self.fan.set_manual(pwm)
             self.manual_active = True
-            self.auto_handoff_since = None
+            self._clear_auto_guard()
         elif pwm != self.commanded_pwm:
             self.fan.update_manual(pwm)
         self.commanded_pwm = pwm
@@ -986,27 +990,39 @@ class Controller:
                 self.fan.set_maximum()
         self.manual_active = True
         self.commanded_pwm = PWM_MAX
+        self._clear_auto_guard()
 
-    def _auto_handoff_ready(
-        self,
-        snapshot: TemperatureSnapshot,
-        filtered: dict[str, float | None],
-        now: float,
-    ) -> bool:
-        """Require a cool dwell before entering firmware Auto.
+    def _start_auto_guard(self, now: float) -> None:
+        self.auto_guard_until = now + self.settings.auto_guard_s
+        if self.auto_guard_path is not None:
+            try:
+                self.auto_guard_path.write_text(
+                    f"{self.auto_guard_until:.6f}\n", encoding="ascii"
+                )
+            except OSError as exc:
+                raise HardwareError(
+                    f"cannot persist firmware Auto guard: {exc}"
+                ) from exc
 
-        On the tested 8D87 firmware both fans can stop for roughly 90 seconds
-        after Manual -> Auto. A single cool sample is therefore insufficient:
-        thermal headroom must be stable before ownership is released.
-        """
-        if not self._cool_enough_for_auto(snapshot, filtered):
-            self.auto_handoff_since = None
+    def _clear_auto_guard(self) -> None:
+        self.auto_guard_until = None
+        if self.auto_guard_path is not None:
+            try:
+                self.auto_guard_path.unlink(missing_ok=True)
+            except OSError as exc:
+                raise HardwareError(
+                    f"cannot clear firmware Auto guard: {exc}"
+                ) from exc
+
+    def _auto_guard_active(self, now: float) -> bool:
+        if self.auto_guard_until is None:
             return False
-        if self.auto_handoff_since is None:
-            self.auto_handoff_since = now
-        return now - self.auto_handoff_since >= self.settings.auto_handoff_hold_s
+        if now < self.auto_guard_until:
+            return True
+        self._clear_auto_guard()
+        return False
 
-    def _restore_auto(self, reason: str) -> None:
+    def _restore_auto(self, reason: str, now: float) -> None:
         if not (self.manual_active or self.emergency):
             return
         LOG.info("restoring firmware Auto: %s", reason)
@@ -1016,10 +1032,10 @@ class Controller:
         self.emergency = False
         self.emergency_since = None
         self.commanded_pwm = None
-        self.auto_handoff_since = None
         self.sensor_targets = {"cpu": None, "gpu": None, "ir": None, "acpi": None}
         self.activated_sensors.clear()
         self.winning_sensor = ""
+        self._start_auto_guard(now)
 
     def _log_sample(
         self,
@@ -1135,8 +1151,9 @@ class Controller:
 
                 profile = self._profile()
                 outside_required_profile = profile != self.settings.required_profile
+                auto_guard_active = self._auto_guard_active(now)
                 if outside_required_profile and not (
-                    self.manual_active or self.emergency
+                    self.manual_active or self.emergency or auto_guard_active
                 ):
                     for temperature_filter in self.filters.values():
                         temperature_filter.value = None
@@ -1155,7 +1172,7 @@ class Controller:
                 try:
                     snapshot = self.sensors.read()
                 except HardwareError as exc:
-                    if self.manual_active or self.emergency:
+                    if self.manual_active or self.emergency or auto_guard_active:
                         LOG.error("sensor failure during control; selecting maximum: %s", exc)
                         self._maximum()
                         self.emergency = True
@@ -1196,7 +1213,7 @@ class Controller:
                         self.emergency = False
                         self.manual_active = False
                         self.commanded_pwm = None
-                        self.auto_handoff_since = None
+                        self._clear_auto_guard()
                         self.sensor_targets = {
                             "cpu": None,
                             "gpu": None,
@@ -1217,17 +1234,21 @@ class Controller:
                     not self.manual_active
                     and not self._should_activate(snapshot)
                 ):
-                    state = "bios-auto"
+                    state = "auto-guard" if auto_guard_active else "bios-auto"
                     requested = None
-                elif self.manual_active and self._auto_handoff_ready(
-                    snapshot, filtered, now
+                    if auto_guard_active:
+                        note = "monitoring firmware fan-stop window"
+                elif self.manual_active and self._cool_enough_for_auto(
+                    snapshot, filtered
                 ):
-                    reason = "safe cool dwell completed"
+                    reason = "temperatures returned below release thresholds"
                     if outside_required_profile:
                         reason += f" for profile {profile}"
-                    self._restore_auto(reason)
-                    state = "bios-auto"
+                    self._restore_auto(reason, now)
+                    auto_guard_active = True
+                    state = "auto-guard"
                     requested = None
+                    note = "monitoring firmware fan-stop window"
                 else:
                     candidate, hottest = self._desired_pwm(
                         filtered,
@@ -1263,12 +1284,17 @@ class Controller:
                 )
         finally:
             try:
-                if self.apply and (self.manual_active or self.emergency):
+                guard_active_at_stop = self._auto_guard_active(time.monotonic())
+                if self.apply and (
+                    self.manual_active or self.emergency or guard_active_at_stop
+                ):
                     LOG.critical(
-                        "controller stopped before a safe Auto handoff; "
+                        "controller stopped while software cooling or Auto guard "
+                        "was active; "
                         "selecting maximum fans"
                     )
                     self.fan.set_maximum()
+                    self._clear_auto_guard()
             except HardwareError as exc:
                 LOG.critical("FAILED TO SELECT MAXIMUM FANS: %s", exc)
             self.notifier.stopping()
@@ -1431,11 +1457,22 @@ def restore_firmware_auto(fan: HpFanHwmon) -> None:
     LOG.info("firmware Auto verified; fans=%d/%d", fan1, fan2)
 
 
-def ensure_failsafe_fan_state(fan: HpFanHwmon) -> None:
-    """Preserve Auto, but turn every userspace-owned state into Max."""
+def ensure_failsafe_fan_state(
+    fan: HpFanHwmon,
+    auto_guard_path: Path | None = None,
+) -> None:
+    """Preserve stable Auto; turn owned or guarded fan states into Max."""
     mode, _, _, _ = fan.status()
-    if mode != AUTO_MODE:
+    guarded_auto = auto_guard_path is not None and auto_guard_path.exists()
+    if mode != AUTO_MODE or guarded_auto:
         fan.set_maximum()
+        if auto_guard_path is not None:
+            try:
+                auto_guard_path.unlink(missing_ok=True)
+            except OSError as exc:
+                raise HardwareError(
+                    f"cannot clear firmware Auto guard during recovery: {exc}"
+                ) from exc
     safe_mode, _, fan1, fan2 = fan.status()
     if safe_mode not in (AUTO_MODE, MAX_MODE):
         raise HardwareError(
@@ -1464,7 +1501,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             lock_handle = acquire_lock(Path("/run/hp-fan-control/control.lock"))
             fan = HpFanHwmon()
             if args.failsafe:
-                ensure_failsafe_fan_state(fan)
+                ensure_failsafe_fan_state(fan, AUTO_GUARD_PATH)
             else:
                 restore_firmware_auto(fan)
             lock_handle.close()
@@ -1537,6 +1574,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             csv_log=csv_log,
             status_interval_s=args.status_interval,
             notifier=SystemdNotifier.from_environment(),
+            auto_guard_path=AUTO_GUARD_PATH if args.apply else None,
         )
         signal.signal(signal.SIGINT, controller.request_stop)
         signal.signal(signal.SIGTERM, controller.request_stop)
