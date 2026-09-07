@@ -57,6 +57,40 @@ def settings_with(settings=None, **changes):
     return updated
 
 
+def fixed_policy_settings():
+    """Return stable decision-test inputs independent of the shipped TOML."""
+    curves = hp_factory_performance_curves()
+    settings = Settings(
+        allowed_boards=("8D87",),
+        required_profile="performance",
+        sample_interval_s=1.0,
+        control_interval_s=5.0,
+        activation_temp_c=60.0,
+        release_temp_c=52.0,
+        fan_stop_temp_c=45.0,
+        critical_temp_c=92.0,
+        critical_release_temp_c=82.0,
+        emergency_hold_s=10.0,
+        decrease_hysteresis_c=3.0,
+        max_rise_percent_per_update=20.0,
+        max_fall_percent_per_update=8.0,
+        minimum_manual_percent=hp_level_percent(19),
+        ewma_rise_alpha=0.10,
+        ewma_fall_alpha=0.05,
+        include_acpi=False,
+        include_amd_gpu=True,
+        include_nvidia_gpu=True,
+        curve=curves["cpu"],
+        ir_release_hysteresis_c=1.0,
+        auto_guard_s=180.0,
+        include_hp_wmi_ir=True,
+        curves=tuple(curves.items()),
+        curve_source="fixed-test-factory",
+    )
+    settings.validate()
+    return settings
+
+
 class FakeClock:
     def __init__(self):
         self.now = 0.0
@@ -305,7 +339,7 @@ class EwmaTests(unittest.TestCase):
 
 class ControlDecisionTests(unittest.TestCase):
     def setUp(self):
-        self.policy = ControlPolicy(Settings.load(CONFIG_PATH))
+        self.policy = ControlPolicy(fixed_policy_settings())
 
     def test_policy_state_views_are_read_only(self):
         with self.assertRaises(AttributeError):
@@ -329,7 +363,7 @@ class ControlDecisionTests(unittest.TestCase):
         self.assertAlmostEqual(pwm_to_percent(pwm), 72, delta=0.4)
 
     def test_rechecks_manual_mode_when_pwm_is_unchanged(self):
-        settings = Settings.load(CONFIG_PATH)
+        settings = fixed_policy_settings()
         fan = Mock()
         controller = Controller(
             settings=settings,
@@ -356,7 +390,7 @@ class ControlDecisionTests(unittest.TestCase):
 
     def test_auto_guard_expires_at_configured_deadline(self):
         controller = Controller(
-            Settings.load(CONFIG_PATH), None, None, False, None, CsvLog(None)
+            fixed_policy_settings(), None, None, False, None, CsvLog(None)
         )
         controller._start_auto_guard(10.0)
         self.assertTrue(controller._auto_guard_active(189.9))
@@ -366,7 +400,7 @@ class ControlDecisionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             guard = Path(temporary) / "auto-guard"
             controller = Controller(
-                Settings.load(CONFIG_PATH),
+                fixed_policy_settings(),
                 None,
                 None,
                 False,
@@ -382,7 +416,7 @@ class ControlDecisionTests(unittest.TestCase):
             self.assertFalse(guard.exists())
 
     def test_controller_rejects_auto_guard_shorter_than_firmware_window(self):
-        settings = replace(Settings.load(CONFIG_PATH), auto_guard_s=119.0)
+        settings = replace(fixed_policy_settings(), auto_guard_s=119.0)
         with self.assertRaisesRegex(
             ConfigurationError, "auto_guard_s must be at least 120 seconds"
         ):
