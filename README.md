@@ -91,10 +91,23 @@ git clone https://github.com/<owner>/hp-fan-control.git
 cd hp-fan-control
 ```
 
-Install without enabling the service:
+Display the installer options:
+
+```bash
+./install.sh --help
+```
+
+Install without starting the service:
 
 ```bash
 sudo ./install.sh
+```
+
+Install and start the service for the current boot without changing its boot
+enablement:
+
+```bash
+sudo ./install.sh --start-now
 ```
 
 Install and enable the service immediately:

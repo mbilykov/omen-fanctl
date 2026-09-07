@@ -7,6 +7,7 @@ DOC_DIR=/usr/local/share/doc/hp-fan-control
 CONFIG_DIR=/etc/hp-fan-control
 UNIT_PATH=/etc/systemd/system/hp-fan-control.service
 LOGROTATE_PATH=/etc/logrotate.d/hp-fan-control
+START_NOW=false
 ENABLE_NOW=false
 
 log() {
@@ -25,16 +26,27 @@ install_file() {
 
 usage() {
     cat <<'EOF'
-Usage: sudo ./install.sh [--enable-now]
+Usage: sudo ./install.sh [--start-now | --enable-now]
 
 Installs the daemon, default configuration, documentation, and systemd unit.
 The optional WMI IR procfs provider is not installed. Existing configuration
 is kept.
+
+Options:
+  --start-now   Start the service after installation without enabling it
+  --enable-now  Enable the service at boot and start it after installation
+  -h, --help    Show this help and exit
 EOF
 }
 
+if (( $# > 1 )); then
+    usage >&2
+    exit 2
+fi
+
 case "${1:-}" in
     "") ;;
+    --start-now) START_NOW=true ;;
     --enable-now) ENABLE_NOW=true ;;
     -h|--help)
         usage
@@ -127,8 +139,15 @@ if [[ "$ENABLE_NOW" == true ]]; then
     systemctl enable --now hp-fan-control.service
     log "Installation complete; service is enabled and running"
     systemctl --no-pager --full status hp-fan-control.service || true
+elif [[ "$START_NOW" == true ]]; then
+    log "Starting hp-fan-control.service without changing its boot enablement"
+    systemctl start hp-fan-control.service
+    log "Installation complete; service is running"
+    systemctl --no-pager --full status hp-fan-control.service || true
 else
     log "Installation complete; service was not started"
-    echo "Review $CONFIG_DIR/fan-control.toml, then run:"
+    echo "Review $CONFIG_DIR/fan-control.toml, then run one of:"
+    echo "  sudo systemctl start hp-fan-control.service"
     echo "  sudo systemctl enable --now hp-fan-control.service"
+    echo "Run './install.sh --help' to see all installation options."
 fi
