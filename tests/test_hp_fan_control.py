@@ -104,7 +104,7 @@ class FakeClock:
 
 def controller_with_fake_time(**kwargs):
     clock = FakeClock()
-    return Controller(clock=clock, wait_for_change=clock.wait, **kwargs)
+    return Controller(clock=clock, wait=clock.wait, **kwargs)
 
 
 def initialized_sensors(test, **changes):
@@ -890,6 +890,35 @@ class ControllerLoopTests(unittest.TestCase):
         sensors.read.assert_not_called()
         notifier.ready.assert_called_once_with()
         self.assertGreaterEqual(notifier.watchdog.call_count, 1)
+
+    def test_injected_wait_refreshes_profile_during_run(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "platform_profile"
+            profile.write_text("balanced\n")
+            clock = FakeClock()
+            sensors = Mock()
+            sensors.read.return_value = TemperatureSnapshot(50, 50, None, None)
+
+            def switch_to_performance(timeout_s):
+                profile.write_text("performance\n")
+                clock.wait(timeout_s)
+
+            controller = Controller(
+                settings=Settings.load(CONFIG_PATH),
+                fan=FakeFan(),
+                sensors=sensors,
+                apply=True,
+                duration_s=2.0,
+                csv_log=CsvLog(None),
+                profile_path=profile,
+                inactive_event_wait_s=1.0,
+                clock=clock,
+                wait=switch_to_performance,
+            )
+
+            controller.run()
+
+        sensors.read.assert_called_once_with()
 
     def test_new_heat_during_auto_guard_reclaims_manual_control(self):
         with tempfile.TemporaryDirectory() as temporary:

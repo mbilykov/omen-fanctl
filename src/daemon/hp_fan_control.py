@@ -135,8 +135,13 @@ class PlatformProfileMonitor:
             raise HardwareError(f"cannot wait for platform profile change: {exc}") from exc
         if not events:
             return False
-        self.current = self._read()
-        return True
+        return self.refresh()
+
+    def refresh(self) -> bool:
+        current = self._read()
+        changed = current != self.current
+        self.current = current
+        return changed
 
     def close(self) -> None:
         self.handle.close()
@@ -1069,7 +1074,7 @@ class Controller:
         inactive_event_wait_s: float = 5.0,
         auto_guard_path: Path | None = None,
         clock: Callable[[], float] = time.monotonic,
-        wait_for_change: Callable[[float], object] | None = None,
+        wait: Callable[[float], object] | None = None,
     ):
         settings.validate()
         self.settings = settings
@@ -1085,7 +1090,7 @@ class Controller:
         self.inactive_event_wait_s = inactive_event_wait_s
         self.auto_guard_path = auto_guard_path
         self.clock = clock
-        self.wait_for_change = wait_for_change
+        self.wait = wait
         self.next_status_log = 0.0
         self.last_status_state = ""
         self.last_status_note = ""
@@ -1112,10 +1117,11 @@ class Controller:
         return self.profile_monitor.current
 
     def _wait_for_profile_change(self, timeout_s: float) -> None:
-        if self.wait_for_change is not None:
-            self.wait_for_change(timeout_s)
-            return
         assert self.profile_monitor is not None
+        if self.wait is not None:
+            self.wait(timeout_s)
+            self.profile_monitor.refresh()
+            return
         self.profile_monitor.wait_for_change(timeout_s)
 
     def _filtered(self, snapshot: TemperatureSnapshot) -> dict[str, float | None]:
