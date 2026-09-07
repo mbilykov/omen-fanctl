@@ -1,9 +1,0 @@
-/var/log/hp-fan-control/*.csv {
-    daily
-    rotate 14
-    compress
-    delaycompress
-    missingok
-    notifempty
-    copytruncate
-}

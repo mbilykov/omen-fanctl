@@ -6,7 +6,8 @@ INSTALL_DIR=/usr/local/lib/hp-fan-control
 DOC_DIR=/usr/local/share/doc/hp-fan-control
 CONFIG_DIR=/etc/hp-fan-control
 UNIT_PATH=/etc/systemd/system/hp-fan-control.service
-LOGROTATE_PATH=/etc/logrotate.d/hp-fan-control
+TMPFILES_PATH=/etc/tmpfiles.d/hp-fan-control.conf
+LEGACY_LOGROTATE_PATH=/etc/logrotate.d/hp-fan-control
 START_NOW=false
 ENABLE_NOW=false
 
@@ -69,7 +70,7 @@ for required in \
     "$SCRIPT_DIR/src/config/fan-control.toml" \
     "$SCRIPT_DIR/README.md" \
     "$SCRIPT_DIR/src/systemd/hp-fan-control.service" \
-    "$SCRIPT_DIR/src/logrotate/hp-fan-control"; do
+    "$SCRIPT_DIR/src/tmpfiles/hp-fan-control.conf"; do
     if [[ ! -f "$required" ]]; then
         echo "ERROR: required source file is missing: $required" >&2
         exit 1
@@ -121,8 +122,16 @@ install_file 0755 "$SCRIPT_DIR/src/daemon/hp_fan_control.py" \
     "$INSTALL_DIR/hp_fan_control.py"
 install_file 0644 "$SCRIPT_DIR/README.md" "$DOC_DIR/README.md"
 install_file 0644 "$SCRIPT_DIR/src/systemd/hp-fan-control.service" "$UNIT_PATH"
-install_file 0644 "$SCRIPT_DIR/src/logrotate/hp-fan-control" \
-    "$LOGROTATE_PATH"
+install_file 0644 "$SCRIPT_DIR/src/tmpfiles/hp-fan-control.conf" \
+    "$TMPFILES_PATH"
+
+if [[ -e "$LEGACY_LOGROTATE_PATH" ]]; then
+    log "Removing obsolete logrotate policy: $LEGACY_LOGROTATE_PATH"
+    rm -f -- "$LEGACY_LOGROTATE_PATH"
+fi
+
+log "Creating telemetry directory and applying retention policy"
+systemd-tmpfiles --create "$TMPFILES_PATH"
 
 if [[ -e "$CONFIG_DIR/fan-control.toml" ]]; then
     log "Preserving existing configuration: $CONFIG_DIR/fan-control.toml"

@@ -185,8 +185,9 @@ target to this telemetry for comparison. The proxy cannot activate Manual
 mode, change the requested PWM, trigger emergency cooling, or delay the return
 to firmware Auto.
 
-The supplied logrotate policy rotates CSV files daily, keeps 14 archives, and
-compresses old files.
+Each daemon start creates a separate timestamped CSV file. The supplied
+systemd-tmpfiles policy removes inactive telemetry files after 14 days; it does
+not truncate or rename the file currently held open by the daemon.
 
 ## Control logic
 

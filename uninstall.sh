@@ -5,7 +5,8 @@ INSTALL_DIR=/usr/local/lib/hp-fan-control
 DOC_DIR=/usr/local/share/doc/hp-fan-control
 CONFIG_DIR=/etc/hp-fan-control
 UNIT_PATH=/etc/systemd/system/hp-fan-control.service
-LOGROTATE_PATH=/etc/logrotate.d/hp-fan-control
+TMPFILES_PATH=/etc/tmpfiles.d/hp-fan-control.conf
+LEGACY_LOGROTATE_PATH=/etc/logrotate.d/hp-fan-control
 PURGE_CONFIG=false
 
 log() {
@@ -92,7 +93,8 @@ if [[ "$(<"$HP_HWMON/pwm1_enable")" != 2 ]]; then
 fi
 
 remove_file "$UNIT_PATH"
-remove_file "$LOGROTATE_PATH"
+remove_file "$TMPFILES_PATH"
+remove_file "$LEGACY_LOGROTATE_PATH"
 remove_file "$INSTALL_DIR/hp_fan_control.py"
 remove_file "$DOC_DIR/README.md"
 rmdir --ignore-fail-on-non-empty "$INSTALL_DIR" "$DOC_DIR" 2>/dev/null || true
