@@ -684,6 +684,7 @@ class HpFanHwmon:
         self.enable = self.path / "pwm1_enable"
         self.fan1 = self.path / "fan1_input"
         self.fan2 = self.path / "fan2_input"
+        self._manual_recovery_pending = False
         for required in (self.pwm, self.enable, self.fan1, self.fan2):
             if not required.exists():
                 raise HardwareError(f"required hp-wmi attribute is missing: {required}")
@@ -716,18 +717,42 @@ class HpFanHwmon:
                     restore_error,
                 )
             raise
+        self._manual_recovery_pending = False
 
-    def update_manual(self, pwm: int) -> None:
+    def update_manual(self, pwm: int, *, write_pwm: bool = True) -> None:
         pwm = int(clamp(pwm, 1, PWM_MAX))
-        if read_int(self.enable) != MANUAL_MODE:
-            raise HardwareError("manual fan mode was lost unexpectedly")
-        write_int(self.pwm, pwm)
+        mode = read_int(self.enable)
+        if mode == MAX_MODE:
+            # Max may have been asserted by the EC or by the user. Never
+            # reduce that independently requested safety state.
+            self._manual_recovery_pending = False
+            LOG.warning("maximum fan mode asserted externally; preserving it")
+            return
+        if mode == AUTO_MODE:
+            if getattr(self, "_manual_recovery_pending", False):
+                raise HardwareError(
+                    "manual fan mode was lost again immediately after recovery"
+                )
+            LOG.warning(
+                "manual fan mode was lost (mode=%d); attempting one recovery",
+                mode,
+            )
+            self.set_manual(pwm)
+            self._manual_recovery_pending = True
+            return
+        if mode != MANUAL_MODE:
+            raise HardwareError(f"unexpected fan mode during manual control: {mode}")
+        self._manual_recovery_pending = False
+        if write_pwm:
+            write_int(self.pwm, pwm)
 
     def set_maximum(self) -> None:
         write_int(self.enable, MAX_MODE)
+        self._manual_recovery_pending = False
 
     def restore_auto(self) -> None:
         write_int(self.enable, AUTO_MODE)
+        self._manual_recovery_pending = False
 
 
 class CsvLog:
@@ -993,8 +1018,14 @@ class Controller:
             self.fan.set_manual(pwm)
             self.manual_active = True
             self._clear_auto_guard()
-        elif pwm != self.commanded_pwm:
-            self.fan.update_manual(pwm)
+        else:
+            # Check the hardware mode on every control tick even when the
+            # requested PWM is unchanged. Firmware or another tool may have
+            # reset pwm1_enable behind the controller's back.
+            self.fan.update_manual(
+                pwm,
+                write_pwm=pwm != self.commanded_pwm,
+            )
         self.commanded_pwm = pwm
         return pwm
 

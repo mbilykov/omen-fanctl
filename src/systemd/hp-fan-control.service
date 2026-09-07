@@ -4,15 +4,15 @@ Documentation=file:/usr/local/share/doc/hp-fan-control/README.md
 After=multi-user.target
 ConditionPathExists=/sys/firmware/acpi/platform_profile
 StartLimitIntervalSec=60
-StartLimitBurst=3
+StartLimitBurst=10
 
 [Service]
 Type=notify
 NotifyAccess=main
 ExecStart=/usr/local/lib/hp-fan-control/hp_fan_control.py --apply --config /etc/hp-fan-control/fan-control.toml --status-interval 30
 ExecStopPost=/usr/local/lib/hp-fan-control/hp_fan_control.py --failsafe
-Restart=on-failure
-RestartSec=5
+Restart=always
+RestartSec=10
 WatchdogSec=15
 WatchdogSignal=SIGKILL
 TimeoutStopSec=15

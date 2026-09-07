@@ -12,11 +12,13 @@ from unittest.mock import Mock, call, patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = PROJECT_ROOT / "src" / "config" / "fan-control.toml"
+SERVICE_PATH = PROJECT_ROOT / "src" / "systemd" / "hp-fan-control.service"
 sys.path.insert(0, str(PROJECT_ROOT / "src" / "daemon"))
 
 from hp_fan_control import (  # noqa: E402
     AUTO_MODE,
     MANUAL_MODE,
+    MAX_MODE,
     Controller,
     Curve,
     CsvLog,
@@ -271,6 +273,17 @@ class ControlDecisionTests(unittest.TestCase):
             {"cpu": 60.0, "gpu": 50.0, "acpi": 50.0}
         )
         self.assertAlmostEqual(pwm_to_percent(pwm), 72, delta=0.4)
+
+    def test_rechecks_manual_mode_when_pwm_is_unchanged(self):
+        fan = Mock()
+        self.controller.fan = fan
+        self.controller.apply = True
+        self.controller.manual_active = True
+        self.controller.commanded_pwm = 120
+
+        self.assertEqual(self.controller._apply_manual(120), 120)
+
+        fan.update_manual.assert_called_once_with(120, write_pwm=False)
 
     def test_raw_temperature_bypasses_ewma_lag_on_rise(self):
         pwm, hottest = self.controller._desired_pwm(
@@ -554,9 +567,10 @@ class FakeFan:
         self.mode = MANUAL_MODE
         self.pwm = pwm
 
-    def update_manual(self, pwm):
-        self.actions.append(("update", pwm))
-        self.pwm = pwm
+    def update_manual(self, pwm, *, write_pwm=True):
+        if write_pwm:
+            self.actions.append(("update", pwm))
+            self.pwm = pwm
 
     def set_maximum(self):
         self.actions.append(("maximum", 255))
@@ -1124,6 +1138,101 @@ class FakeHwmonTests(unittest.TestCase):
                 call(fan.enable, AUTO_MODE),
             ],
         )
+
+    def test_update_attempts_single_manual_mode_recovery(self):
+        fan = object.__new__(HpFanHwmon)
+        fan.enable = Path("/fake/pwm1_enable")
+        fan.pwm = Path("/fake/pwm1")
+
+        with (
+            patch("hp_fan_control.read_int", return_value=AUTO_MODE),
+            patch("hp_fan_control.write_int") as write,
+        ):
+            fan.update_manual(120)
+
+        self.assertEqual(
+            write.call_args_list,
+            [
+                call(fan.enable, MANUAL_MODE),
+                call(fan.pwm, 120),
+            ],
+        )
+        self.assertTrue(fan._manual_recovery_pending)
+
+    def test_update_fails_if_manual_mode_is_lost_again_after_recovery(self):
+        fan = object.__new__(HpFanHwmon)
+        fan.enable = Path("/fake/pwm1_enable")
+        fan.pwm = Path("/fake/pwm1")
+        fan._manual_recovery_pending = False
+
+        with (
+            patch("hp_fan_control.read_int", return_value=AUTO_MODE),
+            patch("hp_fan_control.write_int") as write,
+        ):
+            fan.update_manual(120)
+            with self.assertRaisesRegex(
+                HardwareError,
+                "lost again immediately after recovery",
+            ):
+                fan.update_manual(120, write_pwm=False)
+
+        self.assertEqual(
+            write.call_args_list,
+            [
+                call(fan.enable, MANUAL_MODE),
+                call(fan.pwm, 120),
+            ],
+        )
+
+    def test_update_does_not_rewrite_unchanged_manual_pwm(self):
+        fan = object.__new__(HpFanHwmon)
+        fan.enable = Path("/fake/pwm1_enable")
+        fan.pwm = Path("/fake/pwm1")
+
+        with (
+            patch("hp_fan_control.read_int", return_value=MANUAL_MODE),
+            patch("hp_fan_control.write_int") as write,
+        ):
+            fan.update_manual(120, write_pwm=False)
+
+        write.assert_not_called()
+        self.assertFalse(fan._manual_recovery_pending)
+
+    def test_update_preserves_externally_asserted_maximum_mode(self):
+        fan = object.__new__(HpFanHwmon)
+        fan.enable = Path("/fake/pwm1_enable")
+        fan.pwm = Path("/fake/pwm1")
+
+        with (
+            patch("hp_fan_control.read_int", return_value=MAX_MODE),
+            patch("hp_fan_control.write_int") as write,
+        ):
+            fan.update_manual(100)
+
+        write.assert_not_called()
+
+    def test_update_rejects_unknown_mode_without_writing(self):
+        fan = object.__new__(HpFanHwmon)
+        fan.enable = Path("/fake/pwm1_enable")
+        fan.pwm = Path("/fake/pwm1")
+
+        with (
+            patch("hp_fan_control.read_int", return_value=3),
+            patch("hp_fan_control.write_int") as write,
+            self.assertRaisesRegex(HardwareError, "unexpected fan mode"),
+        ):
+            fan.update_manual(100)
+
+        write.assert_not_called()
+
+
+class SystemdUnitTests(unittest.TestCase):
+    def test_restart_policy_avoids_start_limit(self):
+        service = SERVICE_PATH.read_text(encoding="utf-8")
+        self.assertIn("StartLimitIntervalSec=60\n", service)
+        self.assertIn("StartLimitBurst=10\n", service)
+        self.assertIn("Restart=always\n", service)
+        self.assertIn("RestartSec=10\n", service)
 
 
 if __name__ == "__main__":
