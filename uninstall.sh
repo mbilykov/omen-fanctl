@@ -8,6 +8,21 @@ UNIT_PATH=/etc/systemd/system/hp-fan-control.service
 LOGROTATE_PATH=/etc/logrotate.d/hp-fan-control
 PURGE_CONFIG=false
 
+log() {
+    printf '==> %s\n' "$*"
+}
+
+remove_file() {
+    local path=$1
+
+    if [[ -e "$path" ]]; then
+        log "Removing $path"
+        rm -f -- "$path"
+    else
+        log "Not installed: $path"
+    fi
+}
+
 usage() {
     cat <<'EOF'
 Usage: sudo ./uninstall.sh [--purge-config]
@@ -35,6 +50,7 @@ if (( EUID != 0 )); then
     exit 1
 fi
 
+log "Checking whether hp-fan-control can be removed safely"
 if [[ -e /run/hp-fan-control/auto-guard ]]; then
     echo "ERROR: refusing to uninstall during Auto guard" >&2
     echo "Wait for 'state=sleeping', then retry." >&2
@@ -57,9 +73,17 @@ if [[ "$(<"$HP_HWMON/pwm1_enable")" != 2 ]]; then
     echo "Switch to Balanced, wait for 'state=sleeping', then retry." >&2
     exit 1
 fi
+log "Fan control is in BIOS Auto"
 
 if systemctl cat hp-fan-control.service >/dev/null 2>&1; then
+    if systemctl is-active --quiet hp-fan-control.service; then
+        log "Disabling and stopping hp-fan-control.service"
+    else
+        log "Disabling installed hp-fan-control.service"
+    fi
     systemctl disable --now hp-fan-control.service || true
+else
+    log "hp-fan-control.service is not installed"
 fi
 
 if [[ "$(<"$HP_HWMON/pwm1_enable")" != 2 ]]; then
@@ -67,16 +91,22 @@ if [[ "$(<"$HP_HWMON/pwm1_enable")" != 2 ]]; then
     exit 1
 fi
 
-rm -f -- "$UNIT_PATH" "$LOGROTATE_PATH" \
-    "$INSTALL_DIR/hp_fan_control.py" "$DOC_DIR/README.md"
+remove_file "$UNIT_PATH"
+remove_file "$LOGROTATE_PATH"
+remove_file "$INSTALL_DIR/hp_fan_control.py"
+remove_file "$DOC_DIR/README.md"
 rmdir --ignore-fail-on-non-empty "$INSTALL_DIR" "$DOC_DIR" 2>/dev/null || true
 
 if [[ "$PURGE_CONFIG" == true ]]; then
-    rm -f -- "$CONFIG_DIR/fan-control.toml"
+    remove_file "$CONFIG_DIR/fan-control.toml"
     rmdir --ignore-fail-on-non-empty "$CONFIG_DIR" 2>/dev/null || true
+elif [[ -e "$CONFIG_DIR/fan-control.toml" ]]; then
+    log "Preserving configuration: $CONFIG_DIR/fan-control.toml"
 else
-    echo "Preserved configuration: $CONFIG_DIR/fan-control.toml"
+    log "No configuration file found"
 fi
 
+log "Reloading systemd units"
 systemctl daemon-reload
-echo "Preserved telemetry directory: /var/log/hp-fan-control"
+log "Preserving telemetry directory: /var/log/hp-fan-control"
+log "Uninstallation complete"
