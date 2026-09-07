@@ -796,6 +796,7 @@ class Controller:
         self.inactive_event_wait_s = inactive_event_wait_s
         self.next_status_log = 0.0
         self.last_status_state = ""
+        self.last_status_note = ""
         self.stop_requested = False
         self.manual_active = False
         self.emergency = False
@@ -1040,7 +1041,11 @@ class Controller:
             return "" if value is None else f"{value:.1f}"
 
         now = time.monotonic()
-        if state != self.last_status_state or note or now >= self.next_status_log:
+        if (
+            state != self.last_status_state
+            or note != self.last_status_note
+            or now >= self.next_status_log
+        ):
             LOG.info(
                 "state=%-9s profile=%-11s CPU=%5.1f GPU=%5s GPUW=%6s IR=%5s ACPI=%5s "
                 "control=%5.1f winner=%-4s request=%3s (%5s%%) "
@@ -1063,6 +1068,7 @@ class Controller:
                 f" note={note}" if note else "",
             )
             self.last_status_state = state
+            self.last_status_note = note
             self.next_status_log = now + self.status_interval_s
         self.csv_log.write(
             {

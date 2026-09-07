@@ -392,6 +392,37 @@ class FailingAfterFirstSample:
 
 
 class ControllerLoopTests(unittest.TestCase):
+    def test_repeated_status_note_is_rate_limited(self):
+        settings = Settings.load(Path(__file__).with_name("fan-control.toml"))
+        controller = Controller(
+            settings=settings,
+            fan=FakeFan(),
+            sensors=FakeSensors(70),
+            apply=False,
+            duration_s=None,
+            csv_log=CsvLog(None),
+            status_interval_s=30,
+        )
+        snapshot = TemperatureSnapshot(70, 50, None, None)
+        filtered = {"cpu": 70.0, "gpu": 50.0, "ir": None, "acpi": None}
+        with (
+            patch("hp_fan_control.LOG.info") as log_info,
+            patch("hp_fan_control.time.monotonic", return_value=1.0),
+        ):
+            controller._log_sample(
+                0, "balanced", "handoff", snapshot, filtered, 70, 100,
+                "cooling before firmware Auto",
+            )
+            controller._log_sample(
+                0, "balanced", "handoff", snapshot, filtered, 70, 100,
+                "cooling before firmware Auto",
+            )
+            controller._log_sample(
+                0, "balanced", "handoff", snapshot, filtered, 70, 100,
+                "new handoff detail",
+            )
+        self.assertEqual(log_info.call_count, 2)
+
     def test_non_performance_profile_sleeps_without_reading_sensors(self):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "platform_profile"
