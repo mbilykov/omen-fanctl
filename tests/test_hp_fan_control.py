@@ -19,6 +19,7 @@ from hp_fan_control import (  # noqa: E402
     AUTO_MODE,
     MANUAL_MODE,
     MAX_MODE,
+    ConfigurationError,
     Controller,
     Curve,
     CsvLog,
@@ -43,6 +44,7 @@ from hp_fan_control import (  # noqa: E402
     read_hp_wmi_ir_temperature,
     restore_firmware_auto,
     run_actuator_test,
+    validate_required_profile,
     wait_for_hp_fan_hwmon,
 )
 
@@ -54,6 +56,17 @@ class CurveTests(unittest.TestCase):
     def test_clamps_below_and_above_curve(self):
         self.assertAlmostEqual(self.curve.evaluate_percent(20), 25)
         self.assertAlmostEqual(self.curve.evaluate_percent(100), 95)
+
+    def test_rejects_fall_temperatures_for_linear_curve(self):
+        with self.assertRaisesRegex(
+            ConfigurationError,
+            "low_temperature_c requires stepped = true",
+        ):
+            Curve(
+                (50.0, 60.0),
+                (30.0, 40.0),
+                fall_temperatures=(45.0, 55.0),
+            )
 
     def test_interpolates(self):
         self.assertAlmostEqual(self.curve.evaluate_percent(55), 30)
@@ -333,7 +346,7 @@ class ControlDecisionTests(unittest.TestCase):
         self.controller.settings = Settings(
             **{
                 **self.controller.settings.__dict__,
-                "curves": hp_factory_performance_curves(),
+                "curves": tuple(hp_factory_performance_curves().items()),
                 "curve_source": "test-factory",
                 "minimum_manual_percent": hp_level_percent(19),
             }
@@ -349,7 +362,7 @@ class ControlDecisionTests(unittest.TestCase):
         self.controller.settings = Settings(
             **{
                 **self.controller.settings.__dict__,
-                "curves": hp_factory_performance_curves(),
+                "curves": tuple(hp_factory_performance_curves().items()),
                 "curve_source": "test-factory",
                 "minimum_manual_percent": hp_level_percent(19),
             }
@@ -365,7 +378,7 @@ class ControlDecisionTests(unittest.TestCase):
         self.controller.settings = Settings(
             **{
                 **self.controller.settings.__dict__,
-                "curves": hp_factory_performance_curves(),
+                "curves": tuple(hp_factory_performance_curves().items()),
                 "curve_source": "test-factory",
                 "minimum_manual_percent": hp_level_percent(19),
             }
@@ -386,7 +399,7 @@ class ControlDecisionTests(unittest.TestCase):
         self.controller.settings = Settings(
             **{
                 **self.controller.settings.__dict__,
-                "curves": hp_factory_performance_curves(),
+                "curves": tuple(hp_factory_performance_curves().items()),
                 "curve_source": "test-factory",
                 "minimum_manual_percent": hp_level_percent(19),
             }
@@ -407,7 +420,7 @@ class ControlDecisionTests(unittest.TestCase):
         self.controller.settings = Settings(
             **{
                 **self.controller.settings.__dict__,
-                "curves": hp_factory_performance_curves(),
+                "curves": tuple(hp_factory_performance_curves().items()),
                 "curve_source": "test-factory",
             }
         )
@@ -422,7 +435,7 @@ class ControlDecisionTests(unittest.TestCase):
         self.controller.settings = Settings(
             **{
                 **self.controller.settings.__dict__,
-                "curves": hp_factory_performance_curves(),
+                "curves": tuple(hp_factory_performance_curves().items()),
                 "curve_source": "test-factory",
                 "minimum_manual_percent": hp_level_percent(19),
             }
@@ -481,10 +494,53 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(
             settings.curve_source, "hp-vibrance-stx-n22x9-performance"
         )
-        self.assertEqual(set(settings.curves or {}), {"cpu", "gpu", "ir"})
+        self.assertEqual(
+            set(dict(settings.curves or ())),
+            {"cpu", "gpu", "ir"},
+        )
         self.assertAlmostEqual(
             settings.curve_for("gpu").pwm_percent[-1], hp_level_percent(47)
         )
+
+    def test_per_sensor_curves_require_cpu_curve(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "fan-control.toml"
+            config.write_text(
+                """
+[daemon]
+allowed_boards = ["8D87"]
+
+[curves.gpu]
+temperature_c = [50, 60]
+pwm_percent = [30, 40]
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ConfigurationError,
+                "curves.cpu is required",
+            ):
+                Settings.load(config)
+
+    def test_settings_curves_are_immutable_and_hashable(self):
+        settings = Settings.load(CONFIG_PATH)
+        self.assertIsInstance(settings.curves, tuple)
+        with self.assertRaises(TypeError):
+            settings.curves[0] = ("cpu", "clobbered")
+        self.assertIsInstance(hash(settings), int)
+
+    def test_required_profile_must_be_available(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            choices = Path(temporary) / "platform_profile_choices"
+            choices.write_text("low-power balanced performance\n")
+
+            validate_required_profile("performance", choices)
+            with self.assertRaisesRegex(
+                ConfigurationError,
+                "required_profile 'performnce' is unavailable",
+            ):
+                validate_required_profile("performnce", choices)
 
 
 class SensorMetricTests(unittest.TestCase):
@@ -1060,8 +1116,16 @@ class ControllerLoopTests(unittest.TestCase):
 
     def test_main_closes_lock_when_hwmon_startup_times_out(self):
         lock = Mock()
+
+        def fake_read_text(path):
+            if path.name == "board_name":
+                return "8D87"
+            if path.name == "platform_profile_choices":
+                return "balanced performance"
+            raise AssertionError(f"unexpected read: {path}")
+
         with (
-            patch("hp_fan_control.read_text", return_value="8D87"),
+            patch("hp_fan_control.read_text", side_effect=fake_read_text),
             patch("hp_fan_control.acquire_lock", return_value=lock),
             patch(
                 "hp_fan_control.wait_for_hp_fan_hwmon",
@@ -1074,6 +1138,32 @@ class ControllerLoopTests(unittest.TestCase):
             )
 
         lock.close.assert_called_once_with()
+
+    def test_main_rejects_unavailable_required_profile_before_locking(self):
+        settings = Settings.load(CONFIG_PATH)
+        settings = Settings(
+            **{
+                **settings.__dict__,
+                "required_profile": "performnce",
+            }
+        )
+        acquire = Mock()
+
+        def fake_read_text(path):
+            if path.name == "board_name":
+                return "8D87"
+            if path.name == "platform_profile_choices":
+                return "low-power balanced performance"
+            raise AssertionError(f"unexpected read: {path}")
+
+        with (
+            patch("hp_fan_control.Settings.load", return_value=settings),
+            patch("hp_fan_control.read_text", side_effect=fake_read_text),
+            patch("hp_fan_control.acquire_lock", acquire),
+        ):
+            self.assertEqual(main(["--no-log-file"]), 1)
+
+        acquire.assert_not_called()
 
     def test_failsafe_closes_lock_when_hwmon_initialization_fails(self):
         lock = Mock()

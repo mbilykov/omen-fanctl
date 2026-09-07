@@ -36,6 +36,9 @@ MANUAL_MODE = 1
 MAX_MODE = 0
 HP_FAN_LEVEL_MAX = 60.0
 AUTO_GUARD_PATH = Path("/run/hp-fan-control/auto-guard")
+PLATFORM_PROFILE_CHOICES_PATH = Path(
+    "/sys/firmware/acpi/platform_profile_choices"
+)
 CONTROL_SENSORS = ("cpu", "gpu", "ir")
 HP_HWMON_STARTUP_TIMEOUT_S = 20.0
 HP_HWMON_STARTUP_RETRY_S = 1.0
@@ -169,6 +172,10 @@ class Curve:
         if any(value < 0 or value > 100 for value in self.pwm_percent):
             raise ConfigurationError("curve PWM values must be between 0 and 100")
         if self.fall_temperatures is not None:
+            if not self.stepped:
+                raise ConfigurationError(
+                    "curve low_temperature_c requires stepped = true"
+                )
             if len(self.fall_temperatures) != len(self.temperatures):
                 raise ConfigurationError(
                     "curve falling-temperature and PWM lists differ in length"
@@ -211,9 +218,6 @@ class Curve:
                 ratio = (temperature - t0) / (t1 - t0)
                 return p0 + ratio * (p1 - p0)
         raise AssertionError("unreachable curve interval")
-
-    def evaluate_pwm(self, temperature: float) -> int:
-        return percent_to_pwm(self.evaluate_percent(temperature))
 
     def target_percent(
         self, temperature: float, previous_percent: float | None = None
@@ -312,7 +316,7 @@ class Settings:
     auto_guard_s: float = 180.0
     include_hp_wmi_ir: bool = True
     hp_wmi_sensors_path: Path = Path("/proc/hp_wmi_sensors")
-    curves: dict[str, Curve] | None = None
+    curves: tuple[tuple[str, Curve], ...] | None = None
     curve_source: str = "legacy-shared"
 
     @classmethod
@@ -333,8 +337,9 @@ class Settings:
             if preset:
                 if preset != "hp-vibrance-stx-n22x9-performance":
                     raise ConfigurationError(f"unknown curve preset: {preset}")
-                curves = hp_factory_performance_curves()
-                curve = curves["cpu"]
+                named = hp_factory_performance_curves()
+                curve = named["cpu"]
+                curves = tuple(named.items())
                 curve_source = preset
             else:
                 named = {
@@ -343,8 +348,12 @@ class Settings:
                     if name in curves_data
                 }
                 if named:
-                    curve = named.get("cpu", next(iter(named.values())))
-                    curves = named
+                    if "cpu" not in named:
+                        raise ConfigurationError(
+                            "curves.cpu is required when using per-sensor curves"
+                        )
+                    curve = named["cpu"]
+                    curves = tuple(named.items())
                     curve_source = "custom-per-sensor"
                 else:
                     curve = cls._load_curve(curve_data)
@@ -419,11 +428,12 @@ class Settings:
     def curve_for(self, sensor: str) -> Curve:
         if self.curves is None:
             return self.curve
+        curves = dict(self.curves)
         # acpitz is retained only as an opt-in diagnostic proxy for the IR
         # input and therefore uses the IR table unless explicitly configured.
         if sensor == "acpi":
-            return self.curves.get("acpi", self.curves.get("ir", self.curve))
-        return self.curves.get(sensor, self.curve)
+            return curves.get("acpi", curves.get("ir", self.curve))
+        return curves.get(sensor, self.curve)
 
     def validate(self) -> None:
         if not self.allowed_boards:
@@ -474,6 +484,19 @@ def read_int(path: Path) -> int:
         return int(read_text(path))
     except (OSError, ValueError) as exc:
         raise HardwareError(f"cannot read integer from {path}: {exc}") from exc
+
+
+def validate_required_profile(
+    required_profile: str,
+    choices_path: Path = PLATFORM_PROFILE_CHOICES_PATH,
+) -> None:
+    choices = tuple(read_text(choices_path).split())
+    if required_profile not in choices:
+        available = ", ".join(choices) if choices else "none"
+        raise ConfigurationError(
+            f"required_profile {required_profile!r} is unavailable; "
+            f"platform choices: {available}"
+        )
 
 
 def write_int(path: Path, value: int) -> None:
@@ -1661,6 +1684,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             raise HardwareError(
                 f"board {board!r} is not allowlisted: {settings.allowed_boards}"
             )
+        validate_required_profile(settings.required_profile)
         if args.apply and os.geteuid() != 0:
             raise HardwareError("fan-control writes must be run as root (use sudo)")
         if args.duration is not None and args.duration <= 0:
