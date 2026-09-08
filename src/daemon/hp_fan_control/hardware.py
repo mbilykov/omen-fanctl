@@ -24,6 +24,8 @@ PLATFORM_PROFILE_CHOICES_PATH = Path(
 CONTROL_SENSORS = ("cpu", "gpu", "ir")
 HP_HWMON_STARTUP_TIMEOUT_S = 20.0
 HP_HWMON_STARTUP_RETRY_S = 1.0
+K10TEMP_STARTUP_TIMEOUT_S = 20.0
+K10TEMP_STARTUP_RETRY_S = 1.0
 NVIDIA_DISCOVERY_INTERVAL_S = 30.0
 NVIDIA_FAILURE_THRESHOLD = 3
 
@@ -174,6 +176,18 @@ def read_hwmon_temperatures(directory: Path) -> list[float]:
     return values
 
 
+def _find_hwmon_temperature_source(
+    name: str,
+    root: Path = Path("/sys/class/hwmon"),
+) -> tuple[Path, list[float]] | None:
+    """Return the first matching hwmon directory with valid temperatures."""
+    for directory in find_hwmon(name, root):
+        values = read_hwmon_temperatures(directory)
+        if values:
+            return directory, values
+    return None
+
+
 def read_hp_wmi_ir_temperature(path: Path) -> float:
     """Read index 0 (IR) from the optional text procfs ABI."""
     try:
@@ -240,10 +254,12 @@ class Sensors:
     def __init__(self, settings: Settings, hwmon_root: Path = Path("/sys/class/hwmon")):
         self.settings = settings
         self.hwmon_root = hwmon_root
-        cpu_matches = find_hwmon("k10temp", hwmon_root)
-        if not cpu_matches:
-            raise HardwareError("k10temp hwmon sensor was not found")
-        self.cpu_hwmon = cpu_matches[0]
+        cpu_source = _find_hwmon_temperature_source("k10temp", hwmon_root)
+        if cpu_source is None:
+            raise HardwareNotReadyError(
+                "no k10temp hwmon sensor with a valid temperature input was found"
+            )
+        self.cpu_hwmon, _ = cpu_source
         self.amd_gpu_hwmons = (
             find_hwmon("amdgpu", hwmon_root) if settings.include_amd_gpu else []
         )
@@ -281,10 +297,9 @@ class Sensors:
     def _cpu_temperature(self) -> float:
         values = read_hwmon_temperatures(self.cpu_hwmon)
         if not values:
-            matches = find_hwmon("k10temp", self.hwmon_root)
-            if matches:
-                self.cpu_hwmon = matches[0]
-                values = read_hwmon_temperatures(self.cpu_hwmon)
+            source = _find_hwmon_temperature_source("k10temp", self.hwmon_root)
+            if source is not None:
+                self.cpu_hwmon, values = source
         if not values:
             self.cpu_health.unavailable(
                 "no valid k10temp temperature was found during rediscovery"
@@ -434,6 +449,39 @@ class Sensors:
             nvidia_power_draw_w=power_draw,
             nvidia_power_limit_w=power_limit,
         )
+
+
+def wait_for_temperature_sensors(
+    settings: Settings,
+    root: Path = Path("/sys/class/hwmon"),
+    timeout_s: float = K10TEMP_STARTUP_TIMEOUT_S,
+    retry_s: float = K10TEMP_STARTUP_RETRY_S,
+) -> Sensors:
+    """Wait briefly for the mandatory CPU temperature source to become ready."""
+    deadline = time.monotonic() + timeout_s
+    waiting_logged = False
+    while True:
+        try:
+            sensors = Sensors(settings, hwmon_root=root)
+            if waiting_logged:
+                LOG.info("k10temp temperature source became ready")
+            return sensors
+        except HardwareNotReadyError as exc:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise HardwareError(
+                    "k10temp temperature source did not become ready within "
+                    f"{timeout_s:g} seconds: {exc}"
+                ) from exc
+            if not waiting_logged:
+                LOG.warning(
+                    "k10temp temperature source is not ready; "
+                    "waiting up to %g seconds: %s",
+                    timeout_s,
+                    exc,
+                )
+                waiting_logged = True
+            time.sleep(min(retry_s, remaining))
 
 
 class HpFanHwmon:

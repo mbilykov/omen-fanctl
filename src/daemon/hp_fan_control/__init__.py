@@ -34,6 +34,7 @@ from .hardware import (
     read_hp_wmi_ir_temperature,
     validate_required_profile,
     wait_for_hp_fan_hwmon,
+    wait_for_temperature_sensors,
 )
 
 __all__ = (
@@ -70,4 +71,5 @@ __all__ = (
     "run_actuator_test",
     "validate_required_profile",
     "wait_for_hp_fan_hwmon",
+    "wait_for_temperature_sensors",
 )

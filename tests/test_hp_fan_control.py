@@ -60,6 +60,7 @@ from hp_fan_control.hardware import (  # noqa: E402
     read_hp_wmi_ir_temperature,
     validate_required_profile,
     wait_for_hp_fan_hwmon,
+    wait_for_temperature_sensors,
 )
 
 
@@ -871,6 +872,9 @@ class SensorMetricTests(unittest.TestCase):
     def test_rediscovers_cpu_after_hwmon_index_changes(self):
         sensors = initialized_sensors(self)
         self.assertEqual(sensors.read().cpu, 50.0)
+        empty_cpu = sensors.hwmon_root / "hwmon1"
+        empty_cpu.mkdir()
+        (empty_cpu / "name").write_text("k10temp\n")
         new_cpu = sensors.hwmon_root / "hwmon12"
         sensors.cpu_hwmon.rename(new_cpu)
 
@@ -1728,6 +1732,25 @@ class ControllerLoopTests(unittest.TestCase):
 
         lock.close.assert_called_once_with()
 
+    def test_main_closes_lock_when_k10temp_startup_times_out(self):
+        lock = Mock()
+        with (
+            patch("hp_fan_control.cli.read_text", return_value="8D87"),
+            patch("hp_fan_control.cli.validate_required_profile"),
+            patch("hp_fan_control.cli.acquire_lock", return_value=lock),
+            patch("hp_fan_control.cli.wait_for_hp_fan_hwmon"),
+            patch(
+                "hp_fan_control.cli.wait_for_temperature_sensors",
+                side_effect=HardwareError("k10temp startup timeout"),
+            ),
+        ):
+            self.assertEqual(
+                main(["--config", str(CONFIG_PATH), "--no-log-file"]),
+                1,
+            )
+
+        lock.close.assert_called_once_with()
+
     def test_main_preserves_successful_system_exit_without_explicit_code(self):
         with patch("hp_fan_control.cli.parse_args", side_effect=SystemExit(None)):
             self.assertEqual(main([]), 0)
@@ -2000,6 +2023,108 @@ class FakeHwmonTests(unittest.TestCase):
 
 
 class HwmonStartupTests(unittest.TestCase):
+    def test_waits_for_k10temp_directory_on_real_filesystem(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cpu = root / "hwmon0"
+            settings = settings_with(
+                fixed_policy_settings(),
+                include_amd_gpu=False,
+                include_nvidia_gpu=False,
+                include_hp_wmi_ir=False,
+            )
+
+            def publish_sensor(_delay):
+                cpu.mkdir()
+                (cpu / "name").write_text("k10temp\n")
+                (cpu / "temp1_input").write_text("50000\n")
+
+            with (
+                patch(
+                    "hp_fan_control.hardware.time.monotonic",
+                    side_effect=[100.0, 100.0],
+                ),
+                patch(
+                    "hp_fan_control.hardware.time.sleep",
+                    side_effect=publish_sensor,
+                ) as sleep,
+                patch("hp_fan_control.hardware.LOG.warning") as log_warning,
+                patch("hp_fan_control.hardware.LOG.info") as log_info,
+            ):
+                sensors = wait_for_temperature_sensors(settings, root=root)
+
+            self.assertEqual(sensors.cpu_hwmon, cpu)
+            self.assertEqual(sensors.read().cpu, 50.0)
+            sleep.assert_called_once_with(1.0)
+            log_warning.assert_called_once()
+            log_info.assert_called_once_with(
+                "k10temp temperature source became ready"
+            )
+
+    def test_waits_for_valid_k10temp_input_on_real_filesystem(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cpu = root / "hwmon0"
+            cpu.mkdir()
+            (cpu / "name").write_text("k10temp\n")
+            settings = settings_with(
+                fixed_policy_settings(),
+                include_amd_gpu=False,
+                include_nvidia_gpu=False,
+                include_hp_wmi_ir=False,
+            )
+
+            def publish_temperature(_delay):
+                (cpu / "temp1_input").write_text("50000\n")
+
+            with (
+                patch(
+                    "hp_fan_control.hardware.time.monotonic",
+                    side_effect=[100.0, 100.0],
+                ),
+                patch(
+                    "hp_fan_control.hardware.time.sleep",
+                    side_effect=publish_temperature,
+                ) as sleep,
+                patch("hp_fan_control.hardware.LOG.warning") as log_warning,
+                patch("hp_fan_control.hardware.LOG.info") as log_info,
+            ):
+                sensors = wait_for_temperature_sensors(settings, root=root)
+
+            self.assertEqual(sensors.cpu_hwmon, cpu)
+            self.assertEqual(sensors.read().cpu, 50.0)
+            sleep.assert_called_once_with(1.0)
+            log_warning.assert_called_once()
+            log_info.assert_called_once_with(
+                "k10temp temperature source became ready"
+            )
+
+    def test_fails_after_k10temp_startup_timeout(self):
+        settings = settings_with(
+            fixed_policy_settings(),
+            include_amd_gpu=False,
+            include_nvidia_gpu=False,
+            include_hp_wmi_ir=False,
+        )
+        with (
+            patch(
+                "hp_fan_control.hardware.Sensors",
+                side_effect=HardwareNotReadyError("not ready"),
+            ),
+            patch(
+                "hp_fan_control.hardware.time.monotonic",
+                side_effect=[100.0, 120.0],
+            ),
+            patch("hp_fan_control.hardware.time.sleep") as sleep,
+            self.assertRaisesRegex(
+                HardwareError,
+                "k10temp temperature source did not become ready within 20 seconds",
+            ),
+        ):
+            wait_for_temperature_sensors(settings)
+
+        sleep.assert_not_called()
+
     def test_waits_for_hwmon_attributes_on_real_filesystem(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -2147,6 +2272,10 @@ class EntryPointTests(unittest.TestCase):
 
 
 class SystemdUnitTests(unittest.TestCase):
+    def test_start_timeout_covers_sequential_hwmon_readiness_windows(self):
+        service = SERVICE_PATH.read_text(encoding="utf-8")
+        self.assertIn("TimeoutStartSec=90\n", service)
+
     def test_restart_policy_retries_runtime_but_not_configuration_failures(self):
         service = SERVICE_PATH.read_text(encoding="utf-8")
         self.assertIn("StartLimitIntervalSec=60\n", service)

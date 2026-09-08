@@ -26,6 +26,7 @@ from .hardware import (
     read_text,
     validate_required_profile,
     wait_for_hp_fan_hwmon,
+    wait_for_temperature_sensors,
 )
 
 
@@ -320,7 +321,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         lock_handle = acquire_lock(lock_path)
 
         fan = wait_for_hp_fan_hwmon()
-        sensors = Sensors(settings)
+        sensors = wait_for_temperature_sensors(settings)
         if args.actuator_test is not None:
             if not args.apply:
                 raise ConfigurationError("--actuator-test also requires --apply")

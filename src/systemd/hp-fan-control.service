@@ -15,6 +15,8 @@ RestartPreventExitStatus=78
 RestartSec=10
 WatchdogSec=15
 WatchdogSignal=SIGKILL
+# Covers the sequential 20-second hp-wmi and k10temp readiness windows.
+TimeoutStartSec=90
 TimeoutStopSec=15
 KillSignal=SIGTERM
 
