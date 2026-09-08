@@ -8,7 +8,7 @@ DOC_DIR=/usr/local/share/doc/hp-fan-control
 CONFIG_DIR=/etc/hp-fan-control
 UNIT_PATH=/etc/systemd/system/hp-fan-control.service
 TMPFILES_PATH=/etc/tmpfiles.d/hp-fan-control.conf
-LEGACY_LOGROTATE_PATH=/etc/logrotate.d/hp-fan-control
+LOGROTATE_PATH=/etc/logrotate.d/hp-fan-control
 START_NOW=false
 ENABLE_NOW=false
 
@@ -33,6 +33,9 @@ Usage: sudo ./install.sh [--start-now | --enable-now]
 Installs the daemon, default configuration, documentation, and systemd unit.
 The optional WMI IR procfs provider is not installed. Existing configuration
 is kept.
+
+Requirements: Python 3.11 or newer, systemd, and logrotate.
+On Arch Linux: sudo pacman -S --needed logrotate
 
 Options:
   --start-now   Start the service after installation without enabling it
@@ -71,12 +74,19 @@ for required in \
     "$SCRIPT_DIR/src/config/fan-control.toml" \
     "$SCRIPT_DIR/README.md" \
     "$SCRIPT_DIR/src/systemd/hp-fan-control.service" \
+    "$SCRIPT_DIR/src/logrotate/hp-fan-control" \
     "$SCRIPT_DIR/src/tmpfiles/hp-fan-control.conf"; do
     if [[ ! -f "$required" ]]; then
         echo "ERROR: required source file is missing: $required" >&2
         exit 1
     fi
 done
+if ! command -v logrotate >/dev/null 2>&1; then
+    echo "ERROR: the logrotate package is required for telemetry retention." >&2
+    echo "Please install it before running this installer." >&2
+    echo "On Arch Linux: sudo pacman -S --needed logrotate" >&2
+    exit 1
+fi
 shopt -s nullglob
 DAEMON_SOURCES=("$DAEMON_SOURCE_DIR"/*.py)
 shopt -u nullglob
@@ -140,13 +150,9 @@ install_file 0755 "$SCRIPT_DIR/src/daemon/hp_fan_control.py" \
     "$INSTALL_DIR/hp_fan_control.py"
 install_file 0644 "$SCRIPT_DIR/README.md" "$DOC_DIR/README.md"
 install_file 0644 "$SCRIPT_DIR/src/systemd/hp-fan-control.service" "$UNIT_PATH"
+install_file 0644 "$SCRIPT_DIR/src/logrotate/hp-fan-control" "$LOGROTATE_PATH"
 install_file 0644 "$SCRIPT_DIR/src/tmpfiles/hp-fan-control.conf" \
     "$TMPFILES_PATH"
-
-if [[ -e "$LEGACY_LOGROTATE_PATH" ]]; then
-    log "Removing obsolete logrotate policy: $LEGACY_LOGROTATE_PATH"
-    rm -f -- "$LEGACY_LOGROTATE_PATH"
-fi
 
 log "Creating telemetry directory and applying retention policy"
 systemd-tmpfiles --create "$TMPFILES_PATH"

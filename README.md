@@ -43,6 +43,7 @@ Runtime requirements:
 
 - Python 3.11 or newer; no third-party Python packages are required.
 - `systemd` with watchdog and notification support.
+- `logrotate` for bounded CSV telemetry retention.
 - `/sys/firmware/acpi/platform_profile` with a `performance` profile.
 - Linux `hp-wmi` hwmon fan control exposing `pwm1`, `pwm1_enable`,
   `fan1_input`, and `fan2_input`.
@@ -83,6 +84,16 @@ The following workload tools were used during validation:
 - combined `stress-ng` and CUDA workloads for shared thermal-load testing.
 
 ## Installation
+
+### Install requirements
+
+On Arch Linux, install `logrotate` before running the installer:
+
+```bash
+sudo pacman -S --needed logrotate
+```
+
+### Install the daemon
 
 Clone the repository:
 
@@ -171,8 +182,8 @@ journalctl -fu hp-fan-control.service
 The journal records state changes immediately and rate-limits unchanged status
 messages to one entry every 30 seconds.
 
-Full-resolution telemetry is written once per second to timestamped CSV files
-under `/var/log/hp-fan-control/`. Records include:
+Full-resolution telemetry is appended once per second to
+`/var/log/hp-fan-control/hp-fan-control.csv`. Records include:
 
 - platform profile and controller state;
 - raw and EWMA-filtered CPU, GPU, IR, and optional ACPI temperatures;
@@ -185,9 +196,13 @@ target to this telemetry for comparison. The proxy cannot activate Manual
 mode, change the requested PWM, trigger emergency cooling, or delay the return
 to firmware Auto.
 
-Each daemon start creates a separate timestamped CSV file. The supplied
-systemd-tmpfiles policy removes inactive telemetry files after 14 days; it does
-not truncate or rename the file currently held open by the daemon.
+Service restarts continue the same CSV file without duplicating its header. The
+supplied logrotate policy rotates it daily, retains 14 archives, compresses old
+files, and uses `copytruncate` so the daemon does not need to reopen the active
+file. `copytruncate` has a narrow race in which one telemetry row can be lost;
+fan control is unaffected. The systemd-tmpfiles policy also removes inactive
+telemetry files after 14 days, including timestamped files left by older daemon
+versions.
 
 ## Control logic
 

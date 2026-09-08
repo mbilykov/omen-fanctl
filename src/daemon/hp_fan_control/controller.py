@@ -141,25 +141,80 @@ class CsvLog:
     )
 
     def __init__(self, path: Path | None):
+        self.path = path
         self.handle = None
         self.writer = None
+        self.failed = False
         if path is not None:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            self.handle = path.open("w", encoding="utf-8", newline="")
-            self.writer = csv.DictWriter(self.handle, fieldnames=self.FIELDS)
-            self.writer.writeheader()
-            self.handle.flush()
+            try:
+                self._open()
+            except OSError as exc:
+                self._failure(exc)
+
+    def _open(self) -> None:
+        assert self.path is not None
+        handle = None
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            handle = self.path.open("a", encoding="utf-8", newline="")
+            writer = csv.DictWriter(handle, fieldnames=self.FIELDS)
+            if os.fstat(handle.fileno()).st_size == 0:
+                writer.writeheader()
+            handle.flush()
+        except OSError:
+            if handle is not None:
+                try:
+                    handle.close()
+                except OSError:
+                    pass
+            raise
+        self.handle = handle
+        self.writer = writer
+
+    def _failure(self, exc: OSError) -> None:
+        if not self.failed:
+            LOG.warning("CSV telemetry unavailable: %s", exc)
+        self.failed = True
+
+    def _discard_handle(self) -> None:
+        handle = self.handle
+        self.handle = None
+        self.writer = None
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass
 
     def write(self, row: dict[str, object]) -> None:
-        if self.writer is None:
+        if self.path is None:
             return
-        self.writer.writerow(row)
-        assert self.handle is not None
-        self.handle.flush()
+        try:
+            if self.handle is None:
+                self._open()
+            assert self.handle is not None
+            assert self.writer is not None
+            if os.fstat(self.handle.fileno()).st_size == 0:
+                self.writer.writeheader()
+            self.writer.writerow(row)
+            self.handle.flush()
+        except OSError as exc:
+            self._discard_handle()
+            self._failure(exc)
+            return
+        if self.failed:
+            LOG.info("CSV telemetry recovered")
+            self.failed = False
 
     def close(self) -> None:
-        if self.handle is not None:
-            self.handle.close()
+        handle = self.handle
+        self.handle = None
+        self.writer = None
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError as exc:
+                self._failure(exc)
 
 
 class ControlPolicy:

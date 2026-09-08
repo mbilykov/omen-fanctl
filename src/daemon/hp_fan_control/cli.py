@@ -11,7 +11,6 @@ import stat
 import time
 from collections.abc import Iterable
 from dataclasses import replace
-from datetime import datetime
 from io import TextIOWrapper
 from pathlib import Path
 
@@ -325,8 +324,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         elif args.log_file:
             log_path = args.log_file
         else:
-            stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
-            log_path = Path.cwd() / f"hp-fan-control-{stamp}.csv"
+            log_path = Path.cwd() / "hp-fan-control.csv"
         csv_log = CsvLog(log_path)
 
         LOG.warning(

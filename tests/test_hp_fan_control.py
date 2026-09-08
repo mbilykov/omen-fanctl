@@ -15,6 +15,7 @@ from unittest.mock import ANY, Mock, call, patch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = PROJECT_ROOT / "src" / "config" / "fan-control.toml"
 SERVICE_PATH = PROJECT_ROOT / "src" / "systemd" / "hp-fan-control.service"
+LOGROTATE_PATH = PROJECT_ROOT / "src" / "logrotate" / "hp-fan-control"
 ENTRY_POINT_PATH = PROJECT_ROOT / "src" / "daemon" / "hp_fan_control.py"
 DAEMON_PATH = PROJECT_ROOT / "src" / "daemon"
 sys.path.insert(0, str(PROJECT_ROOT / "src" / "daemon"))
@@ -393,6 +394,60 @@ class EwmaTests(unittest.TestCase):
         self.assertEqual(ewma.update(50), 50)
         self.assertEqual(ewma.update(70), 60)
         self.assertEqual(ewma.update(50), 59)
+
+
+class CsvLogTests(unittest.TestCase):
+    def test_restart_appends_without_duplicate_header(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "hp-fan-control.csv"
+
+            first = CsvLog(path)
+            first.write({})
+            first.close()
+            second = CsvLog(path)
+            second.write({})
+            second.close()
+
+            lines = path.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(lines.count(",".join(CsvLog.FIELDS)), 1)
+        self.assertEqual(len(lines), 3)
+
+    def test_rewrites_header_after_external_copytruncate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "hp-fan-control.csv"
+            log = CsvLog(path)
+            log.write({})
+
+            path.write_text("", encoding="utf-8")
+            log.write({})
+            log.close()
+            lines = path.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(lines[0], ",".join(CsvLog.FIELDS))
+        self.assertEqual(len(lines), 2)
+
+    def test_io_failure_is_deduplicated_and_recovers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "hp-fan-control.csv"
+            log = CsvLog(path)
+            with patch(
+                "hp_fan_control.controller.os.fstat",
+                side_effect=OSError("disk unavailable"),
+            ):
+                with self.assertLogs("hp-fan-control", level="WARNING") as captured:
+                    log.write({})
+                    log.write({})
+
+            self.assertEqual(
+                sum("CSV telemetry unavailable" in line for line in captured.output),
+                1,
+            )
+            with self.assertLogs("hp-fan-control", level="INFO") as captured:
+                log.write({})
+            log.close()
+
+        self.assertTrue(any("CSV telemetry recovered" in line for line in captured.output))
 
 
 class ControlDecisionTests(unittest.TestCase):
@@ -2058,6 +2113,25 @@ class SystemdUnitTests(unittest.TestCase):
         self.assertIn("Restart=always\n", service)
         self.assertIn("RestartSec=10\n", service)
 
+    def test_csv_rotation_targets_only_the_stable_log(self):
+        policy = LOGROTATE_PATH.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "/var/log/hp-fan-control/hp-fan-control.csv {\n",
+            policy,
+        )
+        self.assertNotIn("*.csv", policy)
+        for directive in (
+            "daily",
+            "rotate 14",
+            "compress",
+            "delaycompress",
+            "copytruncate",
+            "missingok",
+            "notifempty",
+        ):
+            with self.subTest(directive=directive):
+                self.assertIn(f"    {directive}\n", policy)
 
 if __name__ == "__main__":
     unittest.main()
