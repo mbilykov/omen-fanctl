@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 INSTALL_DIR=/usr/local/lib/hp-fan-control
+DAEMON_SOURCE_DIR=$SCRIPT_DIR/src/daemon/hp_fan_control
 DOC_DIR=/usr/local/share/doc/hp-fan-control
 CONFIG_DIR=/etc/hp-fan-control
 UNIT_PATH=/etc/systemd/system/hp-fan-control.service
@@ -76,6 +77,19 @@ for required in \
         exit 1
     fi
 done
+shopt -s nullglob
+DAEMON_SOURCES=("$DAEMON_SOURCE_DIR"/*.py)
+shopt -u nullglob
+if (( ${#DAEMON_SOURCES[@]} == 0 )); then
+    echo "ERROR: no Python modules found in $DAEMON_SOURCE_DIR" >&2
+    exit 1
+fi
+for source in "${DAEMON_SOURCES[@]}"; do
+    if [[ ! -f "$source" ]]; then
+        echo "ERROR: invalid daemon source: $source" >&2
+        exit 1
+    fi
+done
 
 if systemctl cat hp-fan-control.service >/dev/null 2>&1; then
     log "Existing hp-fan-control installation detected"
@@ -118,6 +132,10 @@ else
     log "No existing hp-fan-control installation detected"
 fi
 
+for source in "${DAEMON_SOURCES[@]}"; do
+    install_file 0644 "$source" \
+        "$INSTALL_DIR/hp_fan_control/${source##*/}"
+done
 install_file 0755 "$SCRIPT_DIR/src/daemon/hp_fan_control.py" \
     "$INSTALL_DIR/hp_fan_control.py"
 install_file 0644 "$SCRIPT_DIR/README.md" "$DOC_DIR/README.md"

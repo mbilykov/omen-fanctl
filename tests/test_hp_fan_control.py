@@ -3,6 +3,7 @@
 import os
 import select
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -14,38 +15,47 @@ from unittest.mock import Mock, call, patch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = PROJECT_ROOT / "src" / "config" / "fan-control.toml"
 SERVICE_PATH = PROJECT_ROOT / "src" / "systemd" / "hp-fan-control.service"
+ENTRY_POINT_PATH = PROJECT_ROOT / "src" / "daemon" / "hp_fan_control.py"
+DAEMON_PATH = PROJECT_ROOT / "src" / "daemon"
 sys.path.insert(0, str(PROJECT_ROOT / "src" / "daemon"))
 
-from hp_fan_control import (  # noqa: E402
-    AUTO_MODE,
-    MANUAL_MODE,
-    MAX_MODE,
-    ConfigurationError,
-    ControlPolicy,
-    Controller,
-    Curve,
-    CsvLog,
-    Ewma,
-    HardwareError,
-    HardwareNotReadyError,
-    HpFanHwmon,
-    Settings,
-    Sensors,
-    PlatformProfileMonitor,
-    SystemdNotifier,
-    TemperatureSnapshot,
+import hp_fan_control as hp_fan_control_package  # noqa: E402
+from hp_fan_control.cli import (  # noqa: E402
     acquire_lock,
     dry_run_lock_path,
     ensure_failsafe_fan_state,
-    hp_factory_performance_curves,
-    hp_level_percent,
     main,
     parse_args,
-    percent_to_pwm,
-    pwm_to_percent,
-    read_hp_wmi_ir_temperature,
     restore_firmware_auto,
     run_actuator_test,
+)
+from hp_fan_control.config import (  # noqa: E402
+    ConfigurationError,
+    Curve,
+    Settings,
+    hp_factory_performance_curves,
+    hp_level_percent,
+    percent_to_pwm,
+    pwm_to_percent,
+)
+from hp_fan_control.controller import (  # noqa: E402
+    ControlPolicy,
+    Controller,
+    CsvLog,
+    Ewma,
+    SystemdNotifier,
+)
+from hp_fan_control.hardware import (  # noqa: E402
+    AUTO_MODE,
+    MANUAL_MODE,
+    MAX_MODE,
+    HardwareError,
+    HardwareNotReadyError,
+    HpFanHwmon,
+    PlatformProfileMonitor,
+    Sensors,
+    TemperatureSnapshot,
+    read_hp_wmi_ir_temperature,
     validate_required_profile,
     wait_for_hp_fan_hwmon,
 )
@@ -256,9 +266,9 @@ class LockTests(unittest.TestCase):
                 return handle
 
             with (
-                patch("hp_fan_control.os.fdopen", side_effect=capture_handle),
+                patch("hp_fan_control.cli.os.fdopen", side_effect=capture_handle),
                 patch(
-                    "hp_fan_control.fcntl.flock",
+                    "hp_fan_control.cli.fcntl.flock",
                     side_effect=OSError("filesystem failure"),
                 ),
                 self.assertRaisesRegex(HardwareError, "cannot acquire lock"),
@@ -275,17 +285,17 @@ class LockTests(unittest.TestCase):
             handle.write.side_effect = OSError("filesystem failure")
 
             with (
-                patch("hp_fan_control.os.open", return_value=123),
+                patch("hp_fan_control.cli.os.open", return_value=123),
                 patch(
-                    "hp_fan_control.os.fstat",
+                    "hp_fan_control.cli.os.fstat",
                     return_value=SimpleNamespace(
                         st_mode=0o100600,
                         st_uid=os.geteuid(),
                     ),
                 ),
-                patch("hp_fan_control.os.fchmod"),
-                patch("hp_fan_control.os.fdopen", return_value=handle),
-                patch("hp_fan_control.fcntl.flock"),
+                patch("hp_fan_control.cli.os.fchmod"),
+                patch("hp_fan_control.cli.os.fdopen", return_value=handle),
+                patch("hp_fan_control.cli.fcntl.flock"),
                 self.assertRaisesRegex(OSError, "filesystem failure"),
             ):
                 acquire_lock(lock)
@@ -309,9 +319,9 @@ class LockTests(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as temporary:
                     lock = Path(temporary) / "control.lock"
                     with (
-                        patch("hp_fan_control.os.open", return_value=123),
-                        patch("hp_fan_control.os.fstat", return_value=metadata),
-                        patch("hp_fan_control.os.close") as close,
+                        patch("hp_fan_control.cli.os.open", return_value=123),
+                        patch("hp_fan_control.cli.os.fstat", return_value=metadata),
+                        patch("hp_fan_control.cli.os.close") as close,
                         self.assertRaisesRegex(
                             HardwareError,
                             "lock must be a regular file owned by uid",
@@ -322,7 +332,7 @@ class LockTests(unittest.TestCase):
                     close.assert_called_once_with(123)
 
     def test_dry_run_lock_is_scoped_to_effective_uid(self):
-        with patch("hp_fan_control.os.geteuid", return_value=1234):
+        with patch("hp_fan_control.cli.os.geteuid", return_value=1234):
             self.assertEqual(
                 dry_run_lock_path(),
                 Path("/tmp/hp-fan-control-dry-run-1234.lock"),
@@ -625,7 +635,7 @@ class SensorMetricTests(unittest.TestCase):
             hp_wmi_sensors_path=Path("/proc/hp_wmi_sensors"),
         )
         with patch(
-            "hp_fan_control.read_hp_wmi_ir_temperature",
+            "hp_fan_control.hardware.read_hp_wmi_ir_temperature",
             side_effect=[HardwareError("missing"), 41.0],
         ):
             first = sensors.read()
@@ -639,7 +649,7 @@ class SensorMetricTests(unittest.TestCase):
         sensors = initialized_sensors(self)
         sensors.nvidia_smi = "/usr/bin/nvidia-smi"
         result = SimpleNamespace(returncode=0, stdout="72, 174.5, 175.0\n")
-        with patch("hp_fan_control.subprocess.run", return_value=result):
+        with patch("hp_fan_control.hardware.subprocess.run", return_value=result):
             snapshot = sensors.read()
         self.assertEqual(snapshot.gpu, 72.0)
         self.assertEqual(snapshot.nvidia_power_draw_w, 174.5)
@@ -649,7 +659,7 @@ class SensorMetricTests(unittest.TestCase):
         sensors = initialized_sensors(self)
         sensors.nvidia_smi = "/usr/bin/nvidia-smi"
         result = SimpleNamespace(returncode=0, stdout="61, [N/A], [N/A]\n")
-        with patch("hp_fan_control.subprocess.run", return_value=result):
+        with patch("hp_fan_control.hardware.subprocess.run", return_value=result):
             snapshot = sensors.read()
         self.assertEqual(snapshot.gpu, 61.0)
         self.assertIsNone(snapshot.nvidia_power_draw_w)
@@ -854,8 +864,8 @@ class ControllerLoopTests(unittest.TestCase):
         snapshot = TemperatureSnapshot(70, 50, None, None)
         filtered = {"cpu": 70.0, "gpu": 50.0, "ir": None, "acpi": None}
         with (
-            patch("hp_fan_control.LOG.info") as log_info,
-            patch("hp_fan_control.time.monotonic", return_value=1.0),
+            patch("hp_fan_control.controller.LOG.info") as log_info,
+            patch("hp_fan_control.controller.time.monotonic", return_value=1.0),
         ):
             controller.log_sample(
                 0, "balanced", "handoff", snapshot, filtered, 70, 100,
@@ -1109,9 +1119,9 @@ class ControllerLoopTests(unittest.TestCase):
     def test_actuator_test_restores_auto(self):
         fan = FakeFan()
         with (
-            patch("hp_fan_control.time.monotonic", side_effect=[0.0, 0.0, 2.0]),
-            patch("hp_fan_control.time.sleep"),
-            patch("hp_fan_control.signal.signal"),
+            patch("hp_fan_control.cli.time.monotonic", side_effect=[0.0, 0.0, 2.0]),
+            patch("hp_fan_control.cli.time.sleep"),
+            patch("hp_fan_control.cli.signal.signal"),
         ):
             run_actuator_test(fan, FakeSensors(50), 60, 1)
         self.assertEqual(fan.actions[0][0], "manual")
@@ -1153,11 +1163,11 @@ class ControllerLoopTests(unittest.TestCase):
         fan = FakeFan()
         fan.mode = MANUAL_MODE
         with (
-            patch("hp_fan_control.read_text", return_value="8D87"),
-            patch("hp_fan_control.os.geteuid", return_value=0),
-            patch("hp_fan_control.acquire_lock", return_value=lock),
-            patch("hp_fan_control.HpFanHwmon", return_value=fan),
-            patch("hp_fan_control.Settings.load") as load_settings,
+            patch("hp_fan_control.cli.read_text", return_value="8D87"),
+            patch("hp_fan_control.cli.os.geteuid", return_value=0),
+            patch("hp_fan_control.cli.acquire_lock", return_value=lock),
+            patch("hp_fan_control.cli.HpFanHwmon", return_value=fan),
+            patch("hp_fan_control.cli.Settings.load") as load_settings,
         ):
             self.assertEqual(main(["--restore-auto"]), 0)
         load_settings.assert_not_called()
@@ -1171,13 +1181,13 @@ class ControllerLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             guard = Path(temporary) / "missing-auto-guard"
             with (
-                patch("hp_fan_control.read_text", return_value="8D87"),
-                patch("hp_fan_control.os.geteuid", return_value=0),
-                patch("hp_fan_control.acquire_lock", return_value=lock),
-                patch("hp_fan_control.HpFanHwmon", return_value=fan),
-                patch("hp_fan_control.wait_for_hp_fan_hwmon") as wait_for_hwmon,
-                patch("hp_fan_control.AUTO_GUARD_PATH", guard),
-                patch("hp_fan_control.Settings.load") as load_settings,
+                patch("hp_fan_control.cli.read_text", return_value="8D87"),
+                patch("hp_fan_control.cli.os.geteuid", return_value=0),
+                patch("hp_fan_control.cli.acquire_lock", return_value=lock),
+                patch("hp_fan_control.cli.HpFanHwmon", return_value=fan),
+                patch("hp_fan_control.cli.wait_for_hp_fan_hwmon") as wait_for_hwmon,
+                patch("hp_fan_control.cli.AUTO_GUARD_PATH", guard),
+                patch("hp_fan_control.cli.Settings.load") as load_settings,
             ):
                 self.assertEqual(main(["--failsafe"]), 0)
         load_settings.assert_not_called()
@@ -1196,10 +1206,10 @@ class ControllerLoopTests(unittest.TestCase):
             raise AssertionError(f"unexpected read: {path}")
 
         with (
-            patch("hp_fan_control.read_text", side_effect=fake_read_text),
-            patch("hp_fan_control.acquire_lock", return_value=lock),
+            patch("hp_fan_control.cli.read_text", side_effect=fake_read_text),
+            patch("hp_fan_control.cli.acquire_lock", return_value=lock),
             patch(
-                "hp_fan_control.wait_for_hp_fan_hwmon",
+                "hp_fan_control.cli.wait_for_hp_fan_hwmon",
                 side_effect=HardwareError("hp hwmon startup timeout"),
             ),
         ):
@@ -1223,9 +1233,9 @@ class ControllerLoopTests(unittest.TestCase):
             raise AssertionError(f"unexpected read: {path}")
 
         with (
-            patch("hp_fan_control.Settings.load", return_value=settings),
-            patch("hp_fan_control.read_text", side_effect=fake_read_text),
-            patch("hp_fan_control.acquire_lock", acquire),
+            patch("hp_fan_control.cli.Settings.load", return_value=settings),
+            patch("hp_fan_control.cli.read_text", side_effect=fake_read_text),
+            patch("hp_fan_control.cli.acquire_lock", acquire),
         ):
             self.assertEqual(main(["--no-log-file"]), 1)
 
@@ -1234,11 +1244,11 @@ class ControllerLoopTests(unittest.TestCase):
     def test_failsafe_closes_lock_when_hwmon_initialization_fails(self):
         lock = Mock()
         with (
-            patch("hp_fan_control.read_text", return_value="8D87"),
-            patch("hp_fan_control.os.geteuid", return_value=0),
-            patch("hp_fan_control.acquire_lock", return_value=lock),
+            patch("hp_fan_control.cli.read_text", return_value="8D87"),
+            patch("hp_fan_control.cli.os.geteuid", return_value=0),
+            patch("hp_fan_control.cli.acquire_lock", return_value=lock),
             patch(
-                "hp_fan_control.HpFanHwmon",
+                "hp_fan_control.cli.HpFanHwmon",
                 side_effect=HardwareError("hp hwmon unavailable"),
             ),
         ):
@@ -1255,11 +1265,11 @@ class SystemdNotifierTests(unittest.TestCase):
         context.__exit__ = Mock(return_value=False)
         with (
             patch.dict(
-                "hp_fan_control.os.environ",
+                "hp_fan_control.controller.os.environ",
                 {"NOTIFY_SOCKET": "@notify", "WATCHDOG_PID": str(os.getpid())},
                 clear=True,
             ),
-            patch("hp_fan_control.socket.socket", return_value=context),
+            patch("hp_fan_control.controller.socket.socket", return_value=context),
         ):
             notifier = SystemdNotifier.from_environment()
             notifier.watchdog()
@@ -1272,11 +1282,11 @@ class SystemdNotifierTests(unittest.TestCase):
         context.__exit__ = Mock(return_value=False)
         with (
             patch.dict(
-                "hp_fan_control.os.environ",
+                "hp_fan_control.controller.os.environ",
                 {"NOTIFY_SOCKET": "/run/notify", "WATCHDOG_PID": "999999"},
                 clear=True,
             ),
-            patch("hp_fan_control.socket.socket", return_value=context),
+            patch("hp_fan_control.controller.socket.socket", return_value=context),
         ):
             notifier = SystemdNotifier.from_environment()
             notifier.ready()
@@ -1295,11 +1305,11 @@ class SystemdNotifierTests(unittest.TestCase):
 
         with (
             patch(
-                "hp_fan_control.socket.socket",
+                "hp_fan_control.controller.socket.socket",
                 side_effect=[OSError("temporary failure"), context],
             ) as socket_factory,
-            patch("hp_fan_control.LOG.warning") as warning,
-            patch("hp_fan_control.LOG.info") as info,
+            patch("hp_fan_control.controller.LOG.warning") as warning,
+            patch("hp_fan_control.controller.LOG.info") as info,
         ):
             notifier.ready()
             notifier.watchdog()
@@ -1318,7 +1328,7 @@ class PlatformProfileMonitorTests(unittest.TestCase):
             path.write_text("balanced\n")
             poller = Mock()
             poller.poll.return_value = [(7, select.POLLPRI)]
-            with patch("hp_fan_control.select.poll", return_value=poller):
+            with patch("hp_fan_control.hardware.select.poll", return_value=poller):
                 monitor = PlatformProfileMonitor(path)
                 self.assertEqual(monitor.current, "balanced")
                 path.write_text("performance\n")
@@ -1381,7 +1391,7 @@ class FakeHwmonTests(unittest.TestCase):
         fan = initialized_fan(self)
         failure = HardwareError("PWM write failed")
         with patch(
-            "hp_fan_control.write_int",
+            "hp_fan_control.hardware.write_int",
             side_effect=[None, failure, None],
         ) as write:
             with self.assertRaisesRegex(HardwareError, "PWM write failed"):
@@ -1399,8 +1409,8 @@ class FakeHwmonTests(unittest.TestCase):
         fan = initialized_fan(self)
 
         with (
-            patch("hp_fan_control.read_int", return_value=AUTO_MODE),
-            patch("hp_fan_control.write_int") as write,
+            patch("hp_fan_control.hardware.read_int", return_value=AUTO_MODE),
+            patch("hp_fan_control.hardware.write_int") as write,
         ):
             fan.update_manual(120)
 
@@ -1416,8 +1426,8 @@ class FakeHwmonTests(unittest.TestCase):
         fan = initialized_fan(self)
 
         with (
-            patch("hp_fan_control.read_int", return_value=AUTO_MODE),
-            patch("hp_fan_control.write_int") as write,
+            patch("hp_fan_control.hardware.read_int", return_value=AUTO_MODE),
+            patch("hp_fan_control.hardware.write_int") as write,
         ):
             fan.update_manual(120)
             with self.assertRaisesRegex(
@@ -1438,8 +1448,8 @@ class FakeHwmonTests(unittest.TestCase):
         fan = initialized_fan(self)
 
         with (
-            patch("hp_fan_control.read_int", return_value=MANUAL_MODE),
-            patch("hp_fan_control.write_int") as write,
+            patch("hp_fan_control.hardware.read_int", return_value=MANUAL_MODE),
+            patch("hp_fan_control.hardware.write_int") as write,
         ):
             fan.update_manual(120, write_pwm=False)
 
@@ -1449,8 +1459,8 @@ class FakeHwmonTests(unittest.TestCase):
         fan = initialized_fan(self)
 
         with (
-            patch("hp_fan_control.read_int", return_value=MAX_MODE),
-            patch("hp_fan_control.write_int") as write,
+            patch("hp_fan_control.hardware.read_int", return_value=MAX_MODE),
+            patch("hp_fan_control.hardware.write_int") as write,
         ):
             fan.update_manual(100)
 
@@ -1460,8 +1470,8 @@ class FakeHwmonTests(unittest.TestCase):
         fan = initialized_fan(self)
 
         with (
-            patch("hp_fan_control.read_int", return_value=3),
-            patch("hp_fan_control.write_int") as write,
+            patch("hp_fan_control.hardware.read_int", return_value=3),
+            patch("hp_fan_control.hardware.write_int") as write,
             self.assertRaisesRegex(HardwareError, "unexpected fan mode"),
         ):
             fan.update_manual(100)
@@ -1485,14 +1495,14 @@ class HwmonStartupTests(unittest.TestCase):
 
             with (
                 patch(
-                    "hp_fan_control.time.monotonic",
+                    "hp_fan_control.hardware.time.monotonic",
                     side_effect=[100.0, 100.0],
                 ),
                 patch(
-                    "hp_fan_control.time.sleep",
+                    "hp_fan_control.hardware.time.sleep",
                     side_effect=publish_attributes,
                 ) as sleep,
-                patch("hp_fan_control.LOG.info") as log_info,
+                patch("hp_fan_control.hardware.LOG.info") as log_info,
             ):
                 fan = wait_for_hp_fan_hwmon(root=root)
 
@@ -1504,11 +1514,11 @@ class HwmonStartupTests(unittest.TestCase):
         fan = Mock(spec=HpFanHwmon)
         with (
             patch(
-                "hp_fan_control.HpFanHwmon",
+                "hp_fan_control.hardware.HpFanHwmon",
                 side_effect=[HardwareNotReadyError("not ready"), fan],
             ) as constructor,
-            patch("hp_fan_control.time.monotonic", side_effect=[100.0, 100.0]),
-            patch("hp_fan_control.time.sleep") as sleep,
+            patch("hp_fan_control.hardware.time.monotonic", side_effect=[100.0, 100.0]),
+            patch("hp_fan_control.hardware.time.sleep") as sleep,
         ):
             self.assertIs(wait_for_hp_fan_hwmon(), fan)
 
@@ -1518,11 +1528,11 @@ class HwmonStartupTests(unittest.TestCase):
     def test_fails_after_hp_hwmon_startup_timeout(self):
         with (
             patch(
-                "hp_fan_control.HpFanHwmon",
+                "hp_fan_control.hardware.HpFanHwmon",
                 side_effect=HardwareNotReadyError("not ready"),
             ),
-            patch("hp_fan_control.time.monotonic", side_effect=[100.0, 120.0]),
-            patch("hp_fan_control.time.sleep") as sleep,
+            patch("hp_fan_control.hardware.time.monotonic", side_effect=[100.0, 120.0]),
+            patch("hp_fan_control.hardware.time.sleep") as sleep,
             self.assertRaisesRegex(
                 HardwareError,
                 "did not become ready within 20 seconds",
@@ -1535,15 +1545,52 @@ class HwmonStartupTests(unittest.TestCase):
     def test_does_not_retry_non_transient_hwmon_error(self):
         with (
             patch(
-                "hp_fan_control.HpFanHwmon",
+                "hp_fan_control.hardware.HpFanHwmon",
                 side_effect=HardwareError("multiple hp devices"),
             ),
-            patch("hp_fan_control.time.sleep") as sleep,
+            patch("hp_fan_control.hardware.time.sleep") as sleep,
             self.assertRaisesRegex(HardwareError, "multiple hp devices"),
         ):
             wait_for_hp_fan_hwmon()
 
         sleep.assert_not_called()
+
+
+class EntryPointTests(unittest.TestCase):
+    def test_package_exports_every_name_declared_in_all(self):
+        exports = hp_fan_control_package.__all__
+
+        self.assertEqual(len(exports), len(set(exports)))
+        for name in exports:
+            with self.subTest(name=name):
+                self.assertTrue(hasattr(hp_fan_control_package, name))
+
+    def test_script_entry_point_displays_help(self):
+        result = subprocess.run(
+            [sys.executable, str(ENTRY_POINT_PATH), "--help"],
+            cwd=PROJECT_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage:", result.stdout)
+
+    def test_module_entry_point_displays_help(self):
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(DAEMON_PATH)
+        result = subprocess.run(
+            [sys.executable, "-m", "hp_fan_control", "--help"],
+            cwd=PROJECT_ROOT,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage:", result.stdout)
 
 
 class SystemdUnitTests(unittest.TestCase):

@@ -24,6 +24,15 @@ remove_file() {
     fi
 }
 
+remove_cache() {
+    local path=$1
+
+    if [[ -d "$path" ]]; then
+        log "Removing generated Python cache: $path"
+        rm -rf -- "$path"
+    fi
+}
+
 usage() {
     cat <<'EOF'
 Usage: sudo ./uninstall.sh [--purge-config]
@@ -96,8 +105,17 @@ remove_file "$UNIT_PATH"
 remove_file "$TMPFILES_PATH"
 remove_file "$LEGACY_LOGROTATE_PATH"
 remove_file "$INSTALL_DIR/hp_fan_control.py"
+shopt -s nullglob
+installed_modules=("$INSTALL_DIR/hp_fan_control/"*.py)
+shopt -u nullglob
+for module in "${installed_modules[@]}"; do
+    remove_file "$module"
+done
+remove_cache "$INSTALL_DIR/hp_fan_control/__pycache__"
+remove_cache "$INSTALL_DIR/__pycache__"
 remove_file "$DOC_DIR/README.md"
-rmdir --ignore-fail-on-non-empty "$INSTALL_DIR" "$DOC_DIR" 2>/dev/null || true
+rmdir --ignore-fail-on-non-empty \
+    "$INSTALL_DIR/hp_fan_control" "$INSTALL_DIR" "$DOC_DIR" 2>/dev/null || true
 
 if [[ "$PURGE_CONFIG" == true ]]; then
     remove_file "$CONFIG_DIR/fan-control.toml"

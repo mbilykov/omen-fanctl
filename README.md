@@ -240,6 +240,12 @@ command selects maximum fans before systemd restarts the service. A guard
 marker in `/run/hp-fan-control/` makes this decision survive loss of the main
 process.
 
+The executable `src/daemon/hp_fan_control.py` is a compatibility entry point.
+Implementation is split by responsibility under `src/daemon/hp_fan_control/`:
+configuration and curves, hardware adapters, the control state machine, and
+the command-line lifecycle. The installer preserves the same executable path
+used by the systemd unit.
+
 ## Unit tests
 
 Run the complete test suite from the repository root:
