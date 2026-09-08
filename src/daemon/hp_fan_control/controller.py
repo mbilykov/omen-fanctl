@@ -602,39 +602,64 @@ class Controller:
         started: float,
         profile: str,
         state: str,
-        snapshot: TemperatureSnapshot,
-        filtered: dict[str, float | None],
-        hottest: float,
+        snapshot: TemperatureSnapshot | None,
+        filtered: Mapping[str, float | None] | None,
+        hottest: float | None,
         requested: int | None,
         note: str = "",
+        periodic_only: bool = False,
     ) -> None:
+        def fmt(value: float | None) -> str:
+            return "" if value is None else f"{value:.1f}"
+
+        now = self.clock()
+        status_due = (
+            state != self.last_status_state
+            or (not periodic_only and note != self.last_status_note)
+            or now >= self.next_status_log
+        )
+        # Failure paths call this on every sample; keep both telemetry sinks on
+        # the lower-volume status heartbeat instead of flooding the CSV file.
+        if periodic_only and not status_due:
+            return
+
         try:
             mode, actual_pwm, fan1, fan2 = self.fan.status()
         except HardwareError:
             mode = actual_pwm = fan1 = fan2 = -1
 
-        def fmt(value: float | None) -> str:
-            return "" if value is None else f"{value:.1f}"
+        raw = {
+            name: None if snapshot is None else getattr(snapshot, name)
+            for name in ("cpu", "gpu", "ir", "acpi")
+        }
+        filtered = filtered or {name: None for name in self.filters}
+        nvidia_power_draw_w = (
+            None if snapshot is None else snapshot.nvidia_power_draw_w
+        )
+        nvidia_power_limit_w = (
+            None if snapshot is None else snapshot.nvidia_power_limit_w
+        )
+        winning_sensor = "" if snapshot is None else self.policy.winning_sensor
+        sensor_targets = (
+            {name: None for name in self.filters}
+            if snapshot is None
+            else self.policy.sensor_targets
+        )
 
-        now = self.clock()
-        if (
-            state != self.last_status_state
-            or note != self.last_status_note
-            or now >= self.next_status_log
-        ):
+        if status_due:
             LOG.info(
-                "state=%-9s profile=%-11s CPU=%5.1f GPU=%5s GPUW=%6s IR=%5s ACPI=%5s "
-                "control=%5.1f winner=%-4s request=%3s (%5s%%) "
+                "state=%-14s profile=%-11s CPU=%5s GPU=%5s GPUW=%6s IR=%5s ACPI=%5s "
+                "control=%5s winner=%-4s request=%3s (%5s%%) "
                 "actual=%d/%d fans=%d/%d%s",
                 state,
                 profile,
-                snapshot.cpu,
-                fmt(snapshot.gpu) or "n/a",
-                fmt(snapshot.nvidia_power_draw_w) or "n/a",
-                fmt(snapshot.ir) or "n/a",
-                fmt(snapshot.acpi) or "n/a",
-                hottest,
-                self.policy.winning_sensor or "-",
+                fmt(raw["cpu"]) or "n/a",
+                fmt(raw["gpu"]) or "n/a",
+                fmt(nvidia_power_draw_w) or "n/a",
+                fmt(raw["ir"]) or "n/a",
+                fmt(raw["acpi"]) or "n/a",
+                fmt(hottest) or "n/a",
+                winning_sensor or "-",
                 "-" if requested is None else requested,
                 "-" if requested is None else f"{pwm_to_percent(requested):.1f}",
                 mode,
@@ -652,23 +677,23 @@ class Controller:
                 "elapsed_s": f"{self.clock() - started:.1f}",
                 "profile": profile,
                 "state": state,
-                "cpu_raw_c": fmt(snapshot.cpu),
-                "gpu_raw_c": fmt(snapshot.gpu),
-                "nvidia_power_draw_w": fmt(snapshot.nvidia_power_draw_w),
-                "nvidia_power_limit_w": fmt(snapshot.nvidia_power_limit_w),
-                "ir_raw_c": fmt(snapshot.ir),
-                "acpi_raw_c": fmt(snapshot.acpi),
+                "cpu_raw_c": fmt(raw["cpu"]),
+                "gpu_raw_c": fmt(raw["gpu"]),
+                "nvidia_power_draw_w": fmt(nvidia_power_draw_w),
+                "nvidia_power_limit_w": fmt(nvidia_power_limit_w),
+                "ir_raw_c": fmt(raw["ir"]),
+                "acpi_raw_c": fmt(raw["acpi"]),
                 "cpu_ewma_c": fmt(filtered["cpu"]),
                 "gpu_ewma_c": fmt(filtered["gpu"]),
                 "ir_ewma_c": fmt(filtered["ir"]),
                 "acpi_ewma_c": fmt(filtered["acpi"]),
-                "hottest_control_c": f"{hottest:.1f}",
+                "hottest_control_c": fmt(hottest),
                 "curve_source": self.settings.curve_source,
-                "winning_sensor": self.policy.winning_sensor,
-                "cpu_target_percent": fmt(self.policy.sensor_targets["cpu"]),
-                "gpu_target_percent": fmt(self.policy.sensor_targets["gpu"]),
-                "ir_target_percent": fmt(self.policy.sensor_targets["ir"]),
-                "acpi_target_percent": fmt(self.policy.sensor_targets["acpi"]),
+                "winning_sensor": winning_sensor,
+                "cpu_target_percent": fmt(sensor_targets["cpu"]),
+                "gpu_target_percent": fmt(sensor_targets["gpu"]),
+                "ir_target_percent": fmt(sensor_targets["ir"]),
+                "acpi_target_percent": fmt(sensor_targets["acpi"]),
                 "requested_pwm": "" if requested is None else requested,
                 "requested_percent": (
                     "" if requested is None else f"{pwm_to_percent(requested):.1f}"
@@ -730,9 +755,14 @@ class Controller:
                 try:
                     snapshot = self.sensors.read()
                 except HardwareError as exc:
+                    for temperature_filter in self.filters.values():
+                        temperature_filter.value = None
                     if self.manual_active or self.emergency or auto_guard_active:
                         failure = ("control", str(exc))
-                        if failure != self.last_sensor_failure:
+                        if (
+                            self.last_sensor_failure is None
+                            or failure[0] != self.last_sensor_failure[0]
+                        ):
                             LOG.error(
                                 "sensor failure during control; "
                                 "selecting maximum: %s",
@@ -743,12 +773,26 @@ class Controller:
                         self.emergency_since = self.emergency_since or now
                     else:
                         failure = ("bios-auto", str(exc))
-                        if failure != self.last_sensor_failure:
+                        if (
+                            self.last_sensor_failure is None
+                            or failure[0] != self.last_sensor_failure[0]
+                        ):
                             LOG.error(
                                 "sensor failure while BIOS Auto is active: %s",
                                 exc,
                             )
                     self.last_sensor_failure = failure
+                    self.log_sample(
+                        started,
+                        profile,
+                        "sensor-failure",
+                        None,
+                        None,
+                        None,
+                        PWM_MAX if self.emergency else None,
+                        str(exc),
+                        periodic_only=True,
+                    )
                     self._wait_for_profile_change(self.settings.sample_interval_s)
                     continue
                 self.last_sensor_failure = None

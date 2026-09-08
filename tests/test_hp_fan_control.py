@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import csv
 import inspect
 import os
 import select
@@ -1872,6 +1873,165 @@ class ControllerLoopTests(unittest.TestCase):
                 "sensor failure during control; selecting maximum: %s",
                 ANY,
             )
+
+    def test_persistent_sensor_failure_emits_periodic_status_and_csv(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            profile = root / "platform_profile"
+            profile.write_text("performance\n")
+            csv_path = root / "telemetry.csv"
+            settings = settings_with(
+                Settings.load(CONFIG_PATH),
+                sample_interval_s=1.0,
+            )
+            fan = FakeFan()
+            csv_log = CsvLog(csv_path)
+            controller = controller_with_fake_time(
+                settings=settings,
+                fan=fan,
+                sensors=FailingAfterFirstSample(),
+                apply=True,
+                duration_s=120.0,
+                csv_log=csv_log,
+                profile_path=profile,
+                status_interval_s=30.0,
+            )
+            with patch("hp_fan_control.controller.LOG.info") as info:
+                controller.run()
+            csv_log.close()
+
+            with csv_path.open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+
+        failure_rows = [row for row in rows if row["state"] == "sensor-failure"]
+        self.assertEqual(
+            [row["elapsed_s"] for row in failure_rows],
+            ["1.0", "31.0", "61.0", "91.0"],
+        )
+        self.assertTrue(all(row["cpu_raw_c"] == "" for row in failure_rows))
+        self.assertTrue(all(row["requested_pwm"] == "255" for row in failure_rows))
+        failure_statuses = [
+            logged
+            for logged in info.call_args_list
+            if logged.args and logged.args[0].startswith("state=%-14s")
+            and logged.args[1] == "sensor-failure"
+        ]
+        self.assertEqual(len(failure_statuses), 4)
+
+    def test_sensor_failure_resets_ewma_before_recovery(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "platform_profile"
+            profile.write_text("performance\n")
+            sensors = Mock()
+            sensors.read.side_effect = [
+                TemperatureSnapshot(75.0, 75.0, None, None),
+                HardwareError("mandatory GPU source disappeared"),
+                TemperatureSnapshot(35.0, 35.0, None, None),
+            ]
+            controller = controller_with_fake_time(
+                settings=Settings.load(CONFIG_PATH),
+                fan=FakeFan(),
+                sensors=sensors,
+                apply=True,
+                duration_s=3.0,
+                csv_log=CsvLog(None),
+                profile_path=profile,
+            )
+
+            controller.run()
+
+        self.assertEqual(controller.filters["cpu"].value, 35.0)
+        self.assertEqual(controller.filters["gpu"].value, 35.0)
+        self.assertIsNone(controller.filters["ir"].value)
+        self.assertIsNone(controller.filters["acpi"].value)
+
+    def test_sensor_failure_in_bios_auto_reports_without_requesting_pwm(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            profile = root / "platform_profile"
+            profile.write_text("performance\n")
+            csv_path = root / "telemetry.csv"
+            sensors = Mock()
+            sensors.read.side_effect = HardwareError(
+                "mandatory CPU source disappeared"
+            )
+            fan = FakeFan()
+            csv_log = CsvLog(csv_path)
+            controller = controller_with_fake_time(
+                settings=Settings.load(CONFIG_PATH),
+                fan=fan,
+                sensors=sensors,
+                apply=True,
+                duration_s=61.0,
+                csv_log=csv_log,
+                profile_path=profile,
+                status_interval_s=30.0,
+            )
+
+            with patch("hp_fan_control.controller.LOG.error") as error:
+                controller.run()
+            csv_log.close()
+
+            with csv_path.open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+
+        self.assertFalse(controller.emergency)
+        self.assertFalse(controller.manual_active)
+        self.assertEqual(fan.mode, AUTO_MODE)
+        self.assertEqual(fan.actions, [])
+        self.assertEqual([row["elapsed_s"] for row in rows], ["0.0", "30.0", "60.0"])
+        self.assertTrue(all(row["state"] == "sensor-failure" for row in rows))
+        self.assertTrue(all(row["requested_pwm"] == "" for row in rows))
+        self.assertTrue(all(row["requested_percent"] == "" for row in rows))
+        error.assert_called_once_with(
+            "sensor failure while BIOS Auto is active: %s",
+            ANY,
+        )
+
+    def test_changing_sensor_error_text_does_not_bypass_status_interval(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            profile = root / "platform_profile"
+            profile.write_text("performance\n")
+            csv_path = root / "telemetry.csv"
+            attempts = 0
+
+            def fail_with_changing_text():
+                nonlocal attempts
+                attempts += 1
+                raise HardwareError(f"sensor read failed at attempt {attempts}")
+
+            sensors = Mock()
+            sensors.read.side_effect = fail_with_changing_text
+            csv_log = CsvLog(csv_path)
+            controller = controller_with_fake_time(
+                settings=Settings.load(CONFIG_PATH),
+                fan=FakeFan(),
+                sensors=sensors,
+                apply=True,
+                duration_s=61.0,
+                csv_log=csv_log,
+                profile_path=profile,
+                status_interval_s=30.0,
+            )
+
+            with patch("hp_fan_control.controller.LOG.error") as error:
+                controller.run()
+            csv_log.close()
+
+            with csv_path.open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+
+        self.assertEqual([row["elapsed_s"] for row in rows], ["0.0", "30.0", "60.0"])
+        self.assertEqual(
+            [row["note"] for row in rows],
+            [
+                "sensor read failed at attempt 1",
+                "sensor read failed at attempt 31",
+                "sensor read failed at attempt 61",
+            ],
+        )
+        error.assert_called_once()
 
     def test_stop_reports_guard_cleanup_failure_without_questioning_maximum(self):
         with tempfile.TemporaryDirectory() as temporary:
