@@ -32,15 +32,22 @@ LOG = logging.getLogger("hp-fan-control")
 class SystemdNotifier:
     """Minimal sd_notify client; inert outside a systemd notify service."""
 
-    def __init__(self, address: str | None, watchdog_enabled: bool = True):
+    def __init__(
+        self,
+        address: str | None,
+        watchdog_enabled: bool = True,
+        watchdog_interval_s: float | None = None,
+    ):
         self.address = address
         self.watchdog_enabled = watchdog_enabled
+        self.watchdog_interval_s = watchdog_interval_s
         self.failed = False
 
     @classmethod
     def from_environment(cls) -> "SystemdNotifier":
         address = os.environ.get("NOTIFY_SOCKET")
         watchdog_pid = os.environ.get("WATCHDOG_PID")
+        watchdog_usec = os.environ.get("WATCHDOG_USEC")
         watchdog_enabled = True
         if watchdog_pid:
             try:
@@ -48,9 +55,17 @@ class SystemdNotifier:
                     watchdog_enabled = False
             except ValueError:
                 watchdog_enabled = False
+        watchdog_interval_s = None
+        if watchdog_enabled and watchdog_usec:
+            try:
+                watchdog_timeout_s = int(watchdog_usec) / 1_000_000
+                if watchdog_timeout_s > 0:
+                    watchdog_interval_s = watchdog_timeout_s / 2
+            except ValueError:
+                pass
         if address and address.startswith("@"):
             address = "\0" + address[1:]
-        return cls(address, watchdog_enabled)
+        return cls(address, watchdog_enabled, watchdog_interval_s)
 
     def notify(self, message: str) -> None:
         if self.address is None:
@@ -381,11 +396,28 @@ class Controller:
 
     def _wait_for_profile_change(self, timeout_s: float) -> None:
         assert self.profile_monitor is not None
-        if self.wait is not None:
-            self.wait(timeout_s)
-            self.profile_monitor.refresh()
-            return
-        self.profile_monitor.wait_for_change(timeout_s)
+        watchdog_interval = getattr(
+            self.notifier, "watchdog_interval_s", None
+        )
+        if not isinstance(watchdog_interval, (int, float)):
+            watchdog_interval = None
+        remaining = timeout_s
+        while remaining > 0 and not self.stop_requested:
+            wait_s = (
+                min(remaining, watchdog_interval)
+                if watchdog_interval is not None and watchdog_interval > 0
+                else remaining
+            )
+            if self.wait is not None:
+                self.wait(wait_s)
+                changed = self.profile_monitor.refresh()
+            else:
+                changed = self.profile_monitor.wait_for_change(wait_s)
+            if changed or self.stop_requested:
+                return
+            remaining -= wait_s
+            if remaining > 0:
+                self.notifier.watchdog()
 
     def _filtered(self, snapshot: TemperatureSnapshot) -> dict[str, float | None]:
         result: dict[str, float | None] = {}

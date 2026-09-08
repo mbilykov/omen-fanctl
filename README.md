@@ -243,7 +243,8 @@ Crash recovery is independent of Python cleanup. The systemd unit uses a
 hangs, or receives `SIGKILL` during Manual, Max, or guarded Auto, the recovery
 command selects maximum fans before systemd restarts the service. A guard
 marker in `/run/hp-fan-control/` makes this decision survive loss of the main
-process.
+process. The daemon derives its heartbeat interval from systemd's
+`WATCHDOG_USEC`, so long sensor sampling intervals do not starve the watchdog.
 
 The executable `src/daemon/hp_fan_control.py` is a compatibility entry point.
 Implementation is split by responsibility under `src/daemon/hp_fan_control/`:

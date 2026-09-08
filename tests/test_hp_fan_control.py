@@ -1279,6 +1279,70 @@ class ControllerLoopTests(unittest.TestCase):
         self.assertGreaterEqual(notifier.watchdog.call_count, 1)
         notifier.stopping.assert_called_once_with()
 
+    def test_long_sample_wait_keeps_systemd_watchdog_alive(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "platform_profile"
+            profile.write_text("performance\n")
+            settings = settings_with(
+                Settings.load(CONFIG_PATH),
+                sample_interval_s=30.0,
+                control_interval_s=30.0,
+            )
+            notifier = Mock(spec=SystemdNotifier)
+            notifier.watchdog_interval_s = 7.5
+            controller = controller_with_fake_time(
+                settings=settings,
+                fan=FakeFan(),
+                sensors=FakeSensors(50),
+                apply=True,
+                duration_s=30.5,
+                csv_log=CsvLog(None),
+                profile_path=profile,
+                notifier=notifier,
+            )
+
+            controller.run()
+
+        self.assertGreaterEqual(notifier.watchdog.call_count, 5)
+        notifier.stopping.assert_called_once_with()
+
+    def test_stop_request_ends_long_sample_wait_after_one_quantum(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "platform_profile"
+            profile.write_text("performance\n")
+            settings = settings_with(
+                Settings.load(CONFIG_PATH),
+                sample_interval_s=30.0,
+                control_interval_s=30.0,
+            )
+            notifier = Mock(spec=SystemdNotifier)
+            notifier.watchdog_interval_s = 7.5
+            clock = FakeClock()
+            waits = []
+
+            def request_stop_during_wait(timeout_s):
+                waits.append(timeout_s)
+                clock.wait(timeout_s)
+                controller.request_stop(15, None)
+
+            controller = Controller(
+                settings=settings,
+                fan=FakeFan(),
+                sensors=FakeSensors(50),
+                apply=True,
+                duration_s=None,
+                csv_log=CsvLog(None),
+                profile_path=profile,
+                notifier=notifier,
+                clock=clock,
+                wait=request_stop_during_wait,
+            )
+
+            controller.run()
+
+        self.assertEqual(waits, [7.5])
+        notifier.stopping.assert_called_once_with()
+
     def test_mandatory_sensor_loss_and_exit_preserve_maximum(self):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "platform_profile"
@@ -1455,13 +1519,18 @@ class SystemdNotifierTests(unittest.TestCase):
         with (
             patch.dict(
                 "hp_fan_control.controller.os.environ",
-                {"NOTIFY_SOCKET": "@notify", "WATCHDOG_PID": str(os.getpid())},
+                {
+                    "NOTIFY_SOCKET": "@notify",
+                    "WATCHDOG_PID": str(os.getpid()),
+                    "WATCHDOG_USEC": "15000000",
+                },
                 clear=True,
             ),
             patch("hp_fan_control.controller.socket.socket", return_value=context),
         ):
             notifier = SystemdNotifier.from_environment()
             notifier.watchdog()
+        self.assertEqual(notifier.watchdog_interval_s, 7.5)
         connection.sendto.assert_called_once_with(b"WATCHDOG=1", "\0notify")
 
     def test_watchdog_for_another_pid_does_not_suppress_ready(self):
