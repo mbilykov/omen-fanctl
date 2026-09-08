@@ -136,6 +136,27 @@ def initialized_sensors(test, **changes):
     return Sensors(settings, root)
 
 
+def initialized_sensors_with_amd_gpu(test, temperature_c=85.0):
+    temporary = tempfile.TemporaryDirectory()
+    test.addCleanup(temporary.cleanup)
+    root = Path(temporary.name)
+    cpu = root / "hwmon0"
+    cpu.mkdir()
+    (cpu / "name").write_text("k10temp\n")
+    (cpu / "temp1_input").write_text("50000\n")
+    gpu = root / "hwmon5"
+    gpu.mkdir()
+    (gpu / "name").write_text("amdgpu\n")
+    (gpu / "temp1_input").write_text(f"{temperature_c * 1000:.0f}\n")
+    settings = settings_with(
+        include_acpi=False,
+        include_amd_gpu=True,
+        include_nvidia_gpu=False,
+        include_hp_wmi_ir=False,
+    )
+    return Sensors(settings, root), root, gpu
+
+
 def initialized_fan(test):
     temporary = tempfile.TemporaryDirectory()
     test.addCleanup(temporary.cleanup)
@@ -592,6 +613,169 @@ pwm_percent = [30, 40]
 
 
 class SensorMetricTests(unittest.TestCase):
+    def test_rediscovers_cpu_after_hwmon_index_changes(self):
+        sensors = initialized_sensors(self)
+        self.assertEqual(sensors.read().cpu, 50.0)
+        new_cpu = sensors.hwmon_root / "hwmon12"
+        sensors.cpu_hwmon.rename(new_cpu)
+
+        self.assertEqual(sensors.read().cpu, 50.0)
+        self.assertEqual(sensors.cpu_hwmon, new_cpu)
+
+    def test_cpu_loss_fails_safe_and_recovers(self):
+        sensors = initialized_sensors(self)
+        self.assertEqual(sensors.read().cpu, 50.0)
+        offline = sensors.hwmon_root / "offline-k10temp"
+        sensors.cpu_hwmon.rename(offline)
+
+        with (
+            patch("hp_fan_control.hardware.LOG.warning") as warning,
+            patch("hp_fan_control.hardware.LOG.info") as info,
+        ):
+            with self.assertRaisesRegex(HardwareError, "CPU temperature"):
+                sensors.read()
+            with self.assertRaises(HardwareError):
+                sensors.read()
+
+            recovered = sensors.hwmon_root / "hwmon12"
+            offline.rename(recovered)
+            self.assertEqual(sensors.read().cpu, 50.0)
+
+        warning.assert_called_once()
+        info.assert_called_once_with("%s recovered", "CPU temperature source")
+
+    def test_rediscovers_amd_gpu_after_hwmon_index_changes(self):
+        sensors, root, old_gpu = initialized_sensors_with_amd_gpu(self)
+
+        self.assertEqual(sensors.read().gpu, 85.0)
+        new_gpu = root / "hwmon14"
+        old_gpu.rename(new_gpu)
+
+        self.assertEqual(sensors.read().gpu, 85.0)
+        self.assertEqual(sensors.amd_gpu_hwmons, [new_gpu])
+
+    def test_runtime_gpu_loss_fails_safe_until_sensor_recovers(self):
+        sensors, root, gpu = initialized_sensors_with_amd_gpu(self)
+        self.assertEqual(sensors.read().gpu, 85.0)
+        offline = root / "offline-amdgpu"
+        gpu.rename(offline)
+
+        with (
+            patch("hp_fan_control.hardware.LOG.warning") as warning,
+            patch("hp_fan_control.hardware.LOG.info") as info,
+        ):
+            with self.assertRaisesRegex(
+                HardwareError, "AMD GPU temperature source unavailable"
+            ):
+                sensors.read()
+            with self.assertRaises(HardwareError):
+                sensors.read()
+
+            recovered = root / "hwmon14"
+            offline.rename(recovered)
+            self.assertEqual(sensors.read().gpu, 85.0)
+
+        warning.assert_called_once_with(
+            "%s unavailable: %s",
+            "AMD GPU temperature source",
+            "no valid amdgpu temperature was found during rediscovery",
+        )
+        info.assert_called_once_with(
+            "%s recovered", "AMD GPU temperature source"
+        )
+
+    def test_runtime_nvidia_loss_fails_safe_and_logs_once(self):
+        with patch(
+            "hp_fan_control.hardware.shutil.which",
+            return_value="/usr/bin/nvidia-smi",
+        ):
+            sensors = initialized_sensors(self, include_nvidia_gpu=True)
+        available = SimpleNamespace(returncode=0, stdout="61, 80.0, 120.0\n")
+
+        with (
+            patch(
+                "hp_fan_control.hardware.subprocess.run",
+                side_effect=[
+                    available,
+                    subprocess.TimeoutExpired("nvidia-smi", 2.0),
+                    subprocess.TimeoutExpired("nvidia-smi", 2.0),
+                    subprocess.TimeoutExpired("nvidia-smi", 2.0),
+                    subprocess.TimeoutExpired("nvidia-smi", 2.0),
+                    available,
+                ],
+            ),
+            patch("hp_fan_control.hardware.LOG.warning") as warning,
+            patch("hp_fan_control.hardware.LOG.info") as info,
+        ):
+            self.assertEqual(sensors.read().gpu, 61.0)
+            self.assertEqual(sensors.read().gpu, 61.0)
+            self.assertEqual(sensors.read().gpu, 61.0)
+            with self.assertRaisesRegex(HardwareError, "NVIDIA GPU"):
+                sensors.read()
+            with self.assertRaises(HardwareError):
+                sensors.read()
+            self.assertEqual(sensors.read().gpu, 61.0)
+
+        warning.assert_called_once()
+        info.assert_called_once_with(
+            "%s recovered", "NVIDIA GPU temperature source"
+        )
+
+    def test_nvidia_failure_includes_stderr(self):
+        with patch(
+            "hp_fan_control.hardware.shutil.which",
+            return_value="/usr/bin/nvidia-smi",
+        ):
+            sensors = initialized_sensors(self, include_nvidia_gpu=True)
+        available = SimpleNamespace(
+            returncode=0,
+            stdout="61, 80.0, 120.0\n",
+            stderr="",
+        )
+        failed = SimpleNamespace(
+            returncode=9,
+            stdout="",
+            stderr="Failed to initialize NVML:\nDriver/library version mismatch\n",
+        )
+
+        with patch(
+            "hp_fan_control.hardware.subprocess.run",
+            side_effect=[available, failed, failed, failed],
+        ):
+            self.assertEqual(sensors.read().gpu, 61.0)
+            self.assertEqual(sensors.read().gpu, 61.0)
+            self.assertEqual(sensors.read().gpu, 61.0)
+            with self.assertRaisesRegex(
+                HardwareError,
+                "status 9: Failed to initialize NVML: "
+                "Driver/library version mismatch",
+            ):
+                sensors.read()
+
+    def test_retries_nvidia_tool_discovery(self):
+        result = SimpleNamespace(returncode=0, stdout="61, 80.0, 120.0\n")
+        with (
+            patch(
+                "hp_fan_control.hardware.shutil.which",
+                side_effect=[None, "/usr/bin/nvidia-smi"],
+            ) as which,
+            patch(
+                "hp_fan_control.hardware.subprocess.run",
+                return_value=result,
+            ),
+            patch(
+                "hp_fan_control.hardware.time.monotonic",
+                side_effect=[100.0, 100.0, 129.9, 130.0],
+            ),
+        ):
+            sensors = initialized_sensors(self, include_nvidia_gpu=True)
+            self.assertIsNone(sensors.read().gpu)
+            self.assertIsNone(sensors.read().gpu)
+            self.assertEqual(which.call_count, 1)
+            self.assertEqual(sensors.read().gpu, 61.0)
+
+        self.assertEqual(which.call_count, 2)
+
     def test_missing_optional_ir_interface_does_not_block_sensor_startup(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -611,7 +795,7 @@ class SensorMetricTests(unittest.TestCase):
             snapshot = sensors.read()
             self.assertEqual(snapshot.cpu, 50.0)
             self.assertIsNone(snapshot.ir)
-            self.assertTrue(sensors.hp_wmi_ir_failed)
+            self.assertTrue(sensors.ir_health.failed)
 
     def test_reads_index_zero_hp_wmi_ir_temperature(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -639,9 +823,9 @@ class SensorMetricTests(unittest.TestCase):
             side_effect=[HardwareError("missing"), 41.0],
         ):
             first = sensors.read()
-            self.assertTrue(sensors.hp_wmi_ir_failed)
+            self.assertTrue(sensors.ir_health.failed)
             second = sensors.read()
-            self.assertFalse(sensors.hp_wmi_ir_failed)
+            self.assertFalse(sensors.ir_health.failed)
         self.assertIsNone(first.ir)
         self.assertEqual(second.ir, 41.0)
 

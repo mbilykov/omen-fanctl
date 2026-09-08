@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from enum import Enum, auto
 from pathlib import Path
 import select
 import shutil
@@ -23,6 +24,8 @@ PLATFORM_PROFILE_CHOICES_PATH = Path(
 CONTROL_SENSORS = ("cpu", "gpu", "ir")
 HP_HWMON_STARTUP_TIMEOUT_S = 20.0
 HP_HWMON_STARTUP_RETRY_S = 1.0
+NVIDIA_DISCOVERY_INTERVAL_S = 30.0
+NVIDIA_FAILURE_THRESHOLD = 3
 
 
 class HardwareError(RuntimeError):
@@ -31,6 +34,47 @@ class HardwareError(RuntimeError):
 
 class HardwareNotReadyError(HardwareError):
     """Required hardware is still being initialized."""
+
+
+class FailurePolicy(Enum):
+    REQUIRED = auto()
+    REQUIRED_AFTER_AVAILABLE = auto()
+    OPTIONAL = auto()
+
+
+@dataclass
+class SourceHealth:
+    """Track one sensor's loss and recovery without repeating state logic."""
+
+    name: str
+    policy: FailurePolicy
+    failure_threshold: int = 1
+    failed: bool = False
+    ever_available: bool = False
+    consecutive_failures: int = 0
+
+    def available(self) -> None:
+        if self.failed:
+            LOG.info("%s recovered", self.name)
+        self.failed = False
+        self.ever_available = True
+        self.consecutive_failures = 0
+
+    def unavailable(self, reason: object) -> None:
+        self.consecutive_failures += 1
+        if not self.failed:
+            LOG.warning("%s unavailable: %s", self.name, reason)
+        self.failed = True
+        required = self.policy is FailurePolicy.REQUIRED
+        required_after_loss = (
+            self.policy is FailurePolicy.REQUIRED_AFTER_AVAILABLE
+            and self.ever_available
+        )
+        if (
+            (required or required_after_loss)
+            and self.consecutive_failures >= self.failure_threshold
+        ):
+            raise HardwareError(f"{self.name} unavailable: {reason}")
 
 
 class PlatformProfileMonitor:
@@ -203,29 +247,93 @@ class Sensors:
         self.amd_gpu_hwmons = (
             find_hwmon("amdgpu", hwmon_root) if settings.include_amd_gpu else []
         )
-        self.nvidia_smi = (
-            shutil.which("nvidia-smi") if settings.include_nvidia_gpu else None
+        self.nvidia_smi = None
+        self.next_nvidia_discovery = 0.0
+        if settings.include_nvidia_gpu:
+            self.nvidia_smi = shutil.which("nvidia-smi")
+            if not self.nvidia_smi:
+                self.next_nvidia_discovery = (
+                    time.monotonic() + NVIDIA_DISCOVERY_INTERVAL_S
+                )
+        self.cpu_health = SourceHealth(
+            "CPU temperature source", FailurePolicy.REQUIRED
+        )
+        self.amd_gpu_health = SourceHealth(
+            "AMD GPU temperature source",
+            FailurePolicy.REQUIRED_AFTER_AVAILABLE,
+        )
+        self.nvidia_gpu_health = SourceHealth(
+            "NVIDIA GPU temperature source",
+            FailurePolicy.REQUIRED_AFTER_AVAILABLE,
+            failure_threshold=NVIDIA_FAILURE_THRESHOLD,
+        )
+        self.last_nvidia_metrics: tuple[
+            float | None, float | None, float | None
+        ] = (None, None, None)
+        self.ir_health = SourceHealth(
+            "optional HP WMI IR sensor", FailurePolicy.OPTIONAL
+        )
+        self.acpi_health = SourceHealth(
+            "ACPI temperature proxy", FailurePolicy.OPTIONAL
         )
         self.hp_wmi_sensors_path = settings.hp_wmi_sensors_path
-        self.hp_wmi_ir_failed = False
 
     def _cpu_temperature(self) -> float:
         values = read_hwmon_temperatures(self.cpu_hwmon)
         if not values:
-            raise HardwareError("no valid k10temp temperature is available")
+            matches = find_hwmon("k10temp", self.hwmon_root)
+            if matches:
+                self.cpu_hwmon = matches[0]
+                values = read_hwmon_temperatures(self.cpu_hwmon)
+        if not values:
+            self.cpu_health.unavailable(
+                "no valid k10temp temperature was found during rediscovery"
+            )
+            raise AssertionError("required sensor failure must raise")
+        self.cpu_health.available()
         return max(values)
 
     def _amd_gpu_temperature(self) -> float | None:
+        if not self.settings.include_amd_gpu:
+            return None
         values: list[float] = []
         for directory in self.amd_gpu_hwmons:
             values.extend(read_hwmon_temperatures(directory))
-        return max(values) if values else None
+        if not values:
+            # hwmon indices change after a GPU reset or driver re-probe. Look
+            # up the current registration instead of retaining a dead path.
+            self.amd_gpu_hwmons = find_hwmon("amdgpu", self.hwmon_root)
+            for directory in self.amd_gpu_hwmons:
+                values.extend(read_hwmon_temperatures(directory))
+        if not values:
+            self.amd_gpu_health.unavailable(
+                "no valid amdgpu temperature was found during rediscovery"
+            )
+            return None
+        self.amd_gpu_health.available()
+        return max(values)
+
+    def _nvidia_failure(
+        self, reason: object
+    ) -> tuple[float | None, float | None, float | None]:
+        self.nvidia_gpu_health.unavailable(reason)
+        return self.last_nvidia_metrics
 
     def _nvidia_metrics(
         self,
     ) -> tuple[float | None, float | None, float | None]:
         if not self.nvidia_smi:
-            return None, None, None
+            if self.settings.include_nvidia_gpu:
+                now = time.monotonic()
+                if now >= self.next_nvidia_discovery:
+                    self.nvidia_smi = shutil.which("nvidia-smi")
+                    self.next_nvidia_discovery = (
+                        now + NVIDIA_DISCOVERY_INTERVAL_S
+                    )
+                if not self.nvidia_smi:
+                    return self._nvidia_failure("nvidia-smi was not found")
+            else:
+                return None, None, None
         try:
             result = subprocess.run(
                 [
@@ -238,10 +346,20 @@ class Sensors:
                 text=True,
                 timeout=2.0,
             )
-        except (OSError, subprocess.TimeoutExpired):
-            return None, None, None
+        except OSError as exc:
+            self.nvidia_smi = None
+            self.next_nvidia_discovery = (
+                time.monotonic() + NVIDIA_DISCOVERY_INTERVAL_S
+            )
+            return self._nvidia_failure(exc)
+        except subprocess.TimeoutExpired as exc:
+            return self._nvidia_failure(exc)
         if result.returncode != 0:
-            return None, None, None
+            reason = f"nvidia-smi exited with status {result.returncode}"
+            stderr = " ".join(result.stderr.split())
+            if stderr:
+                reason = f"{reason}: {stderr}"
+            return self._nvidia_failure(reason)
         temperatures: list[float] = []
         power_draws: list[float] = []
         power_limits: list[float] = []
@@ -262,11 +380,15 @@ class Sensors:
                 power_draws.append(power_draw)
             if power_limit is not None and 1.0 <= power_limit <= 1000.0:
                 power_limits.append(power_limit)
-        return (
-            max(temperatures) if temperatures else None,
+        if not temperatures:
+            return self._nvidia_failure("nvidia-smi returned no valid temperature")
+        self.nvidia_gpu_health.available()
+        self.last_nvidia_metrics = (
+            max(temperatures),
             sum(power_draws) if power_draws else None,
             sum(power_limits) if power_limits else None,
         )
+        return self.last_nvidia_metrics
 
     def _acpi_temperature(self) -> float | None:
         if not self.settings.include_acpi:
@@ -281,7 +403,11 @@ class Sensors:
                 continue
             if 1.0 <= value <= 125.0:
                 values.append(value)
-        return max(values) if values else None
+        if not values:
+            self.acpi_health.unavailable("no valid acpitz temperature was found")
+            return None
+        self.acpi_health.available()
+        return max(values)
 
     def _hp_wmi_ir_temperature(self) -> float | None:
         if not self.settings.include_hp_wmi_ir:
@@ -289,26 +415,20 @@ class Sensors:
         try:
             value = read_hp_wmi_ir_temperature(self.hp_wmi_sensors_path)
         except HardwareError as exc:
-            if not self.hp_wmi_ir_failed:
-                LOG.warning(
-                    "optional HP WMI IR sensor unavailable; "
-                    "continuing with CPU/GPU: %s",
-                    exc,
-                )
-            self.hp_wmi_ir_failed = True
+            self.ir_health.unavailable(f"{exc}; continuing with CPU/GPU")
             return None
-        if self.hp_wmi_ir_failed:
-            LOG.info("HP WMI IR sensor recovered")
-        self.hp_wmi_ir_failed = False
+        self.ir_health.available()
         return value
 
     def read(self) -> TemperatureSnapshot:
+        cpu_temperature = self._cpu_temperature()
         nvidia_temperature, power_draw, power_limit = self._nvidia_metrics()
         gpu_values = [self._amd_gpu_temperature(), nvidia_temperature]
         valid_gpu = [value for value in gpu_values if value is not None]
+        gpu_temperature = max(valid_gpu) if valid_gpu else None
         return TemperatureSnapshot(
-            cpu=self._cpu_temperature(),
-            gpu=max(valid_gpu) if valid_gpu else None,
+            cpu=cpu_temperature,
+            gpu=gpu_temperature,
             acpi=self._acpi_temperature(),
             ir=self._hp_wmi_ir_temperature(),
             nvidia_power_draw_w=power_draw,

@@ -230,8 +230,13 @@ Controller states:
 
 IR is optional. If `/proc/hp_wmi_sensors` is absent, invalid, or disappears,
 the daemon logs the degraded state and continues with CPU/GPU. Loss of the
-mandatory CPU source while software control or `auto-guard` is active selects
-maximum fans.
+mandatory CPU source, or loss of any previously available GPU source, while
+software control or `auto-guard` is active selects maximum fans. CPU and AMD
+GPU hwmon paths are rediscovered after driver reset or device re-probe;
+`nvidia-smi` discovery is retried every 30 seconds, while NVIDIA query failures
+and all sensor recoveries are logged once per transition. The last valid NVIDIA
+metrics bridge up to two consecutive query failures; the third failure selects
+the maximum-fan fail-safe.
 
 Crash recovery is independent of Python cleanup. The systemd unit uses a
 15-second watchdog and `ExecStopPost=... --failsafe`. If the process exits,
