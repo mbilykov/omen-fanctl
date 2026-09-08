@@ -262,9 +262,15 @@ class TemperatureSnapshot:
 class Sensors:
     """Aggregate a mandatory CPU source and best-effort auxiliary sensors."""
 
-    def __init__(self, settings: Settings, hwmon_root: Path = Path("/sys/class/hwmon")):
+    def __init__(
+        self,
+        settings: Settings,
+        hwmon_root: Path = Path("/sys/class/hwmon"),
+        thermal_root: Path = Path("/sys/class/thermal"),
+    ):
         self.settings = settings
         self.hwmon_root = hwmon_root
+        self.thermal_root = thermal_root
         cpu_source = _find_hwmon_temperature_source("k10temp", hwmon_root)
         if cpu_source is None:
             raise HardwareNotReadyError(
@@ -420,7 +426,7 @@ class Sensors:
         if not self.settings.include_acpi:
             return None
         values: list[float] = []
-        for directory in sorted(Path("/sys/class/thermal").glob("thermal_zone*")):
+        for directory in sorted(self.thermal_root.glob("thermal_zone*")):
             try:
                 if read_text(directory / "type") != "acpitz":
                     continue

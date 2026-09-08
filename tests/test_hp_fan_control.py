@@ -3,6 +3,7 @@
 import inspect
 import os
 import select
+import signal
 import stat
 import subprocess
 import sys
@@ -23,8 +24,10 @@ sys.path.insert(0, str(PROJECT_ROOT / "src" / "daemon"))
 
 import hp_fan_control as hp_fan_control_package  # noqa: E402
 from hp_fan_control.cli import (  # noqa: E402
+    AUTO_GUARD_PATH,
     CONFIGURATION_ERROR_EXIT_STATUS,
     acquire_lock,
+    _csv_log_path,
     dry_run_lock_path,
     ensure_failsafe_fan_state,
     main,
@@ -569,6 +572,28 @@ class ControlDecisionTests(unittest.TestCase):
             self.assertFalse(controller._auto_guard_active(190.0))
             self.assertFalse(guard.exists())
 
+    def test_auto_guard_write_failure_is_a_hardware_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            guard = Path(temporary) / "auto-guard"
+            guard.mkdir()
+            controller = Controller(
+                fixed_policy_settings(),
+                None,
+                None,
+                False,
+                None,
+                CsvLog(None),
+                auto_guard_path=guard,
+            )
+
+            with self.assertRaisesRegex(
+                HardwareError,
+                "cannot persist firmware Auto guard",
+            ):
+                controller._start_auto_guard(10.0)
+
+        self.assertEqual(controller.auto_guard_until, 190.0)
+
     def test_controller_rejects_auto_guard_shorter_than_firmware_window(self):
         settings = replace(fixed_policy_settings(), auto_guard_s=119.0)
         with self.assertRaisesRegex(
@@ -710,6 +735,18 @@ class SettingsTests(unittest.TestCase):
             ):
                 parse_args(arguments)
             self.assertEqual(caught.exception.code, 2)
+
+    def test_selects_csv_log_path(self):
+        with patch("hp_fan_control.cli.Path.cwd", return_value=Path("/logs")):
+            self.assertEqual(
+                _csv_log_path(parse_args([])),
+                Path("/logs/hp-fan-control.csv"),
+            )
+        self.assertEqual(
+            _csv_log_path(parse_args(["--log-file", "/tmp/custom.csv"])),
+            Path("/tmp/custom.csv"),
+        )
+        self.assertIsNone(_csv_log_path(parse_args(["--no-log-file"])))
 
     def test_loads_factory_preset(self):
         config = CONFIG_PATH
@@ -895,6 +932,66 @@ pwm_percent = [30, 40]
                 float("inf"),
                 "control_interval_s must be finite",
             ),
+            (
+                "allowed_boards",
+                (),
+                "allowed_boards must not be empty",
+            ),
+            (
+                "sample_interval_s",
+                0.1,
+                "sample_interval_s must be at least 0.25",
+            ),
+            (
+                "control_interval_s",
+                0.5,
+                "control_interval_s must be >= sample_interval_s",
+            ),
+            (
+                "release_temp_c",
+                60.0,
+                "release_temp_c must be below activation_temp_c",
+            ),
+            (
+                "fan_stop_temp_c",
+                60.0,
+                "fan_stop_temp_c must be below activation_temp_c",
+            ),
+            (
+                "critical_release_temp_c",
+                92.0,
+                "critical_release_temp_c must be below critical_temp_c",
+            ),
+            (
+                "activation_temp_c",
+                92.0,
+                "activation_temp_c must be below critical_temp_c",
+            ),
+            (
+                "ir_release_hysteresis_c",
+                0.0,
+                "ir_release_hysteresis_c must be positive",
+            ),
+            (
+                "auto_guard_s",
+                119.0,
+                "auto_guard_s must be at least 120 seconds",
+            ),
+            (
+                "ewma_rise_alpha",
+                0.0,
+                r"ewma.rise_alpha must be in \(0, 1]",
+            ),
+            (
+                "minimum_manual_percent",
+                0.0,
+                r"minimum_manual_percent must be in \(0, 100]",
+            ),
+            (
+                "max_fall_percent_per_update",
+                101.0,
+                r"max_fall_percent_per_update must be in \(0, 100]",
+            ),
         )
 
         for field, value, message in cases:
@@ -1047,6 +1144,30 @@ class SensorMetricTests(unittest.TestCase):
             ):
                 sensors.read()
 
+    def test_nvidia_os_error_retains_last_metrics_and_forgets_executable(self):
+        with patch(
+            "hp_fan_control.hardware.shutil.which",
+            return_value="/usr/bin/nvidia-smi",
+        ):
+            sensors = initialized_sensors(self, include_nvidia_gpu=True)
+        available = SimpleNamespace(
+            returncode=0,
+            stdout="61, 80.0, 120.0\n",
+            stderr="",
+        )
+        with (
+            patch(
+                "hp_fan_control.hardware.subprocess.run",
+                side_effect=[available, OSError("driver disappeared")],
+            ),
+            patch("hp_fan_control.hardware.time.monotonic", return_value=100.0),
+        ):
+            self.assertEqual(sensors.read().gpu, 61.0)
+            self.assertEqual(sensors.read().gpu, 61.0)
+
+        self.assertIsNone(sensors.nvidia_smi)
+        self.assertEqual(sensors.next_nvidia_discovery, 130.0)
+
     def test_retries_nvidia_tool_discovery(self):
         result = SimpleNamespace(returncode=0, stdout="61, 80.0, 120.0\n")
         with (
@@ -1143,6 +1264,60 @@ class SensorMetricTests(unittest.TestCase):
         self.assertEqual(snapshot.gpu, 61.0)
         self.assertIsNone(snapshot.nvidia_power_draw_w)
         self.assertIsNone(snapshot.nvidia_power_limit_w)
+
+    def test_reads_acpi_temperature_from_injected_thermal_root(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            hwmon_root = root / "hwmon"
+            thermal_root = root / "thermal"
+            cpu = hwmon_root / "hwmon0"
+            cpu.mkdir(parents=True)
+            (cpu / "name").write_text("k10temp\n")
+            (cpu / "temp1_input").write_text("50000\n")
+            acpi = thermal_root / "thermal_zone0"
+            acpi.mkdir(parents=True)
+            (acpi / "type").write_text("acpitz\n")
+            (acpi / "temp").write_text("55000\n")
+            ignored = thermal_root / "thermal_zone1"
+            ignored.mkdir()
+            (ignored / "type").write_text("x86_pkg_temp\n")
+            (ignored / "temp").write_text("99000\n")
+            settings = settings_with(
+                include_acpi=True,
+                include_amd_gpu=False,
+                include_nvidia_gpu=False,
+                include_hp_wmi_ir=False,
+            )
+            sensors = Sensors(settings, hwmon_root, thermal_root)
+
+            snapshot = sensors.read()
+
+        self.assertEqual(snapshot.acpi, 55.0)
+
+    def test_missing_acpi_temperature_is_optional(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            hwmon_root = root / "hwmon"
+            thermal_root = root / "thermal"
+            cpu = hwmon_root / "hwmon0"
+            cpu.mkdir(parents=True)
+            thermal_root.mkdir()
+            (cpu / "name").write_text("k10temp\n")
+            (cpu / "temp1_input").write_text("50000\n")
+            settings = settings_with(
+                include_acpi=True,
+                include_amd_gpu=False,
+                include_nvidia_gpu=False,
+                include_hp_wmi_ir=False,
+            )
+            sensors = Sensors(settings, hwmon_root, thermal_root)
+
+            with patch("hp_fan_control.hardware.LOG.warning") as warning:
+                snapshot = sensors.read()
+
+        self.assertIsNone(snapshot.acpi)
+        self.assertTrue(sensors.acpi_health.failed)
+        warning.assert_called_once()
 
 
 class FakeFan:
@@ -1828,6 +2003,210 @@ class ControllerLoopTests(unittest.TestCase):
             "must be between 40 and 100 percent",
         ):
             run_actuator_test(FakeFan(), FakeSensors(50), 39.9, 1, 40.0)
+
+    def test_actuator_test_rejects_invalid_ranges_and_non_auto_mode(self):
+        cases = (
+            (101.0, 15.0, 40.0, "between 40 and 100 percent"),
+            (60.0, 0.9, 40.0, "duration must be between 1 and 60 seconds"),
+            (60.0, 60.1, 40.0, "duration must be between 1 and 60 seconds"),
+        )
+        for percent, duration, minimum, message in cases:
+            with (
+                self.subTest(percent=percent, duration=duration),
+                self.assertRaisesRegex(ConfigurationError, message),
+            ):
+                run_actuator_test(
+                    FakeFan(), FakeSensors(50), percent, duration, minimum
+                )
+
+        fan = FakeFan()
+        fan.mode = MANUAL_MODE
+        with self.assertRaisesRegex(HardwareError, "requires firmware Auto"):
+            run_actuator_test(fan, FakeSensors(50), 60.0, 15.0, 40.0)
+
+    def test_main_constructs_and_runs_controller_with_requested_log(self):
+        settings = fixed_policy_settings()
+        lock = Mock()
+        fan = Mock(spec=HpFanHwmon)
+        fan.path = Path("/sys/class/hwmon/hwmon7")
+        sensors = Mock(spec=Sensors)
+        csv_log = Mock(spec=CsvLog)
+        controller = Mock(spec=Controller)
+        notifier = Mock(spec=SystemdNotifier)
+        log_path = Path("/tmp/requested-telemetry.csv")
+        with (
+            patch("hp_fan_control.cli.Settings.load", return_value=settings),
+            patch("hp_fan_control.cli.read_text", return_value="8D87"),
+            patch("hp_fan_control.cli.validate_required_profile"),
+            patch("hp_fan_control.cli.os.geteuid", return_value=0),
+            patch("hp_fan_control.cli.acquire_lock", return_value=lock),
+            patch("hp_fan_control.cli.wait_for_hp_fan_hwmon", return_value=fan),
+            patch(
+                "hp_fan_control.cli.wait_for_temperature_sensors",
+                return_value=sensors,
+            ),
+            patch("hp_fan_control.cli.CsvLog", return_value=csv_log) as csv_type,
+            patch(
+                "hp_fan_control.cli.SystemdNotifier.from_environment",
+                return_value=notifier,
+            ),
+            patch("hp_fan_control.cli.Controller", return_value=controller) as factory,
+            patch("hp_fan_control.cli.signal.signal") as install_signal,
+        ):
+            result = main(
+                [
+                    "--config",
+                    str(CONFIG_PATH),
+                    "--apply",
+                    "--duration",
+                    "10",
+                    "--status-interval",
+                    "5",
+                    "--log-file",
+                    str(log_path),
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        csv_type.assert_called_once_with(log_path)
+        factory.assert_called_once_with(
+            settings=settings,
+            fan=fan,
+            sensors=sensors,
+            apply=True,
+            duration_s=10.0,
+            csv_log=csv_log,
+            status_interval_s=5.0,
+            notifier=notifier,
+            auto_guard_path=AUTO_GUARD_PATH,
+        )
+        install_signal.assert_has_calls(
+            [
+                call(signal.SIGINT, controller.request_stop),
+                call(signal.SIGTERM, controller.request_stop),
+            ]
+        )
+        controller.run.assert_called_once_with()
+        csv_log.close.assert_called_once_with()
+        lock.close.assert_called_once_with()
+
+    def test_main_dispatches_actuator_test_without_constructing_controller(self):
+        settings = fixed_policy_settings()
+        lock = Mock()
+        fan = Mock(spec=HpFanHwmon)
+        sensors = Mock(spec=Sensors)
+        with (
+            patch("hp_fan_control.cli.Settings.load", return_value=settings),
+            patch("hp_fan_control.cli.read_text", return_value="8D87"),
+            patch("hp_fan_control.cli.validate_required_profile"),
+            patch("hp_fan_control.cli.os.geteuid", return_value=0),
+            patch("hp_fan_control.cli.acquire_lock", return_value=lock),
+            patch("hp_fan_control.cli.wait_for_hp_fan_hwmon", return_value=fan),
+            patch(
+                "hp_fan_control.cli.wait_for_temperature_sensors",
+                return_value=sensors,
+            ),
+            patch("hp_fan_control.cli.run_actuator_test") as actuator_test,
+            patch("hp_fan_control.cli.Controller") as controller_type,
+            patch("hp_fan_control.cli.CsvLog") as csv_type,
+        ):
+            result = main(
+                ["--apply", "--actuator-test", "60", "--duration", "12"]
+            )
+
+        self.assertEqual(result, 0)
+        actuator_test.assert_called_once_with(
+            fan,
+            sensors,
+            60.0,
+            12.0,
+            settings.minimum_manual_percent,
+        )
+        controller_type.assert_not_called()
+        csv_type.assert_not_called()
+        lock.close.assert_called_once_with()
+
+    def test_main_applies_sensor_selection_overrides(self):
+        base = fixed_policy_settings()
+        cases = (
+            (
+                ["--cpu-only"],
+                {
+                    "include_acpi": False,
+                    "include_amd_gpu": False,
+                    "include_nvidia_gpu": False,
+                    "include_hp_wmi_ir": False,
+                },
+            ),
+            (
+                ["--include-acpi-proxy"],
+                {
+                    "include_acpi": True,
+                    "include_amd_gpu": True,
+                    "include_nvidia_gpu": True,
+                    "include_hp_wmi_ir": True,
+                },
+            ),
+        )
+        for arguments, expected in cases:
+            with self.subTest(arguments=arguments):
+                lock = Mock()
+                wait_for_sensors = Mock(
+                    side_effect=HardwareError("stop after settings capture")
+                )
+                with (
+                    patch("hp_fan_control.cli.Settings.load", return_value=base),
+                    patch("hp_fan_control.cli.read_text", return_value="8D87"),
+                    patch("hp_fan_control.cli.validate_required_profile"),
+                    patch("hp_fan_control.cli.dry_run_lock_path"),
+                    patch("hp_fan_control.cli.acquire_lock", return_value=lock),
+                    patch("hp_fan_control.cli.wait_for_hp_fan_hwmon"),
+                    patch(
+                        "hp_fan_control.cli.wait_for_temperature_sensors",
+                        wait_for_sensors,
+                    ),
+                    patch("hp_fan_control.cli.LOG.error"),
+                ):
+                    result = main([*arguments, "--no-log-file"])
+
+                self.assertEqual(result, 1)
+                selected = wait_for_sensors.call_args.args[0]
+                for name, value in expected.items():
+                    self.assertEqual(getattr(selected, name), value)
+                lock.close.assert_called_once_with()
+
+    def test_main_rejects_invalid_runtime_options_before_locking(self):
+        settings = fixed_policy_settings()
+        cases = (
+            (["--apply"], 1000, 1),
+            (["--duration", "0"], 0, CONFIGURATION_ERROR_EXIT_STATUS),
+            (
+                ["--status-interval", "0.5"],
+                0,
+                CONFIGURATION_ERROR_EXIT_STATUS,
+            ),
+        )
+        for arguments, effective_uid, expected_status in cases:
+            with self.subTest(arguments=arguments):
+                acquire = Mock()
+                with (
+                    patch(
+                        "hp_fan_control.cli.Settings.load",
+                        return_value=settings,
+                    ),
+                    patch("hp_fan_control.cli.read_text", return_value="8D87"),
+                    patch("hp_fan_control.cli.validate_required_profile"),
+                    patch(
+                        "hp_fan_control.cli.os.geteuid",
+                        return_value=effective_uid,
+                    ),
+                    patch("hp_fan_control.cli.acquire_lock", acquire),
+                    patch("hp_fan_control.cli.LOG.error"),
+                ):
+                    result = main(arguments)
+
+                self.assertEqual(result, expected_status)
+                acquire.assert_not_called()
 
     def test_restore_auto_recovery_command(self):
         fan = FakeFan()

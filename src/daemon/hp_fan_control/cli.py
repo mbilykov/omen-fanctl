@@ -90,6 +90,14 @@ def dry_run_lock_path() -> Path:
     return Path("/tmp") / f"hp-fan-control-dry-run-{os.geteuid()}.lock"
 
 
+def _csv_log_path(args: argparse.Namespace) -> Path | None:
+    if args.no_log_file:
+        return None
+    if args.log_file:
+        return args.log_file
+    return Path.cwd() / "hp-fan-control.csv"
+
+
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Experimental standalone automatic fan controller for HP 8D87"
@@ -351,12 +359,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 settings.minimum_manual_percent,
             )
             return 0
-        if args.no_log_file:
-            log_path = None
-        elif args.log_file:
-            log_path = args.log_file
-        else:
-            log_path = Path.cwd() / "hp-fan-control.csv"
+        log_path = _csv_log_path(args)
         csv_log = CsvLog(log_path)
 
         LOG.warning(
