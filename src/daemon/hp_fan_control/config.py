@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,7 @@ from pathlib import Path
 
 PWM_MAX = 255
 HP_FAN_LEVEL_MAX = 60.0
+MAX_DECREASE_HYSTERESIS_C = 20.0
 TOP_LEVEL_KEYS = frozenset({"daemon", "ewma", "sensors", "curve", "curves"})
 DAEMON_KEYS = frozenset(
     {
@@ -95,6 +97,10 @@ class Curve:
             raise ConfigurationError("curve temperature and PWM lists differ in length")
         if len(self.temperatures) < 2:
             raise ConfigurationError("curve needs at least two points")
+        if any(not math.isfinite(value) for value in self.temperatures):
+            raise ConfigurationError("curve temperatures must be finite")
+        if any(not math.isfinite(value) for value in self.pwm_percent):
+            raise ConfigurationError("curve PWM values must be finite")
         if any(b <= a for a, b in zip(self.temperatures, self.temperatures[1:])):
             raise ConfigurationError("curve temperatures must be strictly increasing")
         if any(b < a for a, b in zip(self.pwm_percent, self.pwm_percent[1:])):
@@ -109,6 +115,12 @@ class Curve:
             if len(self.fall_temperatures) != len(self.temperatures):
                 raise ConfigurationError(
                     "curve falling-temperature and PWM lists differ in length"
+                )
+            if any(
+                not math.isfinite(value) for value in self.fall_temperatures
+            ):
+                raise ConfigurationError(
+                    "curve falling temperatures must be finite"
                 )
             if any(
                 b <= a
@@ -366,15 +378,45 @@ class Settings:
     def validate(self) -> None:
         if not self.allowed_boards:
             raise ConfigurationError("allowed_boards must not be empty")
+        numeric_values = (
+            ("sample_interval_s", self.sample_interval_s),
+            ("control_interval_s", self.control_interval_s),
+            ("activation_temp_c", self.activation_temp_c),
+            ("release_temp_c", self.release_temp_c),
+            ("fan_stop_temp_c", self.fan_stop_temp_c),
+            ("critical_temp_c", self.critical_temp_c),
+            ("critical_release_temp_c", self.critical_release_temp_c),
+            ("emergency_hold_s", self.emergency_hold_s),
+            ("decrease_hysteresis_c", self.decrease_hysteresis_c),
+            ("ir_release_hysteresis_c", self.ir_release_hysteresis_c),
+            ("auto_guard_s", self.auto_guard_s),
+            ("ewma.rise_alpha", self.ewma_rise_alpha),
+            ("ewma.fall_alpha", self.ewma_fall_alpha),
+            ("minimum_manual_percent", self.minimum_manual_percent),
+            ("max_rise_percent_per_update", self.max_rise_percent_per_update),
+            ("max_fall_percent_per_update", self.max_fall_percent_per_update),
+        )
+        for name, value in numeric_values:
+            if not math.isfinite(value):
+                raise ConfigurationError(f"{name} must be finite")
         if self.sample_interval_s < 0.25:
             raise ConfigurationError("sample_interval_s must be at least 0.25")
         if self.control_interval_s < self.sample_interval_s:
             raise ConfigurationError("control_interval_s must be >= sample_interval_s")
+        for name, value in (
+            ("activation_temp_c", self.activation_temp_c),
+            ("release_temp_c", self.release_temp_c),
+            ("fan_stop_temp_c", self.fan_stop_temp_c),
+            ("critical_temp_c", self.critical_temp_c),
+            ("critical_release_temp_c", self.critical_release_temp_c),
+        ):
+            if not 0 < value <= 125:
+                raise ConfigurationError(f"{name} must be in (0, 125]")
         if self.release_temp_c >= self.activation_temp_c:
             raise ConfigurationError("release_temp_c must be below activation_temp_c")
-        if not 0 < self.fan_stop_temp_c < self.activation_temp_c:
+        if self.fan_stop_temp_c >= self.activation_temp_c:
             raise ConfigurationError(
-                "fan_stop_temp_c must be positive and below activation_temp_c"
+                "fan_stop_temp_c must be below activation_temp_c"
             )
         if self.critical_release_temp_c >= self.critical_temp_c:
             raise ConfigurationError(
@@ -382,6 +424,12 @@ class Settings:
             )
         if self.activation_temp_c >= self.critical_temp_c:
             raise ConfigurationError("activation_temp_c must be below critical_temp_c")
+        if self.emergency_hold_s < 0:
+            raise ConfigurationError("emergency_hold_s must be non-negative")
+        if not 0 <= self.decrease_hysteresis_c <= MAX_DECREASE_HYSTERESIS_C:
+            raise ConfigurationError(
+                "decrease_hysteresis_c must be between 0 and 20"
+            )
         if not 0 < self.ir_release_hysteresis_c < self.activation_temp_c:
             raise ConfigurationError(
                 "ir_release_hysteresis_c must be positive and below activation_temp_c"

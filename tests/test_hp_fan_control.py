@@ -206,6 +206,33 @@ class CurveTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             Curve((40.0, 50.0), (30.0, 20.0))
 
+    def test_rejects_non_finite_curve_values(self):
+        cases = (
+            (
+                "temperatures",
+                ((50.0, float("nan")), (30.0, 40.0), None, False),
+            ),
+            (
+                "PWM values",
+                ((50.0, 60.0), (30.0, float("inf")), None, False),
+            ),
+            (
+                "falling temperatures",
+                (
+                    (50.0, 60.0),
+                    (30.0, 40.0),
+                    (45.0, float("nan")),
+                    True,
+                ),
+            ),
+        )
+
+        for message, arguments in cases:
+            with self.subTest(values=message), self.assertRaisesRegex(
+                ConfigurationError, f"curve {message} must be finite"
+            ):
+                Curve(*arguments)
+
     def test_factory_step_uses_low_threshold_when_cooling(self):
         curve = hp_factory_performance_curves()["cpu"]
         at_83 = curve.target_percent(83.0)
@@ -698,6 +725,56 @@ pwm_percent = [30, 40]
                 "required_profile 'performnce' is unavailable",
             ):
                 validate_required_profile("performnce", choices)
+
+    def test_rejects_unsafe_scalar_settings(self):
+        cases = (
+            (
+                "decrease_hysteresis_c",
+                -50.0,
+                "decrease_hysteresis_c must be between 0 and 20",
+            ),
+            (
+                "decrease_hysteresis_c",
+                100.0,
+                "decrease_hysteresis_c must be between 0 and 20",
+            ),
+            (
+                "emergency_hold_s",
+                -1.0,
+                "emergency_hold_s must be non-negative",
+            ),
+            (
+                "critical_temp_c",
+                500.0,
+                r"critical_temp_c must be in \(0, 125]",
+            ),
+            (
+                "activation_temp_c",
+                0.0,
+                r"activation_temp_c must be in \(0, 125]",
+            ),
+            (
+                "critical_release_temp_c",
+                130.0,
+                r"critical_release_temp_c must be in \(0, 125]",
+            ),
+            (
+                "activation_temp_c",
+                float("nan"),
+                "activation_temp_c must be finite",
+            ),
+            (
+                "control_interval_s",
+                float("inf"),
+                "control_interval_s must be finite",
+            ),
+        )
+
+        for field, value, message in cases:
+            with self.subTest(field=field):
+                settings = replace(fixed_policy_settings(), **{field: value})
+                with self.assertRaisesRegex(ConfigurationError, message):
+                    settings.validate()
 
 
 class SensorMetricTests(unittest.TestCase):
