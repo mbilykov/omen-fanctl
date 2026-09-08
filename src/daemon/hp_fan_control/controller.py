@@ -361,6 +361,7 @@ class Controller:
         self.emergency = False
         self.emergency_since: float | None = None
         self.auto_guard_until: float | None = None
+        self.last_sensor_failure: tuple[str, str] | None = None
         self.filters = {
             "cpu": Ewma(settings.ewma_rise_alpha, settings.ewma_fall_alpha),
             "gpu": Ewma(settings.ewma_rise_alpha, settings.ewma_fall_alpha),
@@ -609,17 +610,27 @@ class Controller:
                     snapshot = self.sensors.read()
                 except HardwareError as exc:
                     if self.manual_active or self.emergency or auto_guard_active:
-                        LOG.error(
-                            "sensor failure during control; selecting maximum: %s",
-                            exc,
-                        )
+                        failure = ("control", str(exc))
+                        if failure != self.last_sensor_failure:
+                            LOG.error(
+                                "sensor failure during control; "
+                                "selecting maximum: %s",
+                                exc,
+                            )
                         self._maximum()
                         self.emergency = True
                         self.emergency_since = self.emergency_since or now
                     else:
-                        LOG.error("sensor failure while BIOS Auto is active: %s", exc)
+                        failure = ("bios-auto", str(exc))
+                        if failure != self.last_sensor_failure:
+                            LOG.error(
+                                "sensor failure while BIOS Auto is active: %s",
+                                exc,
+                            )
+                    self.last_sensor_failure = failure
                     self._wait_for_profile_change(self.settings.sample_interval_s)
                     continue
+                self.last_sensor_failure = None
 
                 filtered = self._filtered(snapshot)
                 hottest = max(

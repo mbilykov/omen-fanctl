@@ -10,7 +10,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, call, patch
+from unittest.mock import ANY, Mock, call, patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = PROJECT_ROOT / "src" / "config" / "fan-control.toml"
@@ -1294,11 +1294,16 @@ class ControllerLoopTests(unittest.TestCase):
                 csv_log=CsvLog(None),
                 profile_path=profile,
             )
-            controller.run()
+            with patch("hp_fan_control.controller.LOG.error") as error:
+                controller.run()
             self.assertEqual(fan.actions[0][0], "manual")
             self.assertIn(("maximum", 255), fan.actions)
             self.assertEqual(fan.actions[-1][0], "maximum")
             self.assertEqual(fan.mode, MAX_MODE)
+            error.assert_called_once_with(
+                "sensor failure during control; selecting maximum: %s",
+                ANY,
+            )
 
     def test_actuator_test_restores_auto(self):
         fan = FakeFan()
