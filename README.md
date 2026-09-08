@@ -284,7 +284,8 @@ index name temp_c
 ### 2. Run read-only mode
 
 ```bash
-python3 src/daemon/hp_fan_control.py --duration 60
+python3 src/daemon/hp_fan_control.py \
+  --config src/config/fan-control.toml --duration 60
 ```
 
 Review sensor selection, temperatures, requested PWM, and warnings. This mode
@@ -296,6 +297,7 @@ Only on an allowlisted and reviewed board:
 
 ```bash
 sudo python3 src/daemon/hp_fan_control.py \
+  --config src/config/fan-control.toml \
   --apply --actuator-test 60 --duration 15
 ```
 

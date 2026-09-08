@@ -10,6 +10,7 @@ supplied.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable, Iterable, Mapping
 import csv
 import fcntl
 import logging
@@ -26,8 +27,8 @@ import time
 import tomllib
 from dataclasses import dataclass, replace
 from datetime import datetime
+from io import TextIOWrapper
 from types import MappingProxyType
-from typing import Callable, Iterable, Mapping, TextIO
 
 
 LOG = logging.getLogger("hp-fan-control")
@@ -132,7 +133,9 @@ class PlatformProfileMonitor:
         try:
             events = self.poller.poll(round(timeout_s * 1000))
         except OSError as exc:
-            raise HardwareError(f"cannot wait for platform profile change: {exc}") from exc
+            raise HardwareError(
+                f"cannot wait for platform profile change: {exc}"
+            ) from exc
         if not events:
             return False
         return self.refresh()
@@ -574,6 +577,8 @@ def read_hp_wmi_ir_temperature(path: Path) -> float:
 
 @dataclass(frozen=True)
 class TemperatureSnapshot:
+    """Raw readings from mandatory and optional temperature sources."""
+
     cpu: float
     gpu: float | None
     acpi: float | None
@@ -595,6 +600,8 @@ class TemperatureSnapshot:
 
 
 class Sensors:
+    """Aggregate a mandatory CPU source and best-effort auxiliary sensors."""
+
     def __init__(self, settings: Settings, hwmon_root: Path = Path("/sys/class/hwmon")):
         self.settings = settings
         self.hwmon_root = hwmon_root
@@ -693,7 +700,8 @@ class Sensors:
         except HardwareError as exc:
             if not self.hp_wmi_ir_failed:
                 LOG.warning(
-                    "optional HP WMI IR sensor unavailable; continuing with CPU/GPU: %s",
+                    "optional HP WMI IR sensor unavailable; "
+                    "continuing with CPU/GPU: %s",
                     exc,
                 )
             self.hp_wmi_ir_failed = True
@@ -718,6 +726,8 @@ class Sensors:
 
 
 class HpFanHwmon:
+    """Validated access to the hp-wmi fan-control hwmon attributes."""
+
     def __init__(self, root: Path = Path("/sys/class/hwmon")):
         matches = find_hwmon("hp", root)
         if not matches:
@@ -835,6 +845,8 @@ def wait_for_hp_fan_hwmon(
 
 
 class CsvLog:
+    """Flush each telemetry row immediately so crashes retain prior samples."""
+
     FIELDS = (
         "timestamp",
         "elapsed_s",
@@ -1020,9 +1032,10 @@ class ControlPolicy:
             raw_temperature = (
                 None if raw_temperatures is None else raw_temperatures.get(name)
             )
-            evaluating = max(
-                filtered_temperature,
-                filtered_temperature if raw_temperature is None else raw_temperature,
+            evaluating = (
+                filtered_temperature
+                if raw_temperature is None
+                else max(filtered_temperature, raw_temperature)
             )
             curve = self.settings.curve_for(name)
             previous = self._sensor_targets[name]
@@ -1060,6 +1073,8 @@ class ControlPolicy:
 
 
 class Controller:
+    """Coordinate the policy, hardware modes, scheduling, and fail-safe exits."""
+
     def __init__(
         self,
         settings: Settings,
@@ -1170,6 +1185,8 @@ class Controller:
         self._clear_auto_guard()
 
     def _start_auto_guard(self, now: float) -> None:
+        # Firmware may stop the fans shortly after Auto is restored. Persist
+        # this observation window so ExecStopPost can fail safe across a crash.
         self.auto_guard_until = now + self.settings.auto_guard_s
         if self.auto_guard_path is not None:
             try:
@@ -1345,7 +1362,10 @@ class Controller:
                     snapshot = self.sensors.read()
                 except HardwareError as exc:
                     if self.manual_active or self.emergency or auto_guard_active:
-                        LOG.error("sensor failure during control; selecting maximum: %s", exc)
+                        LOG.error(
+                            "sensor failure during control; selecting maximum: %s",
+                            exc,
+                        )
                         self._maximum()
                         self.emergency = True
                         self.emergency_since = self.emergency_since or now
@@ -1364,6 +1384,8 @@ class Controller:
 
                 self.policy.observe_activations(snapshot)
 
+                # Branch order is the safety priority: critical heat, retained
+                # emergency, stable Auto, cool Manual handoff, normal control.
                 if snapshot.raw_control_hottest >= self.settings.critical_temp_c:
                     if not self.emergency:
                         LOG.warning(
@@ -1381,7 +1403,10 @@ class Controller:
                         self.emergency_since is not None
                         and now - self.emergency_since >= self.settings.emergency_hold_s
                     )
-                    if hottest <= self.settings.critical_release_temp_c and held_long_enough:
+                    if (
+                        hottest <= self.settings.critical_release_temp_c
+                        and held_long_enough
+                    ):
                         self.emergency = False
                         self.manual_active = False
                         self.policy.exit_emergency(snapshot)
@@ -1437,7 +1462,14 @@ class Controller:
                         note = "cooling before firmware Auto"
 
                 self.log_sample(
-                    started, profile, state, snapshot, filtered, hottest, requested, note
+                    started,
+                    profile,
+                    state,
+                    snapshot,
+                    filtered,
+                    hottest,
+                    requested,
+                    note,
                 )
                 self._wait_for_profile_change(self.settings.sample_interval_s)
         finally:
@@ -1459,7 +1491,7 @@ class Controller:
             self.profile_monitor.close()
 
 
-def acquire_lock(path: Path) -> TextIO:
+def acquire_lock(path: Path) -> TextIOWrapper:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         descriptor = os.open(
@@ -1477,7 +1509,9 @@ def acquire_lock(path: Path) -> TextIO:
                 f"lock must be a regular file owned by uid {os.geteuid()}: {path}"
             )
         os.fchmod(descriptor, 0o600)
-        handle = os.fdopen(descriptor, "r+", encoding="ascii")
+        handle: TextIOWrapper = os.fdopen(
+            descriptor, "r+", encoding="ascii"
+        )
     except Exception:
         os.close(descriptor)
         raise
@@ -1507,20 +1541,13 @@ def dry_run_lock_path() -> Path:
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
-    source_dir = Path(__file__).resolve().parent
-    project_config = source_dir.parent / "config" / "fan-control.toml"
-    default_config = (
-        project_config
-        if project_config.is_file()
-        else Path("/etc/hp-fan-control/fan-control.toml")
-    )
     parser = argparse.ArgumentParser(
         description="Experimental standalone automatic fan controller for HP 8D87"
     )
     parser.add_argument(
         "--config",
         type=Path,
-        default=default_config,
+        default=Path("/etc/hp-fan-control/fan-control.toml"),
         help="configuration file",
     )
     operation_group = parser.add_mutually_exclusive_group()
@@ -1585,7 +1612,9 @@ def run_actuator_test(
     if not 35.0 <= percent <= 100.0:
         raise ConfigurationError("--actuator-test must be between 35 and 100 percent")
     if not 1.0 <= duration_s <= 60.0:
-        raise ConfigurationError("actuator-test duration must be between 1 and 60 seconds")
+        raise ConfigurationError(
+            "actuator-test duration must be between 1 and 60 seconds"
+        )
     mode, current_pwm, fan1, fan2 = fan.status()
     if mode != AUTO_MODE:
         raise HardwareError(
@@ -1687,7 +1716,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
-    lock_handle: TextIO | None = None
+    lock_handle: TextIOWrapper | None = None
     try:
         if args.restore_auto or args.failsafe:
             board = read_text(Path("/sys/class/dmi/id/board_name"))

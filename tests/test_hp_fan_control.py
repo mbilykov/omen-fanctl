@@ -520,8 +520,11 @@ class ControlDecisionTests(unittest.TestCase):
 
 
 class SettingsTests(unittest.TestCase):
-    def test_source_tree_defaults_to_repository_config(self):
-        self.assertEqual(parse_args([]).config, CONFIG_PATH)
+    def test_default_config_is_independent_of_source_tree_layout(self):
+        self.assertEqual(
+            parse_args([]).config,
+            Path("/etc/hp-fan-control/fan-control.toml"),
+        )
 
     def test_loads_factory_preset(self):
         config = CONFIG_PATH
