@@ -908,10 +908,35 @@ pwm_percent = [30, 40]
 
             validate_required_profile("performance", choices)
             with self.assertRaisesRegex(
-                ConfigurationError,
+                HardwareError,
                 "required_profile 'performnce' is unavailable",
             ):
-                validate_required_profile("performnce", choices)
+                validate_required_profile("performnce", choices, timeout_s=0)
+
+    def test_waits_for_required_profile_during_startup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            choices = Path(temporary) / "platform_profile_choices"
+
+            def publish_profile(_delay):
+                choices.write_text("low-power balanced performance\n")
+
+            with (
+                patch(
+                    "hp_fan_control.hardware.time.monotonic",
+                    side_effect=[100.0, 100.0],
+                ),
+                patch(
+                    "hp_fan_control.hardware.time.sleep",
+                    side_effect=publish_profile,
+                ) as sleep,
+                patch("hp_fan_control.hardware.LOG.warning") as warning,
+                patch("hp_fan_control.hardware.LOG.info") as info,
+            ):
+                validate_required_profile("performance", choices)
+
+        sleep.assert_called_once_with(1.0)
+        warning.assert_called_once()
+        info.assert_called_once_with("required platform profile became available")
 
     def test_rejects_unsafe_scalar_settings(self):
         cases = (
@@ -2505,7 +2530,7 @@ class ControllerLoopTests(unittest.TestCase):
         with patch("hp_fan_control.cli.parse_args", side_effect=SystemExit(None)):
             self.assertEqual(main([]), 0)
 
-    def test_main_rejects_unavailable_required_profile_before_locking(self):
+    def test_main_returns_retryable_exit_code_for_unavailable_required_profile(self):
         settings = Settings.load(CONFIG_PATH)
         settings = settings_with(settings, required_profile="performnce")
         acquire = Mock()
@@ -2520,11 +2545,17 @@ class ControllerLoopTests(unittest.TestCase):
         with (
             patch("hp_fan_control.cli.Settings.load", return_value=settings),
             patch("hp_fan_control.cli.read_text", side_effect=fake_read_text),
+            patch(
+                "hp_fan_control.cli.validate_required_profile",
+                side_effect=HardwareError(
+                    "required platform profile startup timeout"
+                ),
+            ),
             patch("hp_fan_control.cli.acquire_lock", acquire),
         ):
             self.assertEqual(
                 main(["--no-log-file"]),
-                CONFIGURATION_ERROR_EXIT_STATUS,
+                1,
             )
 
         acquire.assert_not_called()

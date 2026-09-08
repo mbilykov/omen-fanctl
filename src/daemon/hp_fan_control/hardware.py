@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import time
 
-from .config import ConfigurationError, PWM_MAX, Settings, clamp
+from .config import PWM_MAX, Settings, clamp
 
 
 LOG = logging.getLogger("hp-fan-control")
@@ -22,6 +22,8 @@ PLATFORM_PROFILE_CHOICES_PATH = Path(
     "/sys/firmware/acpi/platform_profile_choices"
 )
 CONTROL_SENSORS = ("cpu", "gpu", "ir")
+PLATFORM_PROFILE_STARTUP_TIMEOUT_S = 20.0
+PLATFORM_PROFILE_STARTUP_RETRY_S = 1.0
 HP_HWMON_STARTUP_TIMEOUT_S = 20.0
 HP_HWMON_STARTUP_RETRY_S = 1.0
 K10TEMP_STARTUP_TIMEOUT_S = 20.0
@@ -146,14 +148,43 @@ def read_int(path: Path) -> int:
 def validate_required_profile(
     required_profile: str,
     choices_path: Path = PLATFORM_PROFILE_CHOICES_PATH,
+    timeout_s: float = PLATFORM_PROFILE_STARTUP_TIMEOUT_S,
+    retry_s: float = PLATFORM_PROFILE_STARTUP_RETRY_S,
 ) -> None:
-    choices = tuple(read_text(choices_path).split())
-    if required_profile not in choices:
-        available = ", ".join(choices) if choices else "none"
-        raise ConfigurationError(
-            f"required_profile {required_profile!r} is unavailable; "
-            f"platform choices: {available}"
-        )
+    deadline = time.monotonic() + timeout_s
+    waiting_logged = False
+    while True:
+        try:
+            choices = tuple(read_text(choices_path).split())
+        except OSError as exc:
+            not_ready = HardwareNotReadyError(
+                f"cannot read platform profile choices from {choices_path}: {exc}"
+            )
+        else:
+            if required_profile in choices:
+                if waiting_logged:
+                    LOG.info("required platform profile became available")
+                return
+            available = ", ".join(choices) if choices else "none"
+            not_ready = HardwareNotReadyError(
+                f"required_profile {required_profile!r} is unavailable; "
+                f"platform choices: {available}"
+            )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise HardwareError(
+                "required platform profile did not become available within "
+                f"{timeout_s:g} seconds: {not_ready}"
+            ) from not_ready
+        if not waiting_logged:
+            LOG.warning(
+                "required platform profile is not available; "
+                "waiting up to %g seconds: %s",
+                timeout_s,
+                not_ready,
+            )
+            waiting_logged = True
+        time.sleep(min(retry_s, remaining))
 
 
 def write_int(path: Path, value: int) -> None:
