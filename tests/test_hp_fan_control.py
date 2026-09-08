@@ -406,6 +406,28 @@ class EwmaTests(unittest.TestCase):
         self.assertEqual(ewma.update(70), 60)
         self.assertEqual(ewma.update(50), 59)
 
+    def test_missing_optional_sensor_resets_its_filter(self):
+        controller = Controller(
+            settings=fixed_policy_settings(),
+            fan=FakeFan(),
+            sensors=None,
+            apply=False,
+            duration_s=None,
+            csv_log=CsvLog(None),
+        )
+        hot = TemperatureSnapshot(cpu=50.0, gpu=50.0, acpi=None, ir=64.0)
+        missing = TemperatureSnapshot(cpu=50.0, gpu=50.0, acpi=None, ir=None)
+        recovered = TemperatureSnapshot(cpu=50.0, gpu=50.0, acpi=None, ir=40.0)
+
+        for _ in range(40):
+            controller._filtered(hot)
+        for _ in range(20):
+            filtered = controller._filtered(missing)
+
+        self.assertIsNone(filtered["ir"])
+        self.assertIsNone(controller.filters["ir"].value)
+        self.assertEqual(controller._filtered(recovered)["ir"], 40.0)
+
 
 class CsvLogTests(unittest.TestCase):
     def test_restart_appends_without_duplicate_header(self):

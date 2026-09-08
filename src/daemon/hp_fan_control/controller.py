@@ -489,7 +489,12 @@ class Controller:
             ("ir", snapshot.ir),
             ("acpi", snapshot.acpi),
         ):
-            result[name] = None if value is None else self.filters[name].update(value)
+            temperature_filter = self.filters[name]
+            if value is None:
+                temperature_filter.value = None
+                result[name] = None
+            else:
+                result[name] = temperature_filter.update(value)
         return result
 
     def _apply_manual(self, pwm: int) -> int:
