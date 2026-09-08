@@ -11,6 +11,7 @@ NotifyAccess=main
 ExecStart=/usr/local/lib/hp-fan-control/hp_fan_control.py --apply --config /etc/hp-fan-control/fan-control.toml --status-interval 30
 ExecStopPost=/usr/local/lib/hp-fan-control/hp_fan_control.py --failsafe
 Restart=always
+RestartPreventExitStatus=78
 RestartSec=10
 WatchdogSec=15
 WatchdogSignal=SIGKILL

@@ -31,6 +31,7 @@ from .hardware import (
 
 LOG = logging.getLogger("hp-fan-control")
 AUTO_GUARD_PATH = Path("/run/hp-fan-control/auto-guard")
+CONFIGURATION_ERROR_EXIT_STATUS = 78
 
 
 def acquire_lock(path: Path) -> TextIOWrapper:
@@ -252,7 +253,14 @@ def ensure_failsafe_fan_state(
 
 
 def main(argv: Iterable[str] | None = None) -> int:
-    args = parse_args(argv)
+    try:
+        args = parse_args(argv)
+    except SystemExit as exc:
+        return (
+            0
+            if exc.code is None or exc.code == 0
+            else CONFIGURATION_ERROR_EXIT_STATUS
+        )
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
@@ -291,7 +299,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             settings = replace(settings, include_acpi=True)
         board = read_text(Path("/sys/class/dmi/id/board_name"))
         if board not in settings.allowed_boards:
-            raise HardwareError(
+            raise ConfigurationError(
                 f"board {board!r} is not allowlisted: {settings.allowed_boards}"
             )
         validate_required_profile(settings.required_profile)
@@ -353,7 +361,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         finally:
             csv_log.close()
         return 0
-    except (ConfigurationError, HardwareError, OSError) as exc:
+    except ConfigurationError as exc:
+        LOG.error("%s", exc)
+        return CONFIGURATION_ERROR_EXIT_STATUS
+    except (HardwareError, OSError) as exc:
         LOG.error("%s", exc)
         return 1
     finally:

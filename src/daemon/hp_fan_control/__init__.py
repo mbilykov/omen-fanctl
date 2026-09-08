@@ -2,6 +2,7 @@
 
 from .cli import (
     AUTO_GUARD_PATH,
+    CONFIGURATION_ERROR_EXIT_STATUS,
     acquire_lock,
     dry_run_lock_path,
     ensure_failsafe_fan_state,
@@ -38,6 +39,7 @@ from .hardware import (
 __all__ = (
     "AUTO_GUARD_PATH",
     "AUTO_MODE",
+    "CONFIGURATION_ERROR_EXIT_STATUS",
     "MANUAL_MODE",
     "MAX_MODE",
     "ConfigurationError",

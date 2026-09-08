@@ -22,6 +22,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src" / "daemon"))
 
 import hp_fan_control as hp_fan_control_package  # noqa: E402
 from hp_fan_control.cli import (  # noqa: E402
+    CONFIGURATION_ERROR_EXIT_STATUS,
     acquire_lock,
     dry_run_lock_path,
     ensure_failsafe_fan_state,
@@ -1727,6 +1728,10 @@ class ControllerLoopTests(unittest.TestCase):
 
         lock.close.assert_called_once_with()
 
+    def test_main_preserves_successful_system_exit_without_explicit_code(self):
+        with patch("hp_fan_control.cli.parse_args", side_effect=SystemExit(None)):
+            self.assertEqual(main([]), 0)
+
     def test_main_rejects_unavailable_required_profile_before_locking(self):
         settings = Settings.load(CONFIG_PATH)
         settings = settings_with(settings, required_profile="performnce")
@@ -1744,7 +1749,10 @@ class ControllerLoopTests(unittest.TestCase):
             patch("hp_fan_control.cli.read_text", side_effect=fake_read_text),
             patch("hp_fan_control.cli.acquire_lock", acquire),
         ):
-            self.assertEqual(main(["--no-log-file"]), 1)
+            self.assertEqual(
+                main(["--no-log-file"]),
+                CONFIGURATION_ERROR_EXIT_STATUS,
+            )
 
         acquire.assert_not_called()
 
@@ -2104,13 +2112,50 @@ class EntryPointTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("usage:", result.stdout)
 
+    def test_script_entry_point_uses_configuration_status_for_bad_arguments(self):
+        result = subprocess.run(
+            [sys.executable, str(ENTRY_POINT_PATH), "--unknown-option"],
+            cwd=PROJECT_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, CONFIGURATION_ERROR_EXIT_STATUS)
+        self.assertIn("unrecognized arguments", result.stderr)
+
+    def test_script_entry_point_uses_configuration_status_for_invalid_toml(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "invalid.toml"
+            config.write_text("[daemon\n", encoding="utf-8")
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ENTRY_POINT_PATH),
+                    "--config",
+                    str(config),
+                    "--no-log-file",
+                ],
+                cwd=PROJECT_ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, CONFIGURATION_ERROR_EXIT_STATUS)
+        self.assertIn("cannot load", result.stderr)
+
 
 class SystemdUnitTests(unittest.TestCase):
-    def test_restart_policy_avoids_start_limit(self):
+    def test_restart_policy_retries_runtime_but_not_configuration_failures(self):
         service = SERVICE_PATH.read_text(encoding="utf-8")
         self.assertIn("StartLimitIntervalSec=60\n", service)
         self.assertIn("StartLimitBurst=10\n", service)
         self.assertIn("Restart=always\n", service)
+        self.assertIn(
+            f"RestartPreventExitStatus={CONFIGURATION_ERROR_EXIT_STATUS}\n",
+            service,
+        )
         self.assertIn("RestartSec=10\n", service)
 
     def test_csv_rotation_targets_only_the_stable_log(self):

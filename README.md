@@ -130,6 +130,11 @@ sudo ./install.sh --enable-now
 The configuration is installed at `/etc/hp-fan-control/fan-control.toml`.
 Existing configuration is preserved during upgrades.
 
+Invalid configuration exits with status 78 and leaves the systemd unit in the
+failed state instead of retrying forever. Runtime hardware failures continue
+to retry every 10 seconds. After correcting the configuration, restart the
+service normally.
+
 ### Service management
 
 Start or stop the installed service:
