@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import inspect
 import os
 import select
 import stat
@@ -620,6 +621,7 @@ class ControlDecisionTests(unittest.TestCase):
         )
 
     def test_ir_below_activation_does_not_block_cpu_triggered_auto_release(self):
+        # IR may delay release only after IR itself activated the Manual cycle.
         self.policy.observe_activations(
             TemperatureSnapshot(cpu=60.0, gpu=40.0, acpi=None, ir=43.0)
         )
@@ -1144,6 +1146,8 @@ class SensorMetricTests(unittest.TestCase):
 
 
 class FakeFan:
+    """Controller state stub; HpFanHwmon tests own hardware-mode semantics."""
+
     def __init__(self):
         self.mode = AUTO_MODE
         self.pwm = 100
@@ -1170,6 +1174,29 @@ class FakeFan:
     def restore_auto(self):
         self.actions.append(("auto", None))
         self.mode = AUTO_MODE
+
+
+class FakeFanContractTests(unittest.TestCase):
+    def test_controller_stub_matches_hp_fan_public_method_signatures(self):
+        for name in (
+            "status",
+            "set_manual",
+            "update_manual",
+            "set_maximum",
+            "restore_auto",
+        ):
+            with self.subTest(method=name):
+                real = inspect.signature(getattr(HpFanHwmon, name))
+                fake = inspect.signature(getattr(FakeFan, name))
+                real_parameters = tuple(
+                    (parameter.name, parameter.kind, parameter.default)
+                    for parameter in real.parameters.values()
+                )
+                fake_parameters = tuple(
+                    (parameter.name, parameter.kind, parameter.default)
+                    for parameter in fake.parameters.values()
+                )
+                self.assertEqual(fake_parameters, real_parameters)
 
 
 class FakeSensors:
@@ -1207,8 +1234,9 @@ class SequenceSensors:
 class ControllerLoopTests(unittest.TestCase):
     def test_csv_fields_match_log_sample_row(self):
         csv_log = Mock(spec=CsvLog)
+        settings = replace(Settings.load(CONFIG_PATH), include_acpi=True)
         controller = Controller(
-            settings=Settings.load(CONFIG_PATH),
+            settings=settings,
             fan=FakeFan(),
             sensors=FakeSensors(70),
             apply=False,
@@ -1224,6 +1252,10 @@ class ControllerLoopTests(unittest.TestCase):
             nvidia_power_limit_w=150.0,
         )
         filtered = {"cpu": 69.0, "gpu": 59.0, "ir": 54.0, "acpi": 49.0}
+        controller.policy.desired_pwm(
+            filtered,
+            {"cpu": 70.0, "gpu": 60.0, "ir": 55.0, "acpi": 50.0},
+        )
 
         controller.log_sample(
             0.0,
@@ -1239,6 +1271,10 @@ class ControllerLoopTests(unittest.TestCase):
         csv_log.write.assert_called_once()
         row = csv_log.write.call_args.args[0]
         self.assertCountEqual(row, CsvLog.FIELDS)
+        self.assertEqual(
+            row["acpi_target_percent"],
+            f"{hp_level_percent(23):.1f}",
+        )
 
     def test_ir_manual_floor_bucket_stays_in_firmware_auto(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -2448,14 +2484,23 @@ class SystemdUnitTests(unittest.TestCase):
 
     def test_restart_policy_retries_runtime_but_not_configuration_failures(self):
         service = SERVICE_PATH.read_text(encoding="utf-8")
-        self.assertIn("StartLimitIntervalSec=60\n", service)
-        self.assertIn("StartLimitBurst=10\n", service)
+        settings = dict(
+            line.split("=", 1)
+            for line in service.splitlines()
+            if "=" in line
+        )
+
         self.assertIn("Restart=always\n", service)
         self.assertIn(
             f"RestartPreventExitStatus={CONFIGURATION_ERROR_EXIT_STATUS}\n",
             service,
         )
-        self.assertIn("RestartSec=10\n", service)
+        restart_s = float(settings["RestartSec"].removesuffix("s"))
+        burst = int(settings["StartLimitBurst"])
+        interval_s = float(
+            settings["StartLimitIntervalSec"].removesuffix("s")
+        )
+        self.assertGreater(restart_s * burst, interval_s)
 
     def test_csv_rotation_targets_only_the_stable_log(self):
         policy = LOGROTATE_PATH.read_text(encoding="utf-8")
