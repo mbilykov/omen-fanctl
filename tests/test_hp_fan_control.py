@@ -571,6 +571,94 @@ class SettingsTests(unittest.TestCase):
             settings.curve_for("gpu").pwm_percent[-1], hp_level_percent(47)
         )
 
+    def test_rejects_unknown_configuration_keys(self):
+        cases = {
+            "top-level": (
+                "mystery",
+                """
+[daemon]
+allowed_boards = ["8D87"]
+[curves]
+preset = "hp-vibrance-stx-n22x9-performance"
+[mystery]
+enabled = true
+""",
+            ),
+            "daemon": (
+                "daemon.activaton_temp_c",
+                """
+[daemon]
+allowed_boards = ["8D87"]
+activaton_temp_c = 60.0
+[curves]
+preset = "hp-vibrance-stx-n22x9-performance"
+""",
+            ),
+            "ewma": (
+                "ewma.raise_alpha",
+                """
+[daemon]
+allowed_boards = ["8D87"]
+[ewma]
+raise_alpha = 0.25
+[curves]
+preset = "hp-vibrance-stx-n22x9-performance"
+""",
+            ),
+            "sensors": (
+                "sensors.include_nvida_gpu",
+                """
+[daemon]
+allowed_boards = ["8D87"]
+[sensors]
+include_nvida_gpu = true
+[curves]
+preset = "hp-vibrance-stx-n22x9-performance"
+""",
+            ),
+            "legacy curve": (
+                "curve.steped",
+                """
+[daemon]
+allowed_boards = ["8D87"]
+[curve]
+temperature_c = [50, 60]
+pwm_percent = [30, 40]
+steped = true
+""",
+            ),
+            "curves": (
+                "curves.presett",
+                """
+[daemon]
+allowed_boards = ["8D87"]
+[curves]
+presett = "hp-vibrance-stx-n22x9-performance"
+""",
+            ),
+            "named curve": (
+                "curves.cpu.steped",
+                """
+[daemon]
+allowed_boards = ["8D87"]
+[curves.cpu]
+temperature_c = [50, 60]
+pwm_percent = [30, 40]
+steped = true
+""",
+            ),
+        }
+
+        for name, (unknown_key, contents) in cases.items():
+            with self.subTest(section=name), tempfile.TemporaryDirectory() as temporary:
+                config = Path(temporary) / "fan-control.toml"
+                config.write_text(contents, encoding="utf-8")
+                with self.assertRaisesRegex(
+                    ConfigurationError,
+                    f"unknown configuration key: {unknown_key}",
+                ):
+                    Settings.load(config)
+
     def test_per_sensor_curves_require_cpu_curve(self):
         with tempfile.TemporaryDirectory() as temporary:
             config = Path(temporary) / "fan-control.toml"

@@ -9,10 +9,66 @@ from pathlib import Path
 
 PWM_MAX = 255
 HP_FAN_LEVEL_MAX = 60.0
+TOP_LEVEL_KEYS = frozenset({"daemon", "ewma", "sensors", "curve", "curves"})
+DAEMON_KEYS = frozenset(
+    {
+        "allowed_boards",
+        "required_profile",
+        "sample_interval_s",
+        "control_interval_s",
+        "activation_temp_c",
+        "release_temp_c",
+        "fan_stop_temp_c",
+        "critical_temp_c",
+        "critical_release_temp_c",
+        "emergency_hold_s",
+        "decrease_hysteresis_c",
+        "ir_release_hysteresis_c",
+        "auto_guard_s",
+        "max_rise_percent_per_update",
+        "max_fall_percent_per_update",
+        "minimum_manual_percent",
+    }
+)
+EWMA_KEYS = frozenset({"rise_alpha", "fall_alpha"})
+SENSOR_KEYS = frozenset(
+    {
+        "include_acpi",
+        "include_amd_gpu",
+        "include_nvidia_gpu",
+        "include_hp_wmi_ir",
+        "hp_wmi_sensors_path",
+    }
+)
+CURVE_KEYS = frozenset(
+    {
+        "temperature_c",
+        "high_temperature_c",
+        "low_temperature_c",
+        "pwm_percent",
+        "fan_level",
+        "stepped",
+    }
+)
+NAMED_CURVE_KEYS = frozenset({"preset", "cpu", "gpu", "ir", "acpi"})
 
 
 class ConfigurationError(ValueError):
     pass
+
+
+def configuration_table(
+    value: object,
+    path: str,
+    allowed_keys: frozenset[str],
+) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ConfigurationError(f"configuration section {path} must be a table")
+    unknown = sorted(set(value) - allowed_keys)
+    if unknown:
+        names = ", ".join(f"{path}.{key}" if path else key for key in unknown)
+        raise ConfigurationError(f"unknown configuration key: {names}")
+    return value
 
 
 def clamp(value: float, minimum: float, maximum: float) -> float:
@@ -186,11 +242,25 @@ class Settings:
         except (OSError, tomllib.TOMLDecodeError) as exc:
             raise ConfigurationError(f"cannot load {path}: {exc}") from exc
 
-        daemon = raw.get("daemon", {})
-        ewma = raw.get("ewma", {})
-        sensors = raw.get("sensors", {})
-        curve_data = raw.get("curve", {})
-        curves_data = raw.get("curves", {})
+        configuration_table(raw, "", TOP_LEVEL_KEYS)
+        daemon = configuration_table(raw.get("daemon", {}), "daemon", DAEMON_KEYS)
+        ewma = configuration_table(raw.get("ewma", {}), "ewma", EWMA_KEYS)
+        sensors = configuration_table(
+            raw.get("sensors", {}), "sensors", SENSOR_KEYS
+        )
+        curve_data = configuration_table(
+            raw.get("curve", {}), "curve", CURVE_KEYS
+        )
+        curves_data = configuration_table(
+            raw.get("curves", {}), "curves", NAMED_CURVE_KEYS
+        )
+        named_curve_data = {
+            name: configuration_table(
+                curves_data[name], f"curves.{name}", CURVE_KEYS
+            )
+            for name in ("cpu", "gpu", "ir", "acpi")
+            if name in curves_data
+        }
         try:
             preset = str(curves_data.get("preset", "")).strip()
             if preset:
@@ -202,9 +272,8 @@ class Settings:
                 curve_source = preset
             else:
                 named = {
-                    name: cls._load_curve(curves_data[name])
-                    for name in ("cpu", "gpu", "ir", "acpi")
-                    if name in curves_data
+                    name: cls._load_curve(data)
+                    for name, data in named_curve_data.items()
                 }
                 if named:
                     if "cpu" not in named:
