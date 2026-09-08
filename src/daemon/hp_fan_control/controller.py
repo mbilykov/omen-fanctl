@@ -554,6 +554,33 @@ class Controller:
         self._clear_auto_guard()
         return False
 
+    def _failsafe_on_stop(self) -> None:
+        guard_until = self.auto_guard_until
+        guard_present = guard_until is not None
+        guard_active = guard_present and self.clock() < guard_until
+        if self.apply and (self.manual_active or self.emergency or guard_active):
+            LOG.critical(
+                "controller stopped while software cooling or Auto guard "
+                "was active; selecting maximum fans"
+            )
+            try:
+                self.fan.set_maximum()
+            except HardwareError as exc:
+                LOG.critical("FAILED TO SELECT MAXIMUM FANS: %s", exc)
+                return
+            try:
+                self._clear_auto_guard()
+            except HardwareError as exc:
+                LOG.error(
+                    "maximum fans selected but failed to clear Auto guard: %s",
+                    exc,
+                )
+        elif guard_present:
+            try:
+                self._clear_auto_guard()
+            except HardwareError as exc:
+                LOG.error("failed to clear Auto guard: %s", exc)
+
     def _restore_auto(self, reason: str, now: float) -> None:
         if not (self.manual_active or self.emergency):
             return
@@ -821,19 +848,6 @@ class Controller:
                 )
                 self._wait_for_profile_change(self.settings.sample_interval_s)
         finally:
-            try:
-                guard_active_at_stop = self._auto_guard_active(self.clock())
-                if self.apply and (
-                    self.manual_active or self.emergency or guard_active_at_stop
-                ):
-                    LOG.critical(
-                        "controller stopped while software cooling or Auto guard "
-                        "was active; "
-                        "selecting maximum fans"
-                    )
-                    self.fan.set_maximum()
-                    self._clear_auto_guard()
-            except HardwareError as exc:
-                LOG.critical("FAILED TO SELECT MAXIMUM FANS: %s", exc)
+            self._failsafe_on_stop()
             self.notifier.stopping()
             self.profile_monitor.close()

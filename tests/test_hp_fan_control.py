@@ -1628,6 +1628,118 @@ class ControllerLoopTests(unittest.TestCase):
                 ANY,
             )
 
+    def test_stop_reports_guard_cleanup_failure_without_questioning_maximum(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            guard = Path(temporary) / "auto-guard"
+            guard.mkdir()
+            fan = FakeFan()
+            controller = controller_with_fake_time(
+                settings=fixed_policy_settings(),
+                fan=fan,
+                sensors=FakeSensors(50),
+                apply=True,
+                duration_s=None,
+                csv_log=CsvLog(None),
+                auto_guard_path=guard,
+            )
+            controller.manual_active = True
+            controller.auto_guard_until = controller.clock() + 60.0
+
+            with (
+                patch("hp_fan_control.controller.LOG.critical") as critical,
+                patch("hp_fan_control.controller.LOG.error") as error,
+            ):
+                controller._failsafe_on_stop()
+
+        self.assertEqual(fan.mode, MAX_MODE)
+        self.assertFalse(
+            any(
+                call_args.args[0].startswith("FAILED TO SELECT MAXIMUM FANS")
+                for call_args in critical.call_args_list
+            )
+        )
+        error.assert_called_once_with(
+            "maximum fans selected but failed to clear Auto guard: %s",
+            ANY,
+        )
+
+    def test_stop_retains_guard_when_selecting_maximum_fails(self):
+        fan = FakeFan()
+        fan.set_maximum = Mock(side_effect=HardwareError("write failed"))
+        controller = controller_with_fake_time(
+            settings=fixed_policy_settings(),
+            fan=fan,
+            sensors=FakeSensors(50),
+            apply=True,
+            duration_s=None,
+            csv_log=CsvLog(None),
+        )
+        controller.manual_active = True
+        controller.auto_guard_until = controller.clock() + 60.0
+
+        with (
+            patch.object(controller, "_clear_auto_guard") as clear_guard,
+            patch("hp_fan_control.controller.LOG.critical") as critical,
+        ):
+            controller._failsafe_on_stop()
+
+        clear_guard.assert_not_called()
+        self.assertIsNotNone(controller.auto_guard_until)
+        critical.assert_any_call("FAILED TO SELECT MAXIMUM FANS: %s", ANY)
+
+    def test_stop_clears_expired_guard_without_selecting_maximum(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            guard = Path(temporary) / "auto-guard"
+            guard.write_text("expired\n")
+            fan = FakeFan()
+            controller = controller_with_fake_time(
+                settings=fixed_policy_settings(),
+                fan=fan,
+                sensors=FakeSensors(50),
+                apply=True,
+                duration_s=None,
+                csv_log=CsvLog(None),
+                auto_guard_path=guard,
+            )
+            controller.auto_guard_until = controller.clock() - 10.0
+
+            controller._failsafe_on_stop()
+
+            self.assertFalse(guard.exists())
+        self.assertEqual(fan.actions, [])
+        self.assertEqual(fan.mode, AUTO_MODE)
+        self.assertIsNone(controller.auto_guard_until)
+
+    def test_stop_reports_failure_to_clear_guard_without_selecting_maximum(self):
+        fan = FakeFan()
+        fan.set_maximum = Mock(wraps=fan.set_maximum)
+        controller = controller_with_fake_time(
+            settings=fixed_policy_settings(),
+            fan=fan,
+            sensors=FakeSensors(50),
+            apply=True,
+            duration_s=None,
+            csv_log=CsvLog(None),
+        )
+        controller.auto_guard_until = controller.clock() - 10.0
+
+        with (
+            patch.object(
+                controller,
+                "_clear_auto_guard",
+                side_effect=HardwareError("unlink failed"),
+            ) as clear_guard,
+            patch("hp_fan_control.controller.LOG.error") as error,
+        ):
+            controller._failsafe_on_stop()
+
+        fan.set_maximum.assert_not_called()
+        clear_guard.assert_called_once_with()
+        error.assert_called_once_with(
+            "failed to clear Auto guard: %s",
+            ANY,
+        )
+
     def test_actuator_test_restores_auto(self):
         fan = FakeFan()
         with (
