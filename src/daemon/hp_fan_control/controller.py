@@ -119,6 +119,7 @@ class CsvLog:
         "gpu_raw_c",
         "nvidia_power_draw_w",
         "nvidia_power_limit_w",
+        "nvidia_metrics_stale",
         "ir_raw_c",
         "acpi_raw_c",
         "cpu_ewma_c",
@@ -159,6 +160,26 @@ class CsvLog:
         handle: TextIO | None = None
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists() and path.stat().st_size > 0:
+                try:
+                    with path.open("r", encoding="utf-8", newline="") as existing:
+                        header = next(csv.reader(existing), [])
+                except (UnicodeError, csv.Error):
+                    header = []
+                if tuple(header) != self.FIELDS:
+                    archive = path.with_name(f"{path.name}.previous")
+                    index = 1
+                    while archive.exists():
+                        archive = path.with_name(
+                            f"{path.name}.previous.{index}"
+                        )
+                        index += 1
+                    path.rename(archive)
+                    LOG.warning(
+                        "archived CSV with incompatible schema: %s -> %s",
+                        path,
+                        archive,
+                    )
             handle = path.open("a", encoding="utf-8", newline="")
             writer = csv.DictWriter(handle, fieldnames=self.FIELDS)
             if os.fstat(handle.fileno()).st_size == 0:
@@ -644,6 +665,9 @@ class Controller:
         nvidia_power_limit_w = (
             None if snapshot is None else snapshot.nvidia_power_limit_w
         )
+        nvidia_metrics_stale = (
+            None if snapshot is None else snapshot.nvidia_metrics_stale
+        )
         winning_sensor = "" if snapshot is None else self.policy.winning_sensor
         sensor_targets = (
             {name: None for name in self.filters}
@@ -686,6 +710,11 @@ class Controller:
                 "gpu_raw_c": fmt(raw["gpu"]),
                 "nvidia_power_draw_w": fmt(nvidia_power_draw_w),
                 "nvidia_power_limit_w": fmt(nvidia_power_limit_w),
+                "nvidia_metrics_stale": (
+                    ""
+                    if nvidia_metrics_stale is None
+                    else str(nvidia_metrics_stale).lower()
+                ),
                 "ir_raw_c": fmt(raw["ir"]),
                 "acpi_raw_c": fmt(raw["acpi"]),
                 "cpu_ewma_c": fmt(filtered["cpu"]),

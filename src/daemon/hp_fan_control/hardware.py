@@ -276,6 +276,7 @@ class TemperatureSnapshot:
     ir: float | None = None
     nvidia_power_draw_w: float | None = None
     nvidia_power_limit_w: float | None = None
+    nvidia_metrics_stale: bool | None = None
 
     def control_temperatures(self) -> dict[str, float | None]:
         return {name: getattr(self, name) for name in CONTROL_SENSORS}
@@ -349,10 +350,9 @@ class Sensors:
             if source is not None:
                 self.cpu_hwmon, values = source
         if not values:
-            self.cpu_health.unavailable(
-                "no valid k10temp temperature was found during rediscovery"
-            )
-            raise AssertionError("required sensor failure must raise")
+            reason = "no valid k10temp temperature was found during rediscovery"
+            self.cpu_health.unavailable(reason)
+            raise HardwareError(f"CPU temperature source unavailable: {reason}")
         self.cpu_health.available()
         return max(values)
 
@@ -378,13 +378,18 @@ class Sensors:
 
     def _nvidia_failure(
         self, reason: object
-    ) -> tuple[float | None, float | None, float | None]:
+    ) -> tuple[float | None, float | None, float | None, bool | None]:
         self.nvidia_gpu_health.unavailable(reason)
-        return self.last_nvidia_metrics
+        stale = (
+            True
+            if any(value is not None for value in self.last_nvidia_metrics)
+            else None
+        )
+        return (*self.last_nvidia_metrics, stale)
 
     def _nvidia_metrics(
         self,
-    ) -> tuple[float | None, float | None, float | None]:
+    ) -> tuple[float | None, float | None, float | None, bool | None]:
         if not self.nvidia_smi:
             if self.settings.include_nvidia_gpu:
                 now = time.monotonic()
@@ -396,7 +401,7 @@ class Sensors:
                 if not self.nvidia_smi:
                     return self._nvidia_failure("nvidia-smi was not found")
             else:
-                return None, None, None
+                return None, None, None, None
         try:
             result = subprocess.run(
                 [
@@ -451,7 +456,7 @@ class Sensors:
             sum(power_draws) if power_draws else None,
             sum(power_limits) if power_limits else None,
         )
-        return self.last_nvidia_metrics
+        return (*self.last_nvidia_metrics, False)
 
     def _acpi_temperature(self) -> float | None:
         if not self.settings.include_acpi:
@@ -485,7 +490,12 @@ class Sensors:
 
     def read(self) -> TemperatureSnapshot:
         cpu_temperature = self._cpu_temperature()
-        nvidia_temperature, power_draw, power_limit = self._nvidia_metrics()
+        (
+            nvidia_temperature,
+            power_draw,
+            power_limit,
+            nvidia_metrics_stale,
+        ) = self._nvidia_metrics()
         gpu_values = [self._amd_gpu_temperature(), nvidia_temperature]
         valid_gpu = [value for value in gpu_values if value is not None]
         gpu_temperature = max(valid_gpu) if valid_gpu else None
@@ -496,6 +506,7 @@ class Sensors:
             ir=self._hp_wmi_ir_temperature(),
             nvidia_power_draw_w=power_draw,
             nvidia_power_limit_w=power_limit,
+            nvidia_metrics_stale=nvidia_metrics_stale,
         )
 
 

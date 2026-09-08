@@ -70,7 +70,8 @@ include_amd_gpu = true
 # Uses nvidia-smi when present and retries discovery every 30 seconds. A
 # configured source logs loss and recovery; three consecutive failures of any
 # previously available NVIDIA source fail safe, using the last reading until
-# then. Disappearance of a previously available AMD GPU fails safe immediately.
+# then and marking those fallback metrics as stale in CSV. Disappearance of a
+# previously available AMD GPU fails safe immediately.
 include_nvidia_gpu = true
 
 [curves]

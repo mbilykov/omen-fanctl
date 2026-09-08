@@ -192,7 +192,7 @@ Full-resolution telemetry is appended once per second to
 
 - platform profile and controller state;
 - raw and EWMA-filtered CPU, GPU, IR, and optional ACPI temperatures;
-- NVIDIA power draw and power limit when available;
+- NVIDIA power draw and power limit when available, plus a stale-data marker;
 - the target from each sensor curve and the winning sensor;
 - requested PWM, actual fan mode, and both fan RPM values.
 
@@ -201,13 +201,15 @@ target to this telemetry for comparison. The proxy cannot activate Manual
 mode, change the requested PWM, trigger emergency cooling, or delay the return
 to firmware Auto.
 
-Service restarts continue the same CSV file without duplicating its header. The
-supplied logrotate policy rotates it daily, retains 14 archives, compresses old
-files, and uses `copytruncate` so the daemon does not need to reopen the active
-file. `copytruncate` has a narrow race in which one telemetry row can be lost;
-fan control is unaffected. The systemd-tmpfiles policy also removes inactive
-telemetry files after 14 days, including timestamped files left by older daemon
-versions.
+Service restarts continue the same CSV file without duplicating its header. If
+an upgrade changes the CSV schema, the daemon preserves the incompatible file
+with a `.previous[.N]` suffix and starts a new active file with the current
+header. The supplied logrotate policy rotates the active file daily, retains 14
+archives, compresses old files, and uses `copytruncate` so the daemon does not
+need to reopen it. `copytruncate` has a narrow race in which one telemetry row
+can be lost; fan control is unaffected. The systemd-tmpfiles policy also removes
+inactive telemetry files after 14 days, including timestamped and `.previous`
+files left by older daemon versions or schema upgrades.
 
 ## Control logic
 

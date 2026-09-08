@@ -54,6 +54,7 @@ from hp_fan_control.controller import (  # noqa: E402
 )
 from hp_fan_control.hardware import (  # noqa: E402
     AUTO_MODE,
+    FailurePolicy,
     MANUAL_MODE,
     MAX_MODE,
     HardwareError,
@@ -445,6 +446,36 @@ class CsvLogTests(unittest.TestCase):
 
         self.assertEqual(lines.count(",".join(CsvLog.FIELDS)), 1)
         self.assertEqual(len(lines), 3)
+
+    def test_archives_existing_csv_with_incompatible_header(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "hp-fan-control.csv"
+            previous = path.with_name(f"{path.name}.previous")
+            old_fields = tuple(
+                field
+                for field in CsvLog.FIELDS
+                if field != "nvidia_metrics_stale"
+            )
+            old_contents = f"{','.join(old_fields)}\nlegacy-row\n"
+            path.write_text(old_contents, encoding="utf-8")
+
+            with self.assertLogs("hp-fan-control", level="WARNING") as captured:
+                log = CsvLog(path)
+            log.write({})
+            log.close()
+
+            current_lines = path.read_text(encoding="utf-8").splitlines()
+            archived_contents = previous.read_text(encoding="utf-8")
+
+        self.assertEqual(archived_contents, old_contents)
+        self.assertEqual(current_lines[0], ",".join(CsvLog.FIELDS))
+        self.assertEqual(len(current_lines), 2)
+        self.assertTrue(
+            any(
+                "archived CSV with incompatible schema" in line
+                for line in captured.output
+            )
+        )
 
     def test_rewrites_header_after_external_copytruncate(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1084,6 +1115,17 @@ class SensorMetricTests(unittest.TestCase):
         warning.assert_called_once()
         info.assert_called_once_with("%s recovered", "CPU temperature source")
 
+    def test_cpu_loss_remains_hardware_error_if_health_policy_is_relaxed(self):
+        sensors = initialized_sensors(self)
+        sensors.cpu_health.policy = FailurePolicy.OPTIONAL
+        sensors.cpu_hwmon.rename(sensors.hwmon_root / "offline-k10temp")
+
+        with self.assertRaisesRegex(
+            HardwareError,
+            "CPU temperature source unavailable",
+        ):
+            sensors.read()
+
     def test_rediscovers_amd_gpu_after_hwmon_index_changes(self):
         sensors, root, old_gpu = initialized_sensors_with_amd_gpu(self)
 
@@ -1210,9 +1252,13 @@ class SensorMetricTests(unittest.TestCase):
             ),
             patch("hp_fan_control.hardware.time.monotonic", return_value=100.0),
         ):
-            self.assertEqual(sensors.read().gpu, 61.0)
-            self.assertEqual(sensors.read().gpu, 61.0)
+            fresh = sensors.read()
+            stale = sensors.read()
 
+        self.assertEqual(fresh.gpu, 61.0)
+        self.assertFalse(fresh.nvidia_metrics_stale)
+        self.assertEqual(stale.gpu, 61.0)
+        self.assertTrue(stale.nvidia_metrics_stale)
         self.assertIsNone(sensors.nvidia_smi)
         self.assertEqual(sensors.next_nvidia_discovery, 130.0)
 
@@ -1233,12 +1279,27 @@ class SensorMetricTests(unittest.TestCase):
             ),
         ):
             sensors = initialized_sensors(self, include_nvidia_gpu=True)
-            self.assertIsNone(sensors.read().gpu)
-            self.assertIsNone(sensors.read().gpu)
+            first_missing = sensors.read()
+            second_missing = sensors.read()
+            self.assertIsNone(first_missing.gpu)
+            self.assertIsNone(first_missing.nvidia_metrics_stale)
+            self.assertIsNone(second_missing.gpu)
+            self.assertIsNone(second_missing.nvidia_metrics_stale)
             self.assertEqual(which.call_count, 1)
-            self.assertEqual(sensors.read().gpu, 61.0)
+            recovered = sensors.read()
+            self.assertEqual(recovered.gpu, 61.0)
+            self.assertFalse(recovered.nvidia_metrics_stale)
 
         self.assertEqual(which.call_count, 2)
+
+    def test_disabled_nvidia_source_has_no_staleness_status(self):
+        sensors = initialized_sensors(self, include_nvidia_gpu=False)
+
+        snapshot = sensors.read()
+
+        self.assertIsNone(snapshot.nvidia_power_draw_w)
+        self.assertIsNone(snapshot.nvidia_power_limit_w)
+        self.assertIsNone(snapshot.nvidia_metrics_stale)
 
     def test_missing_optional_ir_interface_does_not_block_sensor_startup(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1473,6 +1534,7 @@ class ControllerLoopTests(unittest.TestCase):
             ir=55.0,
             nvidia_power_draw_w=100.0,
             nvidia_power_limit_w=150.0,
+            nvidia_metrics_stale=True,
         )
         filtered = {"cpu": 69.0, "gpu": 59.0, "ir": 54.0, "acpi": 49.0}
         controller.policy.desired_pwm(
@@ -1497,6 +1559,28 @@ class ControllerLoopTests(unittest.TestCase):
         self.assertEqual(
             row["acpi_target_percent"],
             f"{hp_level_percent(23):.1f}",
+        )
+        self.assertEqual(row["nvidia_metrics_stale"], "true")
+
+        csv_log.reset_mock()
+        controller.log_sample(
+            0.0,
+            "performance",
+            "manual",
+            replace(
+                snapshot,
+                nvidia_power_draw_w=None,
+                nvidia_power_limit_w=None,
+                nvidia_metrics_stale=None,
+            ),
+            filtered,
+            70.0,
+            180,
+            "contract check",
+        )
+        self.assertEqual(
+            csv_log.write.call_args.args[0]["nvidia_metrics_stale"],
+            "",
         )
 
     def test_ir_manual_floor_bucket_stays_in_firmware_auto(self):
@@ -1956,6 +2040,9 @@ class ControllerLoopTests(unittest.TestCase):
             ["1.0", "31.0", "61.0", "91.0"],
         )
         self.assertTrue(all(row["cpu_raw_c"] == "" for row in failure_rows))
+        self.assertTrue(
+            all(row["nvidia_metrics_stale"] == "" for row in failure_rows)
+        )
         self.assertTrue(all(row["requested_pwm"] == "255" for row in failure_rows))
         failure_statuses = [
             logged
