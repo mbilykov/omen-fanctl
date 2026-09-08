@@ -14,7 +14,13 @@ from dataclasses import replace
 from io import TextIOWrapper
 from pathlib import Path
 
-from .config import ConfigurationError, Settings, percent_to_pwm, pwm_to_percent
+from .config import (
+    ConfigurationError,
+    Settings,
+    hp_level_percent,
+    percent_to_pwm,
+    pwm_to_percent,
+)
 from .controller import Controller, CsvLog, SystemdNotifier
 from .hardware import (
     AUTO_MODE,
@@ -121,12 +127,13 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         type=float,
         help="stop after this many seconds; hot Manual/Max exits fail safe to Max",
     )
-    parser.add_argument(
+    log_group = parser.add_mutually_exclusive_group()
+    log_group.add_argument(
         "--log-file",
         type=Path,
-        help="CSV output path (default: timestamped file in the current directory)",
+        help="CSV output path (default: hp-fan-control.csv in the current directory)",
     )
-    parser.add_argument(
+    log_group.add_argument(
         "--no-log-file", action="store_true", help="disable CSV output"
     )
     parser.add_argument(
@@ -147,14 +154,24 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         help="log and compare acpitz as a diagnostic proxy; never control fans",
     )
     parser.add_argument("--verbose", action="store_true")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.actuator_test is not None and (args.restore_auto or args.failsafe):
+        parser.error("--actuator-test cannot be combined with recovery operations")
+    return args
 
 
 def run_actuator_test(
-    fan: HpFanHwmon, sensors: Sensors, percent: float, duration_s: float
+    fan: HpFanHwmon,
+    sensors: Sensors,
+    percent: float,
+    duration_s: float,
+    minimum_percent: float = hp_level_percent(19),
 ) -> None:
-    if not 35.0 <= percent <= 100.0:
-        raise ConfigurationError("--actuator-test must be between 35 and 100 percent")
+    if not minimum_percent <= percent <= 100.0:
+        raise ConfigurationError(
+            "--actuator-test must be between "
+            f"{minimum_percent:g} and 100 percent"
+        )
     if not 1.0 <= duration_s <= 60.0:
         raise ConfigurationError(
             "actuator-test duration must be between 1 and 60 seconds"
@@ -326,7 +343,13 @@ def main(argv: Iterable[str] | None = None) -> int:
             if not args.apply:
                 raise ConfigurationError("--actuator-test also requires --apply")
             test_duration = 15.0 if args.duration is None else args.duration
-            run_actuator_test(fan, sensors, args.actuator_test, test_duration)
+            run_actuator_test(
+                fan,
+                sensors,
+                args.actuator_test,
+                test_duration,
+                settings.minimum_manual_percent,
+            )
             return 0
         if args.no_log_file:
             log_path = None

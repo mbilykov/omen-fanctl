@@ -84,15 +84,26 @@ class PlatformProfileMonitor:
 
     def __init__(self, path: Path):
         self.path = path
+        handle = None
         try:
-            self.handle = path.open("r", encoding="ascii")
+            handle = path.open("r", encoding="ascii")
+            self.handle = handle
             self.poller = select.poll()
             self.poller.register(
                 self.handle.fileno(), select.POLLPRI | select.POLLERR
             )
             self.current = self._read()
-        except OSError as exc:
-            raise HardwareError(f"cannot monitor platform profile: {exc}") from exc
+        except (OSError, HardwareError) as exc:
+            if handle is not None:
+                try:
+                    handle.close()
+                except OSError:
+                    pass
+            if isinstance(exc, OSError):
+                raise HardwareError(
+                    f"cannot monitor platform profile: {exc}"
+                ) from exc
+            raise
 
     def _read(self) -> str:
         try:

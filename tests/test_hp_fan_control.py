@@ -261,6 +261,10 @@ class ConversionTests(unittest.TestCase):
         for percent in (25, 35, 50, 75, 95):
             self.assertAlmostEqual(pwm_to_percent(percent_to_pwm(percent)), percent, delta=0.2)
 
+    def test_half_pwm_values_round_up(self):
+        self.assertEqual(percent_to_pwm(hp_level_percent(22)), 94)
+        self.assertEqual(percent_to_pwm(hp_level_percent(34)), 145)
+
 
 class LockTests(unittest.TestCase):
     def test_wraps_lock_directory_creation_failure(self):
@@ -674,6 +678,36 @@ class SettingsTests(unittest.TestCase):
             parse_args([]).config,
             Path("/etc/hp-fan-control/fan-control.toml"),
         )
+
+    def test_missing_manual_minimum_uses_factory_level_19(self):
+        source = CONFIG_PATH.read_text(encoding="utf-8")
+        configured_minimum = "minimum_manual_percent = 31.6667\n"
+        self.assertIn(configured_minimum, source)
+        source = source.replace(configured_minimum, "")
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "fan-control.toml"
+            config.write_text(source, encoding="utf-8")
+            settings = Settings.load(config)
+
+        self.assertAlmostEqual(
+            settings.minimum_manual_percent,
+            hp_level_percent(19),
+        )
+
+    def test_rejects_conflicting_operation_and_log_arguments(self):
+        cases = (
+            ["--failsafe", "--actuator-test", "50"],
+            ["--restore-auto", "--actuator-test", "50"],
+            ["--log-file", "telemetry.csv", "--no-log-file"],
+        )
+        for arguments in cases:
+            with (
+                self.subTest(arguments=arguments),
+                patch("sys.stderr"),
+                self.assertRaises(SystemExit) as caught,
+            ):
+                parse_args(arguments)
+            self.assertEqual(caught.exception.code, 2)
 
     def test_loads_factory_preset(self):
         config = CONFIG_PATH
@@ -1752,6 +1786,13 @@ class ControllerLoopTests(unittest.TestCase):
         self.assertEqual(fan.actions[-1][0], "auto")
         self.assertEqual(fan.mode, AUTO_MODE)
 
+    def test_actuator_test_respects_configured_manual_minimum(self):
+        with self.assertRaisesRegex(
+            ConfigurationError,
+            "must be between 40 and 100 percent",
+        ):
+            run_actuator_test(FakeFan(), FakeSensors(50), 39.9, 1, 40.0)
+
     def test_restore_auto_recovery_command(self):
         fan = FakeFan()
         fan.mode = MANUAL_MODE
@@ -1991,6 +2032,23 @@ class PlatformProfileMonitorTests(unittest.TestCase):
                 self.assertEqual(monitor.current, "performance")
                 monitor.close()
         poller.poll.assert_called_once_with(5000)
+
+    def test_initial_read_failure_closes_profile_handle(self):
+        path = Mock()
+        handle = Mock()
+        path.open.return_value = handle
+        with (
+            patch("hp_fan_control.hardware.select.poll"),
+            patch.object(
+                PlatformProfileMonitor,
+                "_read",
+                side_effect=HardwareError("read failed"),
+            ),
+            self.assertRaisesRegex(HardwareError, "read failed"),
+        ):
+            PlatformProfileMonitor(path)
+
+        handle.close.assert_called_once_with()
 
 
 class FakeHwmonTests(unittest.TestCase):

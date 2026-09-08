@@ -78,7 +78,8 @@ def clamp(value: float, minimum: float, maximum: float) -> float:
 
 
 def percent_to_pwm(percent: float) -> int:
-    return round(clamp(percent, 0.0, 100.0) * PWM_MAX / 100.0)
+    scaled = clamp(percent, 0.0, 100.0) * PWM_MAX / 100.0
+    return int(scaled + 0.5)
 
 
 def pwm_to_percent(pwm: int) -> float:
@@ -322,7 +323,7 @@ class Settings:
                     daemon.get("max_fall_percent_per_update", 8.0)
                 ),
                 minimum_manual_percent=float(
-                    daemon.get("minimum_manual_percent", 35.0)
+                    daemon.get("minimum_manual_percent", hp_level_percent(19))
                 ),
                 ewma_rise_alpha=float(ewma.get("rise_alpha", 0.25)),
                 ewma_fall_alpha=float(ewma.get("fall_alpha", 0.10)),

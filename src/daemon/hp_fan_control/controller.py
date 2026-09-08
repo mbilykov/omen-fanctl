@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
+from typing import TextIO
 
 from .config import PWM_MAX, Settings, clamp, percent_to_pwm, pwm_to_percent
 from .hardware import (
@@ -151,12 +152,14 @@ class CsvLog:
             except OSError as exc:
                 self._failure(exc)
 
-    def _open(self) -> None:
-        assert self.path is not None
-        handle = None
+    def _open(self) -> tuple[TextIO, csv.DictWriter]:
+        path = self.path
+        if path is None:
+            raise RuntimeError("cannot open disabled CSV telemetry")
+        handle: TextIO | None = None
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            handle = self.path.open("a", encoding="utf-8", newline="")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handle = path.open("a", encoding="utf-8", newline="")
             writer = csv.DictWriter(handle, fieldnames=self.FIELDS)
             if os.fstat(handle.fileno()).st_size == 0:
                 writer.writeheader()
@@ -170,6 +173,7 @@ class CsvLog:
             raise
         self.handle = handle
         self.writer = writer
+        return handle, writer
 
     def _failure(self, exc: OSError) -> None:
         if not self.failed:
@@ -190,14 +194,14 @@ class CsvLog:
         if self.path is None:
             return
         try:
-            if self.handle is None:
-                self._open()
-            assert self.handle is not None
-            assert self.writer is not None
-            if os.fstat(self.handle.fileno()).st_size == 0:
-                self.writer.writeheader()
-            self.writer.writerow(row)
-            self.handle.flush()
+            handle = self.handle
+            writer = self.writer
+            if handle is None or writer is None:
+                handle, writer = self._open()
+            if os.fstat(handle.fileno()).st_size == 0:
+                writer.writeheader()
+            writer.writerow(row)
+            handle.flush()
         except OSError as exc:
             self._discard_handle()
             self._failure(exc)
