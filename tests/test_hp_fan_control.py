@@ -446,6 +446,40 @@ class ControlDecisionTests(unittest.TestCase):
         self.assertEqual(hottest, 80)
         self.assertAlmostEqual(pwm_to_percent(pwm), hp_level_percent(31), delta=0.3)
 
+    def test_raw_temperature_is_retained_when_linear_curve_decreases(self):
+        curve = Curve((50.0, 100.0), (30.0, 100.0))
+        settings = replace(
+            fixed_policy_settings(),
+            curve=curve,
+            curves=None,
+            decrease_hysteresis_c=3.0,
+        )
+        policy = ControlPolicy(settings)
+        policy.desired_pwm({"cpu": 90.0}, {"cpu": 90.0})
+
+        policy.desired_pwm({"cpu": 60.0}, {"cpu": 80.0})
+
+        self.assertAlmostEqual(
+            policy.sensor_targets["cpu"],
+            curve.evaluate_percent(83.0),
+        )
+
+    def test_linear_curve_hysteresis_never_raises_a_falling_target(self):
+        curve = Curve((50.0, 100.0), (30.0, 100.0))
+        settings = replace(
+            fixed_policy_settings(),
+            curve=curve,
+            curves=None,
+            decrease_hysteresis_c=3.0,
+        )
+        policy = ControlPolicy(settings)
+        policy.desired_pwm({"cpu": 80.0}, {"cpu": 80.0})
+        previous = policy.sensor_targets["cpu"]
+
+        policy.desired_pwm({"cpu": 79.5}, {"cpu": 79.5})
+
+        self.assertEqual(policy.sensor_targets["cpu"], previous)
+
     def test_auto_guard_expires_at_configured_deadline(self):
         controller = Controller(
             fixed_policy_settings(), None, None, False, None, CsvLog(None)

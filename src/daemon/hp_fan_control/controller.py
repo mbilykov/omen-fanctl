@@ -310,9 +310,12 @@ class ControlPolicy:
                 and target < previous
                 and curve.fall_temperatures is None
             ):
-                target = curve.target_percent(
-                    filtered_temperature + self.settings.decrease_hysteresis_c,
+                target = min(
                     previous,
+                    curve.target_percent(
+                        evaluating + self.settings.decrease_hysteresis_c,
+                        previous,
+                    ),
                 )
             self._sensor_targets[name] = target
             # acpitz is an opt-in diagnostic proxy. Preserve its evaluated
