@@ -2509,12 +2509,38 @@ class ControllerLoopTests(unittest.TestCase):
         self.assertEqual(fan.actions, [("auto", None)])
         self.assertEqual(fan.mode, AUTO_MODE)
 
+    def test_restore_auto_rejects_failed_mode_verification(self):
+        fan = FakeFan()
+        fan.mode = MANUAL_MODE
+        fan.restore_auto = Mock()
+
+        with self.assertRaisesRegex(
+            HardwareError,
+            "failed to verify firmware Auto: mode=1",
+        ):
+            restore_firmware_auto(fan)
+
+        fan.restore_auto.assert_called_once_with()
+
     def test_failsafe_recovery_replaces_manual_with_maximum(self):
         fan = FakeFan()
         fan.mode = MANUAL_MODE
         ensure_failsafe_fan_state(fan)
         self.assertEqual(fan.actions, [("maximum", 255)])
         self.assertEqual(fan.mode, MAX_MODE)
+
+    def test_failsafe_recovery_rejects_failed_mode_verification(self):
+        fan = FakeFan()
+        fan.mode = MANUAL_MODE
+        fan.set_maximum = Mock()
+
+        with self.assertRaisesRegex(
+            HardwareError,
+            "failed to establish Auto or maximum fail-safe: mode=1",
+        ):
+            ensure_failsafe_fan_state(fan)
+
+        fan.set_maximum.assert_called_once_with()
 
     def test_failsafe_recovery_preserves_existing_auto(self):
         fan = FakeFan()
@@ -2831,6 +2857,33 @@ class FakeHwmonTests(unittest.TestCase):
                 call(fan.pwm, 100),
                 call(fan.enable, AUTO_MODE),
             ],
+        )
+
+    def test_failed_initial_pwm_write_reports_failed_auto_rollback(self):
+        fan = initialized_fan(self)
+        pwm_failure = HardwareError("PWM write failed")
+        rollback_failure = HardwareError("Auto rollback failed")
+        with (
+            patch(
+                "hp_fan_control.hardware.write_int",
+                side_effect=[None, pwm_failure, rollback_failure],
+            ) as write,
+            patch("hp_fan_control.hardware.LOG.critical") as critical,
+            self.assertRaisesRegex(HardwareError, "PWM write failed"),
+        ):
+            fan.set_manual(100)
+
+        self.assertEqual(
+            write.call_args_list,
+            [
+                call(fan.enable, MANUAL_MODE),
+                call(fan.pwm, 100),
+                call(fan.enable, AUTO_MODE),
+            ],
+        )
+        critical.assert_called_once_with(
+            "initial manual PWM write failed and Auto rollback also failed: %s",
+            rollback_failure,
         )
 
     def test_update_attempts_single_manual_mode_recovery(self):
