@@ -1011,6 +1011,8 @@ class ControlDecisionTests(unittest.TestCase):
 
     def test_ir_below_activation_does_not_block_cpu_triggered_auto_release(self):
         # IR may delay release only after IR itself activated the Manual cycle.
+        # Its first factory step above the Manual floor is 44 C, so IR at 43 C
+        # is inactive while CPU/GPU at 44 C are below fan_stop_temp_c=45 C.
         self.policy.observe_activations(
             TemperatureSnapshot(cpu=60.0, gpu=40.0, acpi=None, ir=43.0)
         )
@@ -2053,8 +2055,8 @@ class ControllerLoopTests(_ControllerTestCase):
     def test_ir_manual_floor_bucket_stays_in_firmware_auto(self):
         settings = Settings.load(CONFIG_PATH)
         sensors = Mock()
-        # IR 43 C is one degree below its 44 C activation point; CPU/GPU at
-        # 44 C are below the 45 C threshold for returning to firmware Auto.
+        # The first factory IR step above the Manual floor is 44 C, so 43 C is
+        # inactive while CPU/GPU at 44 C are below fan_stop_temp_c=45 C.
         sensors.read.return_value = TemperatureSnapshot(
             cpu=44.0, gpu=44.0, acpi=None, ir=43.0
         )
