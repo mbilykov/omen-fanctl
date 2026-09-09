@@ -2150,6 +2150,49 @@ class ControllerLoopTests(unittest.TestCase):
             self.assertEqual(fan.actions[-1][0], "maximum")
             self.assertEqual(fan.mode, MAX_MODE)
 
+    def test_emergency_start_at_zero_is_not_replaced_on_next_sample(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "platform_profile"
+            profile.write_text("performance\n")
+            controller = controller_with_fake_time(
+                settings=Settings.load(CONFIG_PATH),
+                fan=FakeFan(),
+                sensors=FakeSensors(92.0),
+                apply=True,
+                duration_s=2.0,
+                csv_log=CsvLog(None),
+                profile_path=profile,
+            )
+
+            controller.run()
+
+        self.assertEqual(controller.emergency_since, 0.0)
+
+    def test_new_emergency_gets_a_fresh_hold_period_after_recovery(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "platform_profile"
+            profile.write_text("performance\n")
+            settings = settings_with(
+                emergency_hold_s=2.0,
+                ewma_fall_alpha=1.0,
+            )
+            hot = TemperatureSnapshot(92.0, 50.0, None)
+            cool = TemperatureSnapshot(35.0, 35.0, None)
+            controller = controller_with_fake_time(
+                settings=settings,
+                fan=FakeFan(),
+                sensors=SequenceSensors([hot, cool, cool, hot, cool]),
+                apply=True,
+                duration_s=5.0,
+                csv_log=CsvLog(None),
+                profile_path=profile,
+            )
+
+            controller.run()
+
+        self.assertTrue(controller.emergency)
+        self.assertEqual(controller.emergency_since, 3.0)
+
     def test_systemd_watchdog_tracks_controller_progress_and_stop(self):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "platform_profile"

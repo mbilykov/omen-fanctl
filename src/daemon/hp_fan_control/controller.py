@@ -818,7 +818,8 @@ class Controller:
                             )
                         self._maximum()
                         self.emergency = True
-                        self.emergency_since = self.emergency_since or now
+                        if self.emergency_since is None:
+                            self.emergency_since = now
                     else:
                         failure = ("bios-auto", str(exc))
                         if (
@@ -865,7 +866,8 @@ class Controller:
                         )
                     self._maximum()
                     self.emergency = True
-                    self.emergency_since = self.emergency_since or now
+                    if self.emergency_since is None:
+                        self.emergency_since = now
                     state = "emergency"
                     requested = PWM_MAX
                     note = "raw critical threshold"
@@ -879,6 +881,7 @@ class Controller:
                         and held_long_enough
                     ):
                         self.emergency = False
+                        self.emergency_since = None
                         self.manual_active = False
                         self.policy.exit_emergency(snapshot)
                         self._clear_auto_guard()
