@@ -2602,45 +2602,8 @@ class ControllerLoopTests(unittest.TestCase):
             ANY,
         )
 
-    def test_actuator_test_restores_auto(self):
-        fan = FakeFan()
-        with (
-            patch("hp_fan_control.cli.time.monotonic", side_effect=[0.0, 0.0, 2.0]),
-            patch("hp_fan_control.cli.time.sleep"),
-            patch("hp_fan_control.cli.signal.signal"),
-        ):
-            run_actuator_test(fan, FakeSensors(50), 60, 1)
-        self.assertEqual(fan.actions[0][0], "manual")
-        self.assertEqual(fan.actions[-1][0], "auto")
-        self.assertEqual(fan.mode, AUTO_MODE)
 
-    def test_actuator_test_respects_configured_manual_minimum(self):
-        with self.assertRaisesRegex(
-            ConfigurationError,
-            "must be between 40 and 100 percent",
-        ):
-            run_actuator_test(FakeFan(), FakeSensors(50), 39.9, 1, 40.0)
-
-    def test_actuator_test_rejects_invalid_ranges_and_non_auto_mode(self):
-        cases = (
-            (101.0, 15.0, 40.0, "between 40 and 100 percent"),
-            (60.0, 0.9, 40.0, "duration must be between 1 and 60 seconds"),
-            (60.0, 60.1, 40.0, "duration must be between 1 and 60 seconds"),
-        )
-        for percent, duration, minimum, message in cases:
-            with (
-                self.subTest(percent=percent, duration=duration),
-                self.assertRaisesRegex(ConfigurationError, message),
-            ):
-                run_actuator_test(
-                    FakeFan(), FakeSensors(50), percent, duration, minimum
-                )
-
-        fan = FakeFan()
-        fan.mode = MANUAL_MODE
-        with self.assertRaisesRegex(HardwareError, "requires firmware Auto"):
-            run_actuator_test(fan, FakeSensors(50), 60.0, 15.0, 40.0)
-
+class MainStartupTests(unittest.TestCase):
     def test_main_constructs_and_runs_controller_with_requested_log(self):
         settings = fixed_policy_settings()
         lock = Mock()
@@ -2825,6 +2788,125 @@ class ControllerLoopTests(unittest.TestCase):
                 self.assertEqual(result, expected_status)
                 acquire.assert_not_called()
 
+    def test_main_closes_lock_when_hwmon_startup_times_out(self):
+        lock = Mock()
+
+        def fake_read_text(path):
+            if path.name == "board_name":
+                return "8D87"
+            if path.name == "platform_profile_choices":
+                return "balanced performance"
+            raise AssertionError(f"unexpected read: {path}")
+
+        with (
+            patch("hp_fan_control.cli.read_text", side_effect=fake_read_text),
+            patch("hp_fan_control.cli.acquire_lock", return_value=lock),
+            patch(
+                "hp_fan_control.cli.wait_for_hp_fan_hwmon",
+                side_effect=HardwareError("hp hwmon startup timeout"),
+            ),
+        ):
+            self.assertEqual(
+                main(["--config", str(CONFIG_PATH), "--no-log-file"]),
+                1,
+            )
+
+        lock.close.assert_called_once_with()
+
+    def test_main_closes_lock_when_k10temp_startup_times_out(self):
+        lock = Mock()
+        with (
+            patch("hp_fan_control.cli.read_text", return_value="8D87"),
+            patch("hp_fan_control.cli.validate_required_profile"),
+            patch("hp_fan_control.cli.acquire_lock", return_value=lock),
+            patch("hp_fan_control.cli.wait_for_hp_fan_hwmon"),
+            patch(
+                "hp_fan_control.cli.wait_for_temperature_sensors",
+                side_effect=HardwareError("k10temp startup timeout"),
+            ),
+        ):
+            self.assertEqual(
+                main(["--config", str(CONFIG_PATH), "--no-log-file"]),
+                1,
+            )
+
+        lock.close.assert_called_once_with()
+
+    def test_main_preserves_successful_system_exit_without_explicit_code(self):
+        with patch("hp_fan_control.cli.parse_args", side_effect=SystemExit(None)):
+            self.assertEqual(main([]), 0)
+
+    def test_main_returns_retryable_exit_code_for_unavailable_required_profile(self):
+        settings = Settings.load(CONFIG_PATH)
+        settings = settings_with(settings, required_profile="performnce")
+        acquire = Mock()
+
+        def fake_read_text(path):
+            if path.name == "board_name":
+                return "8D87"
+            if path.name == "platform_profile_choices":
+                return "low-power balanced performance"
+            raise AssertionError(f"unexpected read: {path}")
+
+        with (
+            patch("hp_fan_control.cli.Settings.load", return_value=settings),
+            patch("hp_fan_control.cli.read_text", side_effect=fake_read_text),
+            patch(
+                "hp_fan_control.cli.validate_required_profile",
+                side_effect=HardwareError(
+                    "required platform profile startup timeout"
+                ),
+            ),
+            patch("hp_fan_control.cli.acquire_lock", acquire),
+        ):
+            self.assertEqual(
+                main(["--no-log-file"]),
+                1,
+            )
+
+        acquire.assert_not_called()
+
+
+class RecoveryCommandTests(unittest.TestCase):
+    def test_actuator_test_restores_auto(self):
+        fan = FakeFan()
+        with (
+            patch("hp_fan_control.cli.time.monotonic", side_effect=[0.0, 0.0, 2.0]),
+            patch("hp_fan_control.cli.time.sleep"),
+            patch("hp_fan_control.cli.signal.signal"),
+        ):
+            run_actuator_test(fan, FakeSensors(50), 60, 1)
+        self.assertEqual(fan.actions[0][0], "manual")
+        self.assertEqual(fan.actions[-1][0], "auto")
+        self.assertEqual(fan.mode, AUTO_MODE)
+
+    def test_actuator_test_respects_configured_manual_minimum(self):
+        with self.assertRaisesRegex(
+            ConfigurationError,
+            "must be between 40 and 100 percent",
+        ):
+            run_actuator_test(FakeFan(), FakeSensors(50), 39.9, 1, 40.0)
+
+    def test_actuator_test_rejects_invalid_ranges_and_non_auto_mode(self):
+        cases = (
+            (101.0, 15.0, 40.0, "between 40 and 100 percent"),
+            (60.0, 0.9, 40.0, "duration must be between 1 and 60 seconds"),
+            (60.0, 60.1, 40.0, "duration must be between 1 and 60 seconds"),
+        )
+        for percent, duration, minimum, message in cases:
+            with (
+                self.subTest(percent=percent, duration=duration),
+                self.assertRaisesRegex(ConfigurationError, message),
+            ):
+                run_actuator_test(
+                    FakeFan(), FakeSensors(50), percent, duration, minimum
+                )
+
+        fan = FakeFan()
+        fan.mode = MANUAL_MODE
+        with self.assertRaisesRegex(HardwareError, "requires firmware Auto"):
+            run_actuator_test(fan, FakeSensors(50), 60.0, 15.0, 40.0)
+
     def test_restore_auto_recovery_command(self):
         fan = FakeFan()
         fan.mode = MANUAL_MODE
@@ -2918,84 +3000,6 @@ class ControllerLoopTests(unittest.TestCase):
         lock.close.assert_called_once_with()
         self.assertEqual(fan.mode, MAX_MODE)
 
-    def test_main_closes_lock_when_hwmon_startup_times_out(self):
-        lock = Mock()
-
-        def fake_read_text(path):
-            if path.name == "board_name":
-                return "8D87"
-            if path.name == "platform_profile_choices":
-                return "balanced performance"
-            raise AssertionError(f"unexpected read: {path}")
-
-        with (
-            patch("hp_fan_control.cli.read_text", side_effect=fake_read_text),
-            patch("hp_fan_control.cli.acquire_lock", return_value=lock),
-            patch(
-                "hp_fan_control.cli.wait_for_hp_fan_hwmon",
-                side_effect=HardwareError("hp hwmon startup timeout"),
-            ),
-        ):
-            self.assertEqual(
-                main(["--config", str(CONFIG_PATH), "--no-log-file"]),
-                1,
-            )
-
-        lock.close.assert_called_once_with()
-
-    def test_main_closes_lock_when_k10temp_startup_times_out(self):
-        lock = Mock()
-        with (
-            patch("hp_fan_control.cli.read_text", return_value="8D87"),
-            patch("hp_fan_control.cli.validate_required_profile"),
-            patch("hp_fan_control.cli.acquire_lock", return_value=lock),
-            patch("hp_fan_control.cli.wait_for_hp_fan_hwmon"),
-            patch(
-                "hp_fan_control.cli.wait_for_temperature_sensors",
-                side_effect=HardwareError("k10temp startup timeout"),
-            ),
-        ):
-            self.assertEqual(
-                main(["--config", str(CONFIG_PATH), "--no-log-file"]),
-                1,
-            )
-
-        lock.close.assert_called_once_with()
-
-    def test_main_preserves_successful_system_exit_without_explicit_code(self):
-        with patch("hp_fan_control.cli.parse_args", side_effect=SystemExit(None)):
-            self.assertEqual(main([]), 0)
-
-    def test_main_returns_retryable_exit_code_for_unavailable_required_profile(self):
-        settings = Settings.load(CONFIG_PATH)
-        settings = settings_with(settings, required_profile="performnce")
-        acquire = Mock()
-
-        def fake_read_text(path):
-            if path.name == "board_name":
-                return "8D87"
-            if path.name == "platform_profile_choices":
-                return "low-power balanced performance"
-            raise AssertionError(f"unexpected read: {path}")
-
-        with (
-            patch("hp_fan_control.cli.Settings.load", return_value=settings),
-            patch("hp_fan_control.cli.read_text", side_effect=fake_read_text),
-            patch(
-                "hp_fan_control.cli.validate_required_profile",
-                side_effect=HardwareError(
-                    "required platform profile startup timeout"
-                ),
-            ),
-            patch("hp_fan_control.cli.acquire_lock", acquire),
-        ):
-            self.assertEqual(
-                main(["--no-log-file"]),
-                1,
-            )
-
-        acquire.assert_not_called()
-
     def test_failsafe_closes_lock_when_hwmon_initialization_fails(self):
         lock = Mock()
         with (
@@ -3010,7 +3014,6 @@ class ControllerLoopTests(unittest.TestCase):
             self.assertEqual(main(["--failsafe"]), 1)
 
         lock.close.assert_called_once_with()
-
 
 class SystemdNotifierTests(unittest.TestCase):
     def test_abstract_notify_socket_is_supported(self):
