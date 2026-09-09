@@ -113,6 +113,13 @@ class Curve:
                 raise ConfigurationError(
                     "curve low_temperature_c requires stepped = true"
                 )
+            if any(
+                b <= a for a, b in zip(self.pwm_percent, self.pwm_percent[1:])
+            ):
+                raise ConfigurationError(
+                    "curve PWM values must be strictly increasing when "
+                    "low_temperature_c is set"
+                )
             if len(self.fall_temperatures) != len(self.temperatures):
                 raise ConfigurationError(
                     "curve falling-temperature and PWM lists differ in length"
@@ -165,7 +172,20 @@ class Curve:
     def target_percent(
         self, temperature: float, previous_percent: float | None = None
     ) -> float:
-        """Evaluate a curve, retaining a stepped level until its low threshold."""
+        """Evaluate a curve, retaining a stepped level until its low threshold.
+
+        Raises:
+            ValueError: If a stepped curve's previous target is not one of its
+                configured PWM levels.
+        """
+        if (
+            previous_percent is not None
+            and self.stepped
+            and self.fall_temperatures is not None
+            and previous_percent not in self.pwm_percent
+        ):
+            raise ValueError("previous stepped target is not a curve level")
+
         rising_target = self.evaluate_percent(temperature)
         if (
             previous_percent is None
@@ -175,13 +195,7 @@ class Curve:
         ):
             return rising_target
 
-        # Rate limiting can leave the global PWM between factory levels. Start
-        # at the first factory level not lower than the prior sensor target.
-        index = len(self.pwm_percent) - 1
-        for candidate, level in enumerate(self.pwm_percent):
-            if level >= previous_percent:
-                index = candidate
-                break
+        index = self.pwm_percent.index(previous_percent)
         while index > 0 and temperature < self.fall_temperatures[index]:
             index -= 1
         return self.pwm_percent[index]

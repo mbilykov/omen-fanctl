@@ -231,6 +231,18 @@ class CurveTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             Curve((40.0, 50.0), (30.0, 20.0))
 
+    def test_rejects_duplicate_pwm_levels_with_falling_thresholds(self):
+        with self.assertRaisesRegex(
+            ConfigurationError,
+            "PWM values must be strictly increasing when low_temperature_c is set",
+        ):
+            Curve(
+                (50.0, 60.0),
+                (30.0, 30.0),
+                fall_temperatures=(45.0, 55.0),
+                stepped=True,
+            )
+
     def test_rejects_non_finite_curve_values(self):
         cases = (
             (
@@ -266,6 +278,16 @@ class CurveTests(unittest.TestCase):
         self.assertAlmostEqual(
             curve.target_percent(78.9, at_83), hp_level_percent(34)
         )
+
+    def test_factory_step_rejects_previous_value_between_levels(self):
+        curve = hp_factory_performance_curves()["cpu"]
+
+        for temperature in (77.3, 84.0):
+            with self.subTest(temperature=temperature), self.assertRaisesRegex(
+                ValueError,
+                "previous stepped target is not a curve level",
+            ):
+                curve.target_percent(temperature, 66.9)
 
     def test_factory_tables_keep_separate_sensor_thresholds(self):
         curves = hp_factory_performance_curves()
