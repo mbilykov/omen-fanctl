@@ -651,10 +651,11 @@ class ControllerTelemetryTests(_ControllerTestCase):
     def test_controller_holds_pwm_for_stale_amd_sample_without_nvidia(self):
         sensors, _, gpu = initialized_sensors_with_amd_gpu(self)
         clock = FakeClock()
+        sample_interval_s = sensors.settings.sample_interval_s
 
         def make_next_amd_read_fail(timeout_s):
             clock.wait(timeout_s)
-            if clock.now == 1.0:
+            if clock.now == sample_interval_s:
                 (gpu / "temp1_input").write_text("unreadable\n")
 
         root = self.root
@@ -665,7 +666,7 @@ class ControllerTelemetryTests(_ControllerTestCase):
             fan=FakeFan(),
             sensors=sensors,
             apply=True,
-            duration_s=2.0,
+            duration_s=2.0 * sample_interval_s,
             csv_log=csv_log,
             profile_path=self.profile,
             clock=clock,
