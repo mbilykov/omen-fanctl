@@ -2076,7 +2076,7 @@ class ControllerLoopTests(_ControllerTestCase):
 
                 self.assertTrue(controller.emergency)
                 self.assertEqual(fan.actions[0], ("maximum", 255))
-                self.assertNotIn("manual", (action for action, _ in fan.actions))
+                self.assertNotIn("manual", [action for action, _ in fan.actions])
                 self.assertEqual(fan.mode, MAX_MODE)
 
     def test_non_performance_profile_sleeps_without_reading_sensors(self):
