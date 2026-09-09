@@ -58,7 +58,8 @@ fall_alpha = 0.05
 # Optional experimental extension providing Gaming Hub's IR source on 8D87.
 # When the optional procfs interface is absent or invalid, the daemon logs one
 # warning and continues with CPU/GPU. IR joins automatically whenever it is
-# available.
+# available. If IR activated Manual control and then disappears, it blocks an
+# Auto handoff for two missing samples and is released on the third.
 include_hp_wmi_ir = true
 hp_wmi_sensors_path = "/proc/hp_wmi_sensors"
 

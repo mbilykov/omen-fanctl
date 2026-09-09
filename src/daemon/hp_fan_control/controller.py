@@ -28,6 +28,8 @@ from .hardware import (
 
 
 LOG = logging.getLogger("hp-fan-control")
+OPTIONAL_CONTROL_SENSORS = frozenset({"ir"})
+OPTIONAL_SENSOR_MISSING_RELEASE_SAMPLES = 3
 
 
 class SystemdNotifier:
@@ -256,6 +258,9 @@ class ControlPolicy:
             "acpi": None,
         }
         self._activated_sensors: set[str] = set()
+        self._optional_missing_samples = {
+            name: 0 for name in OPTIONAL_CONTROL_SENSORS
+        }
         self._winning_sensor = ""
 
     @property
@@ -275,6 +280,23 @@ class ControlPolicy:
 
     def observe_activations(self, snapshot: TemperatureSnapshot) -> None:
         self._activated_sensors.update(self.activation_sources(snapshot))
+        temperatures = snapshot.control_temperatures()
+        for name in OPTIONAL_CONTROL_SENSORS:
+            if temperatures[name] is not None:
+                self._optional_missing_samples[name] = 0
+                continue
+            if name not in self._activated_sensors:
+                continue
+            self._optional_missing_samples[name] += 1
+            missing_samples = self._optional_missing_samples[name]
+            if missing_samples >= OPTIONAL_SENSOR_MISSING_RELEASE_SAMPLES:
+                self._activated_sensors.discard(name)
+                LOG.info(
+                    "optional control sensor %s unavailable for %d consecutive "
+                    "samples; no longer blocking firmware Auto",
+                    name,
+                    missing_samples,
+                )
 
     def exit_emergency(self, snapshot: TemperatureSnapshot) -> None:
         self._commanded_pwm = None
@@ -285,6 +307,9 @@ class ControlPolicy:
             "acpi": None,
         }
         self._activated_sensors = self.activation_sources(snapshot)
+        self._optional_missing_samples = {
+            name: 0 for name in OPTIONAL_CONTROL_SENSORS
+        }
         self._winning_sensor = ""
 
     def reset(self) -> None:
@@ -296,6 +321,9 @@ class ControlPolicy:
             "acpi": None,
         }
         self._activated_sensors.clear()
+        self._optional_missing_samples = {
+            name: 0 for name in OPTIONAL_CONTROL_SENSORS
+        }
         self._winning_sensor = ""
 
     def activation_threshold(self, sensor: str) -> float:
@@ -313,8 +341,8 @@ class ControlPolicy:
         for name, raw_value in snapshot.control_temperatures().items():
             if raw_value is None:
                 # Do not hand control back to firmware without a cool reading
-                # from a sensor that made this Manual cycle necessary. A
-                # transiently unreadable hot sensor must not look cool.
+                # from a sensor that made this Manual cycle necessary. Optional
+                # sources age out in observe_activations after a bounded outage.
                 if name in self._activated_sensors:
                     return False
                 continue

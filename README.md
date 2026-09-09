@@ -234,7 +234,9 @@ work run only when required.
    (`pwm1_enable=0`, PWM 255).
 6. Manual control returns to firmware Auto when raw CPU and GPU temperatures
    are at or below `fan_stop_temp_c` (45 C by default). If IR activated the
-   cycle, it must also fall to its release threshold, 43 C by default.
+   cycle, it must also fall to its release threshold, 43 C by default. A lost
+   optional IR source blocks this handoff for two missing samples, then stops
+   participating on the third so it cannot trap the daemon in Manual mode.
 7. After selecting Auto, `auto-guard` monitors the complete observed firmware
    fan-stop window for 180 seconds. New heat immediately restores Manual
    control. A profile change during this interval does not cancel protection.

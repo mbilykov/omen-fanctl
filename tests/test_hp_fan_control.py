@@ -50,6 +50,7 @@ from hp_fan_control.controller import (  # noqa: E402
     Controller,
     CsvLog,
     Ewma,
+    OPTIONAL_SENSOR_MISSING_RELEASE_SAMPLES,
     SystemdNotifier,
 )
 from hp_fan_control.hardware import (  # noqa: E402
@@ -565,6 +566,8 @@ class ControllerTelemetryTests(_ControllerTestCase):
             amd_gpu_temperature_stale=True,
         )
         filtered = {"cpu": 69.0, "gpu": 59.0, "ir": 54.0, "acpi": 49.0}
+        # log_sample serializes existing targets; desired_pwm primes them for
+        # this telemetry contract without applying a fan command.
         controller.policy.desired_pwm(
             filtered,
             {"cpu": 70.0, "gpu": 60.0, "ir": 55.0, "acpi": 50.0},
@@ -630,6 +633,8 @@ class ControllerTelemetryTests(_ControllerTestCase):
         )
         snapshot = TemperatureSnapshot(70, 50, None, None)
         filtered = {"cpu": 70.0, "gpu": 50.0, "ir": None, "acpi": None}
+        # Freeze time before next_status_log: an identical note is suppressed,
+        # while a changed note must still be emitted immediately.
         with (
             patch("hp_fan_control.controller.LOG.info") as log_info,
             patch("hp_fan_control.controller.time.monotonic", return_value=1.0),
@@ -1019,12 +1024,55 @@ class ControlDecisionTests(unittest.TestCase):
         self.policy.observe_activations(
             TemperatureSnapshot(cpu=45.0, gpu=75.0, acpi=None)
         )
+        missing = TemperatureSnapshot(cpu=45.0, gpu=None, acpi=None)
 
-        self.assertFalse(
-            self.policy.cool_enough_for_auto(
-                TemperatureSnapshot(cpu=45.0, gpu=None, acpi=None)
-            )
+        for _ in range(OPTIONAL_SENSOR_MISSING_RELEASE_SAMPLES + 1):
+            self.policy.observe_activations(missing)
+            self.assertFalse(self.policy.cool_enough_for_auto(missing))
+
+    def test_missing_activated_ir_stops_blocking_auto_after_bounded_outage(self):
+        self.policy.observe_activations(
+            TemperatureSnapshot(cpu=40.0, gpu=40.0, acpi=None, ir=44.0)
         )
+        missing = TemperatureSnapshot(
+            cpu=40.0,
+            gpu=40.0,
+            acpi=None,
+            ir=None,
+        )
+
+        with patch("hp_fan_control.controller.LOG.info") as info:
+            for _ in range(OPTIONAL_SENSOR_MISSING_RELEASE_SAMPLES - 1):
+                self.policy.observe_activations(missing)
+                self.assertFalse(self.policy.cool_enough_for_auto(missing))
+            self.policy.observe_activations(missing)
+
+        self.assertTrue(self.policy.cool_enough_for_auto(missing))
+        info.assert_called_once_with(
+            "optional control sensor %s unavailable for %d consecutive "
+            "samples; no longer blocking firmware Auto",
+            "ir",
+            OPTIONAL_SENSOR_MISSING_RELEASE_SAMPLES,
+        )
+
+    def test_available_ir_resets_missing_sample_streak(self):
+        active = TemperatureSnapshot(
+            cpu=40.0,
+            gpu=40.0,
+            acpi=None,
+            ir=44.0,
+        )
+        missing = replace(active, ir=None)
+        self.policy.observe_activations(active)
+        self.policy.observe_activations(missing)
+        self.policy.observe_activations(active)
+
+        with patch("hp_fan_control.controller.LOG.info") as info:
+            for _ in range(OPTIONAL_SENSOR_MISSING_RELEASE_SAMPLES - 1):
+                self.policy.observe_activations(missing)
+                self.assertFalse(self.policy.cool_enough_for_auto(missing))
+
+        info.assert_not_called()
 
     def test_missing_never_activated_gpu_does_not_block_auto_release(self):
         self.policy.observe_activations(
@@ -2005,6 +2053,8 @@ class ControllerLoopTests(_ControllerTestCase):
     def test_ir_manual_floor_bucket_stays_in_firmware_auto(self):
         settings = Settings.load(CONFIG_PATH)
         sensors = Mock()
+        # IR 43 C is one degree below its 44 C activation point; CPU/GPU at
+        # 44 C are below the 45 C threshold for returning to firmware Auto.
         sensors.read.return_value = TemperatureSnapshot(
             cpu=44.0, gpu=44.0, acpi=None, ir=43.0
         )
@@ -2236,6 +2286,38 @@ class ControllerLoopTests(_ControllerTestCase):
         self.assertNotIn(("auto", None), fan.actions)
         self.assertEqual(fan.actions[-1], ("maximum", 255))
         self.assertEqual(fan.mode, MAX_MODE)
+
+    def test_missing_optional_ir_eventually_allows_bios_auto(self):
+        settings = Settings.load(CONFIG_PATH)
+        hot_ir = TemperatureSnapshot(40.0, 40.0, None, 44.0)
+        missing_ir = TemperatureSnapshot(40.0, 40.0, None, None)
+        fan = FakeFan()
+        controller = controller_with_fake_time(
+            settings=settings,
+            fan=fan,
+            sensors=SequenceSensors(
+                [hot_ir]
+                + [missing_ir] * OPTIONAL_SENSOR_MISSING_RELEASE_SAMPLES
+            ),
+            apply=True,
+            duration_s=(
+                (OPTIONAL_SENSOR_MISSING_RELEASE_SAMPLES + 1)
+                * settings.sample_interval_s
+            ),
+            csv_log=CsvLog(None),
+            profile_path=self.profile,
+        )
+
+        with patch("hp_fan_control.controller.LOG.info") as info:
+            controller.run()
+
+        self.assertIn(("auto", None), fan.actions)
+        info.assert_any_call(
+            "optional control sensor %s unavailable for %d consecutive "
+            "samples; no longer blocking firmware Auto",
+            "ir",
+            OPTIONAL_SENSOR_MISSING_RELEASE_SAMPLES,
+        )
 
     def test_cool_handoff_monitors_auto_before_sleeping(self):
         self.profile.write_text("balanced\n")
