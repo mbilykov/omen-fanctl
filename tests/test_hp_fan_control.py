@@ -2291,18 +2291,17 @@ class ControllerLoopTests(_ControllerTestCase):
         settings = Settings.load(CONFIG_PATH)
         hot_ir = TemperatureSnapshot(40.0, 40.0, None, 44.0)
         missing_ir = TemperatureSnapshot(40.0, 40.0, None, None)
+        missing_sample_count = OPTIONAL_SENSOR_MISSING_RELEASE_SAMPLES + 5
         fan = FakeFan()
         controller = controller_with_fake_time(
             settings=settings,
             fan=fan,
             sensors=SequenceSensors(
-                [hot_ir]
-                + [missing_ir] * OPTIONAL_SENSOR_MISSING_RELEASE_SAMPLES
+                [hot_ir] + [missing_ir] * missing_sample_count
             ),
             apply=True,
             duration_s=(
-                (OPTIONAL_SENSOR_MISSING_RELEASE_SAMPLES + 1)
-                * settings.sample_interval_s
+                (missing_sample_count + 1) * settings.sample_interval_s
             ),
             csv_log=CsvLog(None),
             profile_path=self.profile,
@@ -2312,6 +2311,8 @@ class ControllerLoopTests(_ControllerTestCase):
             controller.run()
 
         self.assertIn(("auto", None), fan.actions)
+        self.assertEqual(fan.actions.count(("auto", None)), 1)
+        self.assertFalse(controller.manual_active)
         info.assert_any_call(
             "optional control sensor %s unavailable for %d consecutive "
             "samples; no longer blocking firmware Auto",
