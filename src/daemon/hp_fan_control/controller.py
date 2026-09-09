@@ -117,6 +117,7 @@ class CsvLog:
         "state",
         "cpu_raw_c",
         "gpu_raw_c",
+        "amd_gpu_temperature_stale",
         "nvidia_power_draw_w",
         "nvidia_power_limit_w",
         "nvidia_metrics_stale",
@@ -311,6 +312,11 @@ class ControlPolicy:
     def cool_enough_for_auto(self, snapshot: TemperatureSnapshot) -> bool:
         for name, raw_value in snapshot.control_temperatures().items():
             if raw_value is None:
+                # Do not hand control back to firmware without a cool reading
+                # from a sensor that made this Manual cycle necessary. A
+                # transiently unreadable hot sensor must not look cool.
+                if name in self._activated_sensors:
+                    return False
                 continue
             # IR uses much lower curve temperatures than CPU/GPU. Do not
             # let a cool sensor that never activated control prevent a return
@@ -668,6 +674,9 @@ class Controller:
         nvidia_metrics_stale = (
             None if snapshot is None else snapshot.nvidia_metrics_stale
         )
+        amd_gpu_temperature_stale = (
+            None if snapshot is None else snapshot.amd_gpu_temperature_stale
+        )
         winning_sensor = "" if snapshot is None else self.policy.winning_sensor
         sensor_targets = (
             {name: None for name in self.filters}
@@ -708,6 +717,11 @@ class Controller:
                 "state": state,
                 "cpu_raw_c": fmt(raw["cpu"]),
                 "gpu_raw_c": fmt(raw["gpu"]),
+                "amd_gpu_temperature_stale": (
+                    ""
+                    if amd_gpu_temperature_stale is None
+                    else str(amd_gpu_temperature_stale).lower()
+                ),
                 "nvidia_power_draw_w": fmt(nvidia_power_draw_w),
                 "nvidia_power_limit_w": fmt(nvidia_power_limit_w),
                 "nvidia_metrics_stale": (

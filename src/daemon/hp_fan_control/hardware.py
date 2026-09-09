@@ -22,6 +22,7 @@ PLATFORM_PROFILE_CHOICES_PATH = Path(
     "/sys/firmware/acpi/platform_profile_choices"
 )
 CONTROL_SENSORS = ("cpu", "gpu", "ir")
+AMD_GPU_READ_FAILURE_THRESHOLD = 3
 PLATFORM_PROFILE_STARTUP_TIMEOUT_S = 20.0
 PLATFORM_PROFILE_STARTUP_RETRY_S = 1.0
 HP_HWMON_STARTUP_TIMEOUT_S = 20.0
@@ -64,7 +65,11 @@ class SourceHealth:
         self.ever_available = True
         self.consecutive_failures = 0
 
-    def unavailable(self, reason: object) -> None:
+    def unavailable(
+        self,
+        reason: object,
+        failure_threshold: int | None = None,
+    ) -> None:
         self.consecutive_failures += 1
         if not self.failed:
             LOG.warning("%s unavailable: %s", self.name, reason)
@@ -74,9 +79,17 @@ class SourceHealth:
             self.policy is FailurePolicy.REQUIRED_AFTER_AVAILABLE
             and self.ever_available
         )
+        threshold = (
+            self.failure_threshold
+            if failure_threshold is None
+            else failure_threshold
+        )
+        # An override changes the severity of this failure, not the identity of
+        # the failure streak. A fail-fast cause must therefore take effect even
+        # if earlier failures in the streak used a debounce threshold.
         if (
             (required or required_after_loss)
-            and self.consecutive_failures >= self.failure_threshold
+            and self.consecutive_failures >= threshold
         ):
             raise HardwareError(f"{self.name} unavailable: {reason}")
 
@@ -277,6 +290,7 @@ class TemperatureSnapshot:
     nvidia_power_draw_w: float | None = None
     nvidia_power_limit_w: float | None = None
     nvidia_metrics_stale: bool | None = None
+    amd_gpu_temperature_stale: bool | None = None
 
     def control_temperatures(self) -> dict[str, float | None]:
         return {name: getattr(self, name) for name in CONTROL_SENSORS}
@@ -327,6 +341,8 @@ class Sensors:
             "AMD GPU temperature source",
             FailurePolicy.REQUIRED_AFTER_AVAILABLE,
         )
+        self.last_amd_gpu_temperature: float | None = None
+        self.amd_gpu_temperature_stale: bool | None = None
         self.nvidia_gpu_health = SourceHealth(
             "NVIDIA GPU temperature source",
             FailurePolicy.REQUIRED_AFTER_AVAILABLE,
@@ -358,6 +374,7 @@ class Sensors:
 
     def _amd_gpu_temperature(self) -> float | None:
         if not self.settings.include_amd_gpu:
+            self.amd_gpu_temperature_stale = None
             return None
         values: list[float] = []
         for directory in self.amd_gpu_hwmons:
@@ -369,12 +386,25 @@ class Sensors:
             for directory in self.amd_gpu_hwmons:
                 values.extend(read_hwmon_temperatures(directory))
         if not values:
-            self.amd_gpu_health.unavailable(
-                "no valid amdgpu temperature was found during rediscovery"
-            )
+            if self.amd_gpu_hwmons:
+                self.amd_gpu_health.unavailable(
+                    "amdgpu hwmon is present but its temperature is unreadable",
+                    failure_threshold=AMD_GPU_READ_FAILURE_THRESHOLD,
+                )
+                self.amd_gpu_temperature_stale = (
+                    True if self.last_amd_gpu_temperature is not None else None
+                )
+                return self.last_amd_gpu_temperature
+            else:
+                self.amd_gpu_temperature_stale = None
+                self.amd_gpu_health.unavailable(
+                    "no amdgpu hwmon device was found during rediscovery"
+                )
             return None
         self.amd_gpu_health.available()
-        return max(values)
+        self.last_amd_gpu_temperature = max(values)
+        self.amd_gpu_temperature_stale = False
+        return self.last_amd_gpu_temperature
 
     def _nvidia_failure(
         self, reason: object
@@ -507,6 +537,7 @@ class Sensors:
             nvidia_power_draw_w=power_draw,
             nvidia_power_limit_w=power_limit,
             nvidia_metrics_stale=nvidia_metrics_stale,
+            amd_gpu_temperature_stale=self.amd_gpu_temperature_stale,
         )
 
 

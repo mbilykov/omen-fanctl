@@ -68,10 +68,12 @@ hp_wmi_sensors_path = "/proc/hp_wmi_sensors"
 include_acpi = false
 include_amd_gpu = true
 # Uses nvidia-smi when present and retries discovery every 30 seconds. A
-# configured source logs loss and recovery; three consecutive failures of any
-# previously available NVIDIA source fail safe, using the last reading until
-# then and marking those fallback metrics as stale in CSV. Disappearance of a
-# previously available AMD GPU fails safe immediately.
+# configured source logs loss and recovery. A previously available NVIDIA
+# source reuses its last metrics with nvidia_metrics_stale=true for two failed
+# reads, then fails safe on the third. Physical disappearance of a previously
+# available AMD GPU fails safe immediately. If its amdgpu hwmon remains present
+# but unreadable, the last AMD temperature is reused with
+# amd_gpu_temperature_stale=true for two failed reads; the third fails safe.
 include_nvidia_gpu = true
 
 [curves]

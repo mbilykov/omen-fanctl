@@ -62,6 +62,7 @@ from hp_fan_control.hardware import (  # noqa: E402
     HpFanHwmon,
     PlatformProfileMonitor,
     Sensors,
+    SourceHealth,
     TemperatureSnapshot,
     read_hp_wmi_ir_temperature,
     validate_required_profile,
@@ -454,7 +455,10 @@ class CsvLogTests(unittest.TestCase):
             old_fields = tuple(
                 field
                 for field in CsvLog.FIELDS
-                if field != "nvidia_metrics_stale"
+                if field not in {
+                    "amd_gpu_temperature_stale",
+                    "nvidia_metrics_stale",
+                }
             )
             old_contents = f"{','.join(old_fields)}\nlegacy-row\n"
             path.write_text(old_contents, encoding="utf-8")
@@ -707,6 +711,28 @@ class ControlDecisionTests(unittest.TestCase):
         self.assertTrue(
             self.policy.cool_enough_for_auto(
                 TemperatureSnapshot(cpu=44.0, gpu=44.0, acpi=None, ir=43.0),
+            )
+        )
+
+    def test_missing_activated_gpu_blocks_auto_release(self):
+        self.policy.observe_activations(
+            TemperatureSnapshot(cpu=45.0, gpu=75.0, acpi=None)
+        )
+
+        self.assertFalse(
+            self.policy.cool_enough_for_auto(
+                TemperatureSnapshot(cpu=45.0, gpu=None, acpi=None)
+            )
+        )
+
+    def test_missing_never_activated_gpu_does_not_block_auto_release(self):
+        self.policy.observe_activations(
+            TemperatureSnapshot(cpu=60.0, gpu=None, acpi=None)
+        )
+
+        self.assertTrue(
+            self.policy.cool_enough_for_auto(
+                TemperatureSnapshot(cpu=45.0, gpu=None, acpi=None)
             )
         )
 
@@ -1080,6 +1106,26 @@ pwm_percent = [30, 40]
                     settings.validate()
 
 
+class SourceHealthTests(unittest.TestCase):
+    def test_fail_fast_cause_uses_existing_debounced_failure_streak(self):
+        health = SourceHealth(
+            "AMD GPU temperature source",
+            FailurePolicy.REQUIRED_AFTER_AVAILABLE,
+        )
+        health.available()
+
+        health.unavailable("temperature unreadable", failure_threshold=3)
+        self.assertEqual(health.consecutive_failures, 1)
+
+        with self.assertRaisesRegex(
+            HardwareError,
+            "AMD GPU temperature source unavailable: device disappeared",
+        ):
+            health.unavailable("device disappeared", failure_threshold=1)
+
+        self.assertEqual(health.consecutive_failures, 2)
+
+
 class SensorMetricTests(unittest.TestCase):
     def test_rediscovers_cpu_after_hwmon_index_changes(self):
         sensors = initialized_sensors(self)
@@ -1160,11 +1206,148 @@ class SensorMetricTests(unittest.TestCase):
         warning.assert_called_once_with(
             "%s unavailable: %s",
             "AMD GPU temperature source",
-            "no valid amdgpu temperature was found during rediscovery",
+            "no amdgpu hwmon device was found during rediscovery",
         )
         info.assert_called_once_with(
             "%s recovered", "AMD GPU temperature source"
         )
+
+    def test_single_unreadable_amd_gpu_sample_does_not_fail_safe(self):
+        sensors, _, _ = initialized_sensors_with_amd_gpu(self)
+        self.assertEqual(sensors.read().gpu, 85.0)
+
+        with (
+            patch.object(sensors, "_cpu_temperature", return_value=50.0),
+            patch(
+                "hp_fan_control.hardware.read_hwmon_temperatures",
+                return_value=[],
+            ),
+        ):
+            stale = sensors.read()
+
+        self.assertEqual(stale.gpu, 85.0)
+        self.assertTrue(stale.amd_gpu_temperature_stale)
+        self.assertEqual(sensors.amd_gpu_health.consecutive_failures, 1)
+        self.assertEqual(sensors._amd_gpu_temperature(), 85.0)
+        self.assertEqual(sensors.amd_gpu_health.consecutive_failures, 0)
+        self.assertFalse(sensors.amd_gpu_temperature_stale)
+
+    def test_three_unreadable_amd_gpu_samples_fail_safe(self):
+        sensors, _, _ = initialized_sensors_with_amd_gpu(self)
+        self.assertEqual(sensors._amd_gpu_temperature(), 85.0)
+
+        with patch(
+            "hp_fan_control.hardware.read_hwmon_temperatures",
+            return_value=[],
+        ):
+            self.assertEqual(sensors._amd_gpu_temperature(), 85.0)
+            self.assertEqual(sensors._amd_gpu_temperature(), 85.0)
+            with self.assertRaisesRegex(
+                HardwareError,
+                "AMD GPU temperature source unavailable",
+            ):
+                sensors._amd_gpu_temperature()
+
+    def test_unreadable_amd_gpu_then_disappearance_fails_safe(self):
+        sensors, root, gpu = initialized_sensors_with_amd_gpu(self)
+        self.assertEqual(sensors.read().gpu, 85.0)
+
+        with (
+            patch.object(sensors, "_cpu_temperature", return_value=50.0),
+            patch(
+                "hp_fan_control.hardware.read_hwmon_temperatures",
+                return_value=[],
+            ),
+        ):
+            stale = sensors.read()
+
+        gpu.rename(root / "offline-amdgpu")
+        with self.assertRaisesRegex(
+            HardwareError,
+            "no amdgpu hwmon device was found during rediscovery",
+        ):
+            sensors.read()
+
+        self.assertEqual(stale.gpu, 85.0)
+        self.assertTrue(stale.amd_gpu_temperature_stale)
+        self.assertEqual(sensors.amd_gpu_health.consecutive_failures, 2)
+
+    def test_amd_failure_preserves_ewma_and_target_pwm_without_nvidia(self):
+        sensors, _, gpu = initialized_sensors_with_amd_gpu(self)
+        controller = Controller(
+            settings=sensors.settings,
+            fan=FakeFan(),
+            sensors=sensors,
+            apply=False,
+            duration_s=None,
+            csv_log=CsvLog(None),
+        )
+        hot = sensors.read()
+        hot_filtered = controller._filtered(hot)
+        hot_pwm, _ = controller.policy.desired_pwm(
+            hot_filtered,
+            {**hot.control_temperatures(), "acpi": hot.acpi},
+        )
+
+        with (
+            patch.object(sensors, "_cpu_temperature", return_value=50.0),
+            patch(
+                "hp_fan_control.hardware.read_hwmon_temperatures",
+                return_value=[],
+            ),
+        ):
+            stale = sensors.read()
+        stale_filtered = controller._filtered(stale)
+        stale_pwm, _ = controller.policy.desired_pwm(
+            stale_filtered,
+            {**stale.control_temperatures(), "acpi": stale.acpi},
+        )
+
+        (gpu / "temp1_input").write_text("40000\n")
+        recovered = controller._filtered(sensors.read())
+        expected = (
+            85.0 * (1.0 - sensors.settings.ewma_fall_alpha)
+            + 40.0 * sensors.settings.ewma_fall_alpha
+        )
+
+        self.assertTrue(stale.amd_gpu_temperature_stale)
+        self.assertIsNone(stale.nvidia_metrics_stale)
+        self.assertEqual(stale_filtered["gpu"], 85.0)
+        self.assertEqual(stale_pwm, hot_pwm)
+        self.assertAlmostEqual(recovered["gpu"], expected)
+        self.assertGreater(recovered["gpu"], 40.0)
+
+    def test_unreadable_amd_gpu_keeps_current_nvidia_sample(self):
+        sensors, _, _ = initialized_sensors_with_amd_gpu(self)
+        self.assertEqual(sensors._amd_gpu_temperature(), 85.0)
+        sensors.settings = settings_with(
+            sensors.settings,
+            include_nvidia_gpu=True,
+        )
+        sensors.nvidia_smi = "/usr/bin/nvidia-smi"
+        nvidia = SimpleNamespace(
+            returncode=0,
+            stdout="61, 80.0, 120.0\n",
+            stderr="",
+        )
+
+        with (
+            patch.object(sensors, "_cpu_temperature", return_value=50.0),
+            patch(
+                "hp_fan_control.hardware.subprocess.run",
+                return_value=nvidia,
+            ),
+            patch(
+                "hp_fan_control.hardware.read_hwmon_temperatures",
+                return_value=[],
+            ),
+        ):
+            snapshot = sensors.read()
+
+        self.assertEqual(snapshot.gpu, 85.0)
+        self.assertTrue(snapshot.amd_gpu_temperature_stale)
+        self.assertEqual(snapshot.nvidia_power_draw_w, 80.0)
+        self.assertFalse(snapshot.nvidia_metrics_stale)
 
     def test_runtime_nvidia_loss_fails_safe_and_logs_once(self):
         with patch(
@@ -1535,6 +1718,7 @@ class ControllerLoopTests(unittest.TestCase):
             nvidia_power_draw_w=100.0,
             nvidia_power_limit_w=150.0,
             nvidia_metrics_stale=True,
+            amd_gpu_temperature_stale=True,
         )
         filtered = {"cpu": 69.0, "gpu": 59.0, "ir": 54.0, "acpi": 49.0}
         controller.policy.desired_pwm(
@@ -1561,6 +1745,7 @@ class ControllerLoopTests(unittest.TestCase):
             f"{hp_level_percent(23):.1f}",
         )
         self.assertEqual(row["nvidia_metrics_stale"], "true")
+        self.assertEqual(row["amd_gpu_temperature_stale"], "true")
 
         csv_log.reset_mock()
         controller.log_sample(
@@ -1572,6 +1757,7 @@ class ControllerLoopTests(unittest.TestCase):
                 nvidia_power_draw_w=None,
                 nvidia_power_limit_w=None,
                 nvidia_metrics_stale=None,
+                amd_gpu_temperature_stale=None,
             ),
             filtered,
             70.0,
@@ -1580,6 +1766,10 @@ class ControllerLoopTests(unittest.TestCase):
         )
         self.assertEqual(
             csv_log.write.call_args.args[0]["nvidia_metrics_stale"],
+            "",
+        )
+        self.assertEqual(
+            csv_log.write.call_args.args[0]["amd_gpu_temperature_stale"],
             "",
         )
 
@@ -1845,6 +2035,72 @@ class ControllerLoopTests(unittest.TestCase):
         self.assertEqual(fan.actions[-1], ("maximum", 255))
         self.assertEqual(fan.mode, MAX_MODE)
 
+    def test_missing_hot_gpu_sample_does_not_restore_bios_auto(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "platform_profile"
+            profile.write_text("performance\n")
+            fan = FakeFan()
+            sensors = SequenceSensors(
+                [
+                    TemperatureSnapshot(45.0, 75.0, None),
+                    TemperatureSnapshot(45.0, None, None),
+                    TemperatureSnapshot(45.0, 75.0, None),
+                ]
+            )
+            controller = controller_with_fake_time(
+                settings=Settings.load(CONFIG_PATH),
+                fan=fan,
+                sensors=sensors,
+                apply=True,
+                duration_s=3.0,
+                csv_log=CsvLog(None),
+                profile_path=profile,
+            )
+
+            controller.run()
+
+        self.assertNotIn(("auto", None), fan.actions)
+        self.assertEqual(fan.actions[-1], ("maximum", 255))
+        self.assertEqual(fan.mode, MAX_MODE)
+
+    def test_controller_holds_pwm_for_stale_amd_sample_without_nvidia(self):
+        sensors, _, gpu = initialized_sensors_with_amd_gpu(self)
+        clock = FakeClock()
+
+        def make_next_amd_read_fail(timeout_s):
+            clock.wait(timeout_s)
+            if clock.now == 1.0:
+                (gpu / "temp1_input").write_text("unreadable\n")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "platform_profile"
+            profile.write_text("performance\n")
+            csv_log = Mock(spec=CsvLog)
+            controller = Controller(
+                settings=sensors.settings,
+                fan=FakeFan(),
+                sensors=sensors,
+                apply=True,
+                duration_s=2.0,
+                csv_log=csv_log,
+                profile_path=profile,
+                clock=clock,
+                wait=make_next_amd_read_fail,
+            )
+
+            controller.run()
+
+        rows = [logged.args[0] for logged in csv_log.write.call_args_list]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([row["gpu_raw_c"] for row in rows], ["85.0", "85.0"])
+        self.assertEqual(
+            [row["amd_gpu_temperature_stale"] for row in rows],
+            ["false", "true"],
+        )
+        self.assertEqual(rows[1]["requested_pwm"], rows[0]["requested_pwm"])
+        self.assertEqual(rows[1]["gpu_ewma_c"], rows[0]["gpu_ewma_c"])
+        self.assertEqual(rows[1]["nvidia_metrics_stale"], "")
+
     def test_cool_handoff_monitors_auto_before_sleeping(self):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "platform_profile"
@@ -2042,6 +2298,9 @@ class ControllerLoopTests(unittest.TestCase):
         self.assertTrue(all(row["cpu_raw_c"] == "" for row in failure_rows))
         self.assertTrue(
             all(row["nvidia_metrics_stale"] == "" for row in failure_rows)
+        )
+        self.assertTrue(
+            all(row["amd_gpu_temperature_stale"] == "" for row in failure_rows)
         )
         self.assertTrue(all(row["requested_pwm"] == "255" for row in failure_rows))
         failure_statuses = [
