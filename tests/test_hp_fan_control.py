@@ -55,8 +55,11 @@ from hp_fan_control.controller import (  # noqa: E402
 from hp_fan_control.hardware import (  # noqa: E402
     AUTO_MODE,
     FailurePolicy,
+    HP_HWMON_STARTUP_TIMEOUT_S,
+    K10TEMP_STARTUP_TIMEOUT_S,
     MANUAL_MODE,
     MAX_MODE,
+    PLATFORM_PROFILE_STARTUP_TIMEOUT_S,
     HardwareError,
     HardwareNotReadyError,
     HpFanHwmon,
@@ -125,6 +128,17 @@ class FakeClock:
 def controller_with_fake_time(**kwargs):
     clock = FakeClock()
     return Controller(clock=clock, wait=clock.wait, **kwargs)
+
+
+def parse_systemd_settings(unit: str) -> dict[str, str]:
+    settings = {}
+    for raw_line in unit.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith(("#", ";")) or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        settings[key] = value
+    return settings
 
 
 def initialized_sensors(test, **changes):
@@ -1196,6 +1210,8 @@ class SensorMetricTests(unittest.TestCase):
                 HardwareError, "AMD GPU temperature source unavailable"
             ):
                 sensors.read()
+            self.assertIsNone(sensors.last_amd_gpu_temperature)
+            self.assertIsNone(sensors.amd_gpu_temperature_stale)
             with self.assertRaises(HardwareError):
                 sensors.read()
 
@@ -2073,9 +2089,11 @@ class ControllerLoopTests(unittest.TestCase):
                 (gpu / "temp1_input").write_text("unreadable\n")
 
         with tempfile.TemporaryDirectory() as temporary:
-            profile = Path(temporary) / "platform_profile"
+            root = Path(temporary)
+            profile = root / "platform_profile"
             profile.write_text("performance\n")
-            csv_log = Mock(spec=CsvLog)
+            csv_path = root / "telemetry.csv"
+            csv_log = CsvLog(csv_path)
             controller = Controller(
                 settings=sensors.settings,
                 fan=FakeFan(),
@@ -2089,8 +2107,11 @@ class ControllerLoopTests(unittest.TestCase):
             )
 
             controller.run()
+            csv_log.close()
 
-        rows = [logged.args[0] for logged in csv_log.write.call_args_list]
+            with csv_path.open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+
         self.assertEqual(len(rows), 2)
         self.assertEqual([row["gpu_raw_c"] for row in rows], ["85.0", "85.0"])
         self.assertEqual(
@@ -3512,17 +3533,31 @@ class EntryPointTests(unittest.TestCase):
 
 
 class SystemdUnitTests(unittest.TestCase):
+    def test_unit_setting_parser_ignores_comments_with_equals(self):
+        unit = "# Note: TimeoutStartSec=1s\nTimeoutStartSec=90s\n"
+
+        self.assertEqual(
+            parse_systemd_settings(unit),
+            {"TimeoutStartSec": "90s"},
+        )
+
     def test_start_timeout_covers_sequential_hwmon_readiness_windows(self):
         service = SERVICE_PATH.read_text(encoding="utf-8")
-        self.assertIn("TimeoutStartSec=90\n", service)
+        settings = parse_systemd_settings(service)
+        timeout_start_s = float(settings["TimeoutStartSec"].removesuffix("s"))
+        sequential_readiness_s = sum(
+            (
+                PLATFORM_PROFILE_STARTUP_TIMEOUT_S,
+                HP_HWMON_STARTUP_TIMEOUT_S,
+                K10TEMP_STARTUP_TIMEOUT_S,
+            )
+        )
+
+        self.assertGreater(timeout_start_s, sequential_readiness_s)
 
     def test_restart_policy_retries_runtime_but_not_configuration_failures(self):
         service = SERVICE_PATH.read_text(encoding="utf-8")
-        settings = dict(
-            line.split("=", 1)
-            for line in service.splitlines()
-            if "=" in line
-        )
+        settings = parse_systemd_settings(service)
 
         self.assertIn("Restart=always\n", service)
         self.assertIn(

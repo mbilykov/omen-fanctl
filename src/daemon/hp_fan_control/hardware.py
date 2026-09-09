@@ -397,6 +397,7 @@ class Sensors:
                 return self.last_amd_gpu_temperature
             else:
                 self.amd_gpu_temperature_stale = None
+                self.last_amd_gpu_temperature = None
                 self.amd_gpu_health.unavailable(
                     "no amdgpu hwmon device was found during rediscovery"
                 )
