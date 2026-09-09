@@ -9,8 +9,8 @@ provide sufficient cooling under the Performance platform profile.
 - [Requirements and compatibility](#requirements-and-compatibility)
 - [Tested configuration](#tested-configuration)
 - [Installation](#installation)
-- [Custom per-sensor curves](#custom-per-sensor-curves)
 - [Uninstallation](#uninstallation)
+- [Custom per-sensor curves](#custom-per-sensor-curves)
 - [Logging](#logging)
 - [Control logic](#control-logic)
 - [Unit tests](#unit-tests)
@@ -159,6 +159,24 @@ Show the current service status:
 systemctl status hp-fan-control.service
 ```
 
+## Uninstallation
+
+Remove the service while preserving its configuration and telemetry:
+
+```bash
+sudo ./uninstall.sh
+```
+
+Also remove `/etc/hp-fan-control/fan-control.toml`:
+
+```bash
+sudo ./uninstall.sh --purge-config
+```
+
+The uninstaller refuses to stop the service during `auto-guard` or while the
+fan interface is outside firmware Auto mode. Wait for `state=sleeping` before
+retrying. Telemetry under `/var/log/hp-fan-control/` is always preserved.
+
 ## Custom per-sensor curves
 
 The supplied configuration selects the extracted factory tables with
@@ -198,24 +216,6 @@ only for a stepped curve; they must be strictly increasing, each must be below
 its corresponding rising threshold, and the associated fan output values must
 be strictly increasing rather than merely non-decreasing. This last rule keeps
 each retained hysteresis level unambiguous.
-
-## Uninstallation
-
-Remove the service while preserving its configuration and telemetry:
-
-```bash
-sudo ./uninstall.sh
-```
-
-Also remove `/etc/hp-fan-control/fan-control.toml`:
-
-```bash
-sudo ./uninstall.sh --purge-config
-```
-
-The uninstaller refuses to stop the service during `auto-guard` or while the
-fan interface is outside firmware Auto mode. Wait for `state=sleeping` before
-retrying. Telemetry under `/var/log/hp-fan-control/` is always preserved.
 
 ## Logging
 
