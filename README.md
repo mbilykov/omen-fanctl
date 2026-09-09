@@ -9,6 +9,7 @@ provide sufficient cooling under the Performance platform profile.
 - [Requirements and compatibility](#requirements-and-compatibility)
 - [Tested configuration](#tested-configuration)
 - [Installation](#installation)
+- [Custom per-sensor curves](#custom-per-sensor-curves)
 - [Uninstallation](#uninstallation)
 - [Logging](#logging)
 - [Control logic](#control-logic)
@@ -157,6 +158,46 @@ Show the current service status:
 ```bash
 systemctl status hp-fan-control.service
 ```
+
+## Custom per-sensor curves
+
+The supplied configuration selects the extracted factory tables with
+`curves.preset`. To define custom tables, remove `preset` and add a
+`[curves.cpu]` table. CPU is the required base curve; omitted `gpu`, `ir`, and
+`acpi` tables fall back to it.
+
+```toml
+[curves.cpu]
+high_temperature_c = [60, 70, 80]
+low_temperature_c = [56, 66, 76]
+fan_level = [19, 31, 47]
+stepped = true
+
+[curves.gpu]
+high_temperature_c = [57, 67, 77]
+low_temperature_c = [53, 63, 73]
+fan_level = [19, 31, 47]
+stepped = true
+
+[curves.ir]
+high_temperature_c = [42, 54, 64]
+pwm_percent = [31.7, 46.7, 78.3]
+stepped = true
+```
+
+`high_temperature_c` contains the rising thresholds; the legacy name
+`temperature_c` is accepted as an alias. Fan output may be specified as HP
+`fan_level` values or as `pwm_percent`. Each curve needs at least two points,
+all arrays for that curve must have the same length, temperature thresholds
+must be strictly increasing, and output values must be non-decreasing.
+
+Set `stepped = false` (the default) for linear interpolation between points.
+Set `stepped = true` for discrete output levels. Optional
+`low_temperature_c` thresholds add per-step falling hysteresis and are valid
+only for a stepped curve; they must be strictly increasing, each must be below
+its corresponding rising threshold, and the associated fan output values must
+be strictly increasing rather than merely non-decreasing. This last rule keeps
+each retained hysteresis level unambiguous.
 
 ## Uninstallation
 
