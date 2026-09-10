@@ -14,7 +14,7 @@ import time
 from .config import PWM_MAX, Settings, clamp
 
 
-LOG = logging.getLogger("hp-fan-control")
+LOG = logging.getLogger("omen-fanctl")
 AUTO_MODE = 2
 MANUAL_MODE = 1
 MAX_MODE = 0

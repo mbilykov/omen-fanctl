@@ -1,4 +1,4 @@
-/var/log/hp-fan-control/hp-fan-control.csv {
+/var/log/omen-fanctl/omen-fanctl.csv {
     daily
     rotate 14
     compress

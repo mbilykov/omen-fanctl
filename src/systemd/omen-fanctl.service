@@ -1,6 +1,6 @@
 [Unit]
-Description=Standalone HP 8D87 automatic fan controller
-Documentation=file:/usr/local/share/doc/hp-fan-control/README.md
+Description=omen-fanctl automatic fan controller for HP board 8D87
+Documentation=file:/usr/local/share/doc/omen-fanctl/README.md
 ConditionPathExists=/sys/firmware/acpi/platform_profile
 StartLimitIntervalSec=60
 StartLimitBurst=10
@@ -8,8 +8,8 @@ StartLimitBurst=10
 [Service]
 Type=notify
 NotifyAccess=main
-ExecStart=/usr/local/lib/hp-fan-control/hp_fan_control.py --apply --config /etc/hp-fan-control/fan-control.toml --status-interval 30
-ExecStopPost=/usr/local/lib/hp-fan-control/hp_fan_control.py --failsafe
+ExecStart=/usr/local/lib/omen-fanctl/omen_fanctl.py --apply --config /etc/omen-fanctl/omen-fanctl.toml --status-interval 30
+ExecStopPost=/usr/local/lib/omen-fanctl/omen_fanctl.py --failsafe
 Restart=always
 RestartPreventExitStatus=78
 RestartSec=10
@@ -20,11 +20,11 @@ TimeoutStartSec=90
 TimeoutStopSec=15
 KillSignal=SIGTERM
 
-RuntimeDirectory=hp-fan-control
+RuntimeDirectory=omen-fanctl
 RuntimeDirectoryMode=0750
-LogsDirectory=hp-fan-control
+LogsDirectory=omen-fanctl
 LogsDirectoryMode=0750
-WorkingDirectory=/var/log/hp-fan-control
+WorkingDirectory=/var/log/omen-fanctl
 UMask=0027
 
 NoNewPrivileges=yes

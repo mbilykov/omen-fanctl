@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-INSTALL_DIR=/usr/local/lib/hp-fan-control
-DOC_DIR=/usr/local/share/doc/hp-fan-control
-CONFIG_DIR=/etc/hp-fan-control
-UNIT_PATH=/etc/systemd/system/hp-fan-control.service
-TMPFILES_PATH=/etc/tmpfiles.d/hp-fan-control.conf
-LOGROTATE_PATH=/etc/logrotate.d/hp-fan-control
+INSTALL_DIR=/usr/local/lib/omen-fanctl
+DOC_DIR=/usr/local/share/doc/omen-fanctl
+CONFIG_DIR=/etc/omen-fanctl
+UNIT_PATH=/etc/systemd/system/omen-fanctl.service
+TMPFILES_PATH=/etc/tmpfiles.d/omen-fanctl.conf
+LOGROTATE_PATH=/etc/logrotate.d/omen-fanctl
 PURGE_CONFIG=false
 
 log() {
@@ -60,8 +60,8 @@ if (( EUID != 0 )); then
     exit 1
 fi
 
-log "Checking whether hp-fan-control can be removed safely"
-if [[ -e /run/hp-fan-control/auto-guard ]]; then
+log "Checking whether omen-fanctl can be removed safely"
+if [[ -e /run/omen-fanctl/auto-guard ]]; then
     echo "ERROR: refusing to uninstall during Auto guard" >&2
     echo "Wait for 'state=sleeping', then retry." >&2
     exit 1
@@ -85,15 +85,15 @@ if [[ "$(<"$HP_HWMON/pwm1_enable")" != 2 ]]; then
 fi
 log "Fan control is in BIOS Auto"
 
-if systemctl cat hp-fan-control.service >/dev/null 2>&1; then
-    if systemctl is-active --quiet hp-fan-control.service; then
-        log "Disabling and stopping hp-fan-control.service"
+if systemctl cat omen-fanctl.service >/dev/null 2>&1; then
+    if systemctl is-active --quiet omen-fanctl.service; then
+        log "Disabling and stopping omen-fanctl.service"
     else
-        log "Disabling installed hp-fan-control.service"
+        log "Disabling installed omen-fanctl.service"
     fi
-    systemctl disable --now hp-fan-control.service || true
+    systemctl disable --now omen-fanctl.service || true
 else
-    log "hp-fan-control.service is not installed"
+    log "omen-fanctl.service is not installed"
 fi
 
 if [[ "$(<"$HP_HWMON/pwm1_enable")" != 2 ]]; then
@@ -104,29 +104,29 @@ fi
 remove_file "$UNIT_PATH"
 remove_file "$TMPFILES_PATH"
 remove_file "$LOGROTATE_PATH"
-remove_file "$INSTALL_DIR/hp_fan_control.py"
+remove_file "$INSTALL_DIR/omen_fanctl.py"
 shopt -s nullglob
-installed_modules=("$INSTALL_DIR/hp_fan_control/"*.py)
+installed_modules=("$INSTALL_DIR/omen_fanctl/"*.py)
 shopt -u nullglob
 for module in "${installed_modules[@]}"; do
     remove_file "$module"
 done
-remove_cache "$INSTALL_DIR/hp_fan_control/__pycache__"
+remove_cache "$INSTALL_DIR/omen_fanctl/__pycache__"
 remove_cache "$INSTALL_DIR/__pycache__"
 remove_file "$DOC_DIR/README.md"
 rmdir --ignore-fail-on-non-empty \
-    "$INSTALL_DIR/hp_fan_control" "$INSTALL_DIR" "$DOC_DIR" 2>/dev/null || true
+    "$INSTALL_DIR/omen_fanctl" "$INSTALL_DIR" "$DOC_DIR" 2>/dev/null || true
 
 if [[ "$PURGE_CONFIG" == true ]]; then
-    remove_file "$CONFIG_DIR/fan-control.toml"
+    remove_file "$CONFIG_DIR/omen-fanctl.toml"
     rmdir --ignore-fail-on-non-empty "$CONFIG_DIR" 2>/dev/null || true
-elif [[ -e "$CONFIG_DIR/fan-control.toml" ]]; then
-    log "Preserving configuration: $CONFIG_DIR/fan-control.toml"
+elif [[ -e "$CONFIG_DIR/omen-fanctl.toml" ]]; then
+    log "Preserving configuration: $CONFIG_DIR/omen-fanctl.toml"
 else
     log "No configuration file found"
 fi
 
 log "Reloading systemd units"
 systemctl daemon-reload
-log "Preserving telemetry directory: /var/log/hp-fan-control"
+log "Preserving telemetry directory: /var/log/omen-fanctl"
 log "Uninstallation complete"

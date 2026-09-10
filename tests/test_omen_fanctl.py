@@ -17,15 +17,15 @@ from types import SimpleNamespace
 from unittest.mock import ANY, Mock, call, patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CONFIG_PATH = PROJECT_ROOT / "src" / "config" / "fan-control.toml"
-SERVICE_PATH = PROJECT_ROOT / "src" / "systemd" / "hp-fan-control.service"
-LOGROTATE_PATH = PROJECT_ROOT / "src" / "logrotate" / "hp-fan-control"
-ENTRY_POINT_PATH = PROJECT_ROOT / "src" / "daemon" / "hp_fan_control.py"
+CONFIG_PATH = PROJECT_ROOT / "src" / "config" / "omen-fanctl.toml"
+SERVICE_PATH = PROJECT_ROOT / "src" / "systemd" / "omen-fanctl.service"
+LOGROTATE_PATH = PROJECT_ROOT / "src" / "logrotate" / "omen-fanctl"
+ENTRY_POINT_PATH = PROJECT_ROOT / "src" / "daemon" / "omen_fanctl.py"
 DAEMON_PATH = PROJECT_ROOT / "src" / "daemon"
 sys.path.insert(0, str(PROJECT_ROOT / "src" / "daemon"))
 
-import hp_fan_control as hp_fan_control_package  # noqa: E402
-from hp_fan_control.cli import (  # noqa: E402
+import omen_fanctl as omen_fanctl_package  # noqa: E402
+from omen_fanctl.cli import (  # noqa: E402
     AUTO_GUARD_PATH,
     CONFIGURATION_ERROR_EXIT_STATUS,
     clear_confirmed_board,
@@ -42,7 +42,7 @@ from hp_fan_control.cli import (  # noqa: E402
     restore_firmware_auto,
     run_actuator_test,
 )
-from hp_fan_control.config import (  # noqa: E402
+from omen_fanctl.config import (  # noqa: E402
     DEFAULT_ALLOWED_BOARDS,
     ConfigurationError,
     Curve,
@@ -53,7 +53,7 @@ from hp_fan_control.config import (  # noqa: E402
     percent_to_pwm,
     pwm_to_percent,
 )
-from hp_fan_control.controller import (  # noqa: E402
+from omen_fanctl.controller import (  # noqa: E402
     ControlPolicy,
     Controller,
     CsvLog,
@@ -61,7 +61,7 @@ from hp_fan_control.controller import (  # noqa: E402
     OPTIONAL_SENSOR_MISSING_RELEASE_SAMPLES,
     SystemdNotifier,
 )
-from hp_fan_control.hardware import (  # noqa: E402
+from omen_fanctl.hardware import (  # noqa: E402
     AUTO_MODE,
     FailurePolicy,
     HP_HWMON_STARTUP_TIMEOUT_S,
@@ -394,9 +394,9 @@ class LockTests(unittest.TestCase):
                 return handle
 
             with (
-                patch("hp_fan_control.cli.os.fdopen", side_effect=capture_handle),
+                patch("omen_fanctl.cli.os.fdopen", side_effect=capture_handle),
                 patch(
-                    "hp_fan_control.cli.fcntl.flock",
+                    "omen_fanctl.cli.fcntl.flock",
                     side_effect=OSError("filesystem failure"),
                 ),
                 self.assertRaisesRegex(HardwareError, "cannot acquire lock"),
@@ -413,17 +413,17 @@ class LockTests(unittest.TestCase):
             handle.write.side_effect = OSError("filesystem failure")
 
             with (
-                patch("hp_fan_control.cli.os.open", return_value=123),
+                patch("omen_fanctl.cli.os.open", return_value=123),
                 patch(
-                    "hp_fan_control.cli.os.fstat",
+                    "omen_fanctl.cli.os.fstat",
                     return_value=SimpleNamespace(
                         st_mode=0o100600,
                         st_uid=os.geteuid(),
                     ),
                 ),
-                patch("hp_fan_control.cli.os.fchmod"),
-                patch("hp_fan_control.cli.os.fdopen", return_value=handle),
-                patch("hp_fan_control.cli.fcntl.flock"),
+                patch("omen_fanctl.cli.os.fchmod"),
+                patch("omen_fanctl.cli.os.fdopen", return_value=handle),
+                patch("omen_fanctl.cli.fcntl.flock"),
                 self.assertRaisesRegex(OSError, "filesystem failure"),
             ):
                 acquire_lock(lock)
@@ -447,9 +447,9 @@ class LockTests(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as temporary:
                     lock = Path(temporary) / "control.lock"
                     with (
-                        patch("hp_fan_control.cli.os.open", return_value=123),
-                        patch("hp_fan_control.cli.os.fstat", return_value=metadata),
-                        patch("hp_fan_control.cli.os.close") as close,
+                        patch("omen_fanctl.cli.os.open", return_value=123),
+                        patch("omen_fanctl.cli.os.fstat", return_value=metadata),
+                        patch("omen_fanctl.cli.os.close") as close,
                         self.assertRaisesRegex(
                             HardwareError,
                             "lock must be a regular file owned by uid",
@@ -460,10 +460,10 @@ class LockTests(unittest.TestCase):
                     close.assert_called_once_with(123)
 
     def test_dry_run_lock_is_scoped_to_effective_uid(self):
-        with patch("hp_fan_control.cli.os.geteuid", return_value=1234):
+        with patch("omen_fanctl.cli.os.geteuid", return_value=1234):
             self.assertEqual(
                 dry_run_lock_path(),
-                Path("/tmp/hp-fan-control-dry-run-1234.lock"),
+                Path("/tmp/omen-fanctl-dry-run-1234.lock"),
             )
 
 
@@ -500,7 +500,7 @@ class EwmaTests(unittest.TestCase):
 class CsvLogTests(unittest.TestCase):
     def test_restart_appends_without_duplicate_header(self):
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "hp-fan-control.csv"
+            path = Path(temporary) / "omen-fanctl.csv"
 
             first = CsvLog(path)
             first.write({})
@@ -516,7 +516,7 @@ class CsvLogTests(unittest.TestCase):
 
     def test_archives_existing_csv_with_incompatible_header(self):
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "hp-fan-control.csv"
+            path = Path(temporary) / "omen-fanctl.csv"
             previous = path.with_name(f"{path.name}.previous")
             old_fields = tuple(
                 field
@@ -530,7 +530,7 @@ class CsvLogTests(unittest.TestCase):
             old_contents = f"{','.join(old_fields)}\nlegacy-row\n"
             path.write_text(old_contents, encoding="utf-8")
 
-            with self.assertLogs("hp-fan-control", level="WARNING") as captured:
+            with self.assertLogs("omen-fanctl", level="WARNING") as captured:
                 log = CsvLog(path)
             log.write({})
             log.close()
@@ -550,7 +550,7 @@ class CsvLogTests(unittest.TestCase):
 
     def test_rewrites_header_after_external_copytruncate(self):
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "hp-fan-control.csv"
+            path = Path(temporary) / "omen-fanctl.csv"
             log = CsvLog(path)
             log.write({})
 
@@ -564,13 +564,13 @@ class CsvLogTests(unittest.TestCase):
 
     def test_io_failure_is_deduplicated_and_recovers(self):
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "hp-fan-control.csv"
+            path = Path(temporary) / "omen-fanctl.csv"
             log = CsvLog(path)
             with patch(
-                "hp_fan_control.controller.os.fstat",
+                "omen_fanctl.controller.os.fstat",
                 side_effect=OSError("disk unavailable"),
             ):
-                with self.assertLogs("hp-fan-control", level="WARNING") as captured:
+                with self.assertLogs("omen-fanctl", level="WARNING") as captured:
                     log.write({})
                     log.write({})
 
@@ -578,7 +578,7 @@ class CsvLogTests(unittest.TestCase):
                 sum("CSV telemetry unavailable" in line for line in captured.output),
                 1,
             )
-            with self.assertLogs("hp-fan-control", level="INFO") as captured:
+            with self.assertLogs("omen-fanctl", level="INFO") as captured:
                 log.write({})
             log.close()
 
@@ -689,8 +689,8 @@ class ControllerTelemetryTests(_ControllerTestCase):
         # Freeze time before next_status_log: an identical note is suppressed,
         # while a changed note must still be emitted immediately.
         with (
-            patch("hp_fan_control.controller.LOG.info") as log_info,
-            patch("hp_fan_control.controller.time.monotonic", return_value=1.0),
+            patch("omen_fanctl.controller.LOG.info") as log_info,
+            patch("omen_fanctl.controller.time.monotonic", return_value=1.0),
         ):
             controller.log_sample(
                 0,
@@ -784,7 +784,7 @@ class ControllerTelemetryTests(_ControllerTestCase):
             profile_path=self.profile,
             status_interval_s=30.0,
         )
-        with patch("hp_fan_control.controller.LOG.info") as info:
+        with patch("omen_fanctl.controller.LOG.info") as info:
             controller.run()
         csv_log.close()
 
@@ -829,7 +829,7 @@ class ControllerTelemetryTests(_ControllerTestCase):
             status_interval_s=30.0,
         )
 
-        with patch("hp_fan_control.controller.LOG.error") as error:
+        with patch("omen_fanctl.controller.LOG.error") as error:
             controller.run()
         csv_log.close()
 
@@ -873,7 +873,7 @@ class ControllerTelemetryTests(_ControllerTestCase):
             status_interval_s=30.0,
         )
 
-        with patch("hp_fan_control.controller.LOG.error") as error:
+        with patch("omen_fanctl.controller.LOG.error") as error:
             controller.run()
         csv_log.close()
 
@@ -1122,7 +1122,7 @@ class ControlDecisionTests(unittest.TestCase):
             ir=None,
         )
 
-        with patch("hp_fan_control.controller.LOG.info") as info:
+        with patch("omen_fanctl.controller.LOG.info") as info:
             for _ in range(OPTIONAL_SENSOR_MISSING_RELEASE_SAMPLES - 1):
                 self.policy.observe_activations(missing)
                 self.assertFalse(self.policy.cool_enough_for_auto(missing))
@@ -1148,7 +1148,7 @@ class ControlDecisionTests(unittest.TestCase):
         self.policy.observe_activations(missing)
         self.policy.observe_activations(active)
 
-        with patch("hp_fan_control.controller.LOG.info") as info:
+        with patch("omen_fanctl.controller.LOG.info") as info:
             for _ in range(OPTIONAL_SENSOR_MISSING_RELEASE_SAMPLES - 1):
                 self.policy.observe_activations(missing)
                 self.assertFalse(self.policy.cool_enough_for_auto(missing))
@@ -1203,7 +1203,7 @@ class SettingsTests(unittest.TestCase):
     def test_default_config_is_independent_of_source_tree_layout(self):
         self.assertEqual(
             parse_args([]).config,
-            Path("/etc/hp-fan-control/fan-control.toml"),
+            Path("/etc/omen-fanctl/omen-fanctl.toml"),
         )
 
     def test_missing_manual_minimum_uses_factory_level_19(self):
@@ -1212,7 +1212,7 @@ class SettingsTests(unittest.TestCase):
         self.assertIn(configured_minimum, source)
         source = source.replace(configured_minimum, "")
         with tempfile.TemporaryDirectory() as temporary:
-            config = Path(temporary) / "fan-control.toml"
+            config = Path(temporary) / "omen-fanctl.toml"
             config.write_text(source, encoding="utf-8")
             settings = Settings.load(config)
 
@@ -1237,10 +1237,10 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, 2)
 
     def test_selects_csv_log_path(self):
-        with patch("hp_fan_control.cli.Path.cwd", return_value=Path("/logs")):
+        with patch("omen_fanctl.cli.Path.cwd", return_value=Path("/logs")):
             self.assertEqual(
                 _csv_log_path(parse_args([])),
-                Path("/logs/hp-fan-control.csv"),
+                Path("/logs/omen-fanctl.csv"),
             )
         self.assertEqual(
             _csv_log_path(parse_args(["--log-file", "/tmp/custom.csv"])),
@@ -1340,7 +1340,7 @@ steped = true
 
         for name, (unknown_key, contents) in cases.items():
             with self.subTest(section=name), tempfile.TemporaryDirectory() as temporary:
-                config = Path(temporary) / "fan-control.toml"
+                config = Path(temporary) / "omen-fanctl.toml"
                 config.write_text(contents, encoding="utf-8")
                 with self.assertRaisesRegex(
                     ConfigurationError,
@@ -1350,7 +1350,7 @@ steped = true
 
     def test_per_sensor_curves_require_cpu_curve(self):
         with tempfile.TemporaryDirectory() as temporary:
-            config = Path(temporary) / "fan-control.toml"
+            config = Path(temporary) / "omen-fanctl.toml"
             config.write_text(
                 """
 [daemon]
@@ -1379,7 +1379,7 @@ pwm_percent = [30, 40]
         for name, line in cases.items():
             with self.subTest(case=name):
                 with tempfile.TemporaryDirectory() as temporary:
-                    config = Path(temporary) / "fan-control.toml"
+                    config = Path(temporary) / "omen-fanctl.toml"
                     config.write_text(
                         f"""
 [daemon]
@@ -1399,7 +1399,7 @@ preset = "hp-vibrance-stx-n22x9-performance"
 
     def test_allowed_boards_entries_are_trimmed(self):
         with tempfile.TemporaryDirectory() as temporary:
-            config = Path(temporary) / "fan-control.toml"
+            config = Path(temporary) / "omen-fanctl.toml"
             config.write_text(
                 """
 [daemon]
@@ -1441,15 +1441,15 @@ preset = "hp-vibrance-stx-n22x9-performance"
 
             with (
                 patch(
-                    "hp_fan_control.hardware.time.monotonic",
+                    "omen_fanctl.hardware.time.monotonic",
                     side_effect=[100.0, 100.0],
                 ),
                 patch(
-                    "hp_fan_control.hardware.time.sleep",
+                    "omen_fanctl.hardware.time.sleep",
                     side_effect=publish_profile,
                 ) as sleep,
-                patch("hp_fan_control.hardware.LOG.warning") as warning,
-                patch("hp_fan_control.hardware.LOG.info") as info,
+                patch("omen_fanctl.hardware.LOG.warning") as warning,
+                patch("omen_fanctl.hardware.LOG.info") as info,
             ):
                 validate_required_profile("performance", choices)
 
@@ -1608,8 +1608,8 @@ class SensorMetricTests(unittest.TestCase):
         sensors.cpu_hwmon.rename(offline)
 
         with (
-            patch("hp_fan_control.hardware.LOG.warning") as warning,
-            patch("hp_fan_control.hardware.LOG.info") as info,
+            patch("omen_fanctl.hardware.LOG.warning") as warning,
+            patch("omen_fanctl.hardware.LOG.info") as info,
         ):
             with self.assertRaisesRegex(HardwareError, "CPU temperature"):
                 sensors.read()
@@ -1651,8 +1651,8 @@ class SensorMetricTests(unittest.TestCase):
         gpu.rename(offline)
 
         with (
-            patch("hp_fan_control.hardware.LOG.warning") as warning,
-            patch("hp_fan_control.hardware.LOG.info") as info,
+            patch("omen_fanctl.hardware.LOG.warning") as warning,
+            patch("omen_fanctl.hardware.LOG.info") as info,
         ):
             with self.assertRaisesRegex(
                 HardwareError, "AMD GPU temperature source unavailable"
@@ -1681,7 +1681,7 @@ class SensorMetricTests(unittest.TestCase):
         with (
             patch.object(sensors, "_cpu_temperature", return_value=50.0),
             patch(
-                "hp_fan_control.hardware.read_hwmon_temperatures",
+                "omen_fanctl.hardware.read_hwmon_temperatures",
                 return_value=[],
             ),
         ):
@@ -1699,7 +1699,7 @@ class SensorMetricTests(unittest.TestCase):
         self.assertEqual(sensors._amd_gpu_temperature(), 85.0)
 
         with patch(
-            "hp_fan_control.hardware.read_hwmon_temperatures",
+            "omen_fanctl.hardware.read_hwmon_temperatures",
             return_value=[],
         ):
             self.assertEqual(sensors._amd_gpu_temperature(), 85.0)
@@ -1717,7 +1717,7 @@ class SensorMetricTests(unittest.TestCase):
         with (
             patch.object(sensors, "_cpu_temperature", return_value=50.0),
             patch(
-                "hp_fan_control.hardware.read_hwmon_temperatures",
+                "omen_fanctl.hardware.read_hwmon_temperatures",
                 return_value=[],
             ),
         ):
@@ -1754,7 +1754,7 @@ class SensorMetricTests(unittest.TestCase):
         with (
             patch.object(sensors, "_cpu_temperature", return_value=50.0),
             patch(
-                "hp_fan_control.hardware.read_hwmon_temperatures",
+                "omen_fanctl.hardware.read_hwmon_temperatures",
                 return_value=[],
             ),
         ):
@@ -1796,11 +1796,11 @@ class SensorMetricTests(unittest.TestCase):
         with (
             patch.object(sensors, "_cpu_temperature", return_value=50.0),
             patch(
-                "hp_fan_control.hardware.subprocess.run",
+                "omen_fanctl.hardware.subprocess.run",
                 return_value=nvidia,
             ),
             patch(
-                "hp_fan_control.hardware.read_hwmon_temperatures",
+                "omen_fanctl.hardware.read_hwmon_temperatures",
                 return_value=[],
             ),
         ):
@@ -1813,7 +1813,7 @@ class SensorMetricTests(unittest.TestCase):
 
     def test_runtime_nvidia_loss_fails_safe_and_logs_once(self):
         with patch(
-            "hp_fan_control.hardware.shutil.which",
+            "omen_fanctl.hardware.shutil.which",
             return_value="/usr/bin/nvidia-smi",
         ):
             sensors = initialized_sensors(self, include_nvidia_gpu=True)
@@ -1821,7 +1821,7 @@ class SensorMetricTests(unittest.TestCase):
 
         with (
             patch(
-                "hp_fan_control.hardware.subprocess.run",
+                "omen_fanctl.hardware.subprocess.run",
                 side_effect=[
                     available,
                     subprocess.TimeoutExpired("nvidia-smi", 2.0),
@@ -1831,8 +1831,8 @@ class SensorMetricTests(unittest.TestCase):
                     available,
                 ],
             ),
-            patch("hp_fan_control.hardware.LOG.warning") as warning,
-            patch("hp_fan_control.hardware.LOG.info") as info,
+            patch("omen_fanctl.hardware.LOG.warning") as warning,
+            patch("omen_fanctl.hardware.LOG.info") as info,
         ):
             self.assertEqual(sensors.read().gpu, 61.0)
             self.assertEqual(sensors.read().gpu, 61.0)
@@ -1848,7 +1848,7 @@ class SensorMetricTests(unittest.TestCase):
 
     def test_suspended_nvidia_gpu_skips_query_and_clears_cached_metrics(self):
         with patch(
-            "hp_fan_control.hardware.shutil.which",
+            "omen_fanctl.hardware.shutil.which",
             return_value="/usr/bin/nvidia-smi",
         ):
             sensors = initialized_sensors(self, include_nvidia_gpu=True)
@@ -1857,7 +1857,7 @@ class SensorMetricTests(unittest.TestCase):
         self.assertEqual(len(sensors.nvidia_runtime_status_files), 1)
         sensors.nvidia_runtime_status_files[0].write_text("suspended\n")
 
-        with patch("hp_fan_control.hardware.subprocess.run") as run:
+        with patch("omen_fanctl.hardware.subprocess.run") as run:
             snapshot = sensors.read()
 
         run.assert_not_called()
@@ -1872,7 +1872,7 @@ class SensorMetricTests(unittest.TestCase):
 
     def test_nvidia_failure_after_runtime_suspend_does_not_reuse_old_metrics(self):
         with patch(
-            "hp_fan_control.hardware.shutil.which",
+            "omen_fanctl.hardware.shutil.which",
             return_value="/usr/bin/nvidia-smi",
         ):
             sensors = initialized_sensors(self, include_nvidia_gpu=True)
@@ -1884,7 +1884,7 @@ class SensorMetricTests(unittest.TestCase):
         )
 
         with patch(
-            "hp_fan_control.hardware.subprocess.run",
+            "omen_fanctl.hardware.subprocess.run",
             side_effect=[
                 fresh_result,
                 subprocess.TimeoutExpired("nvidia-smi", 2.0),
@@ -1905,7 +1905,7 @@ class SensorMetricTests(unittest.TestCase):
 
     def test_nvidia_query_resumes_when_runtime_status_becomes_active(self):
         with patch(
-            "hp_fan_control.hardware.shutil.which",
+            "omen_fanctl.hardware.shutil.which",
             return_value="/usr/bin/nvidia-smi",
         ):
             sensors = initialized_sensors(self, include_nvidia_gpu=True)
@@ -1918,7 +1918,7 @@ class SensorMetricTests(unittest.TestCase):
         )
 
         with patch(
-            "hp_fan_control.hardware.subprocess.run",
+            "omen_fanctl.hardware.subprocess.run",
             return_value=result,
         ) as run:
             suspended = sensors.read()
@@ -1933,7 +1933,7 @@ class SensorMetricTests(unittest.TestCase):
 
     def test_periodically_discovers_late_nvidia_pci_device(self):
         with patch(
-            "hp_fan_control.hardware.shutil.which",
+            "omen_fanctl.hardware.shutil.which",
             return_value="/usr/bin/nvidia-smi",
         ):
             sensors = initialized_sensors(self, include_nvidia_gpu=True)
@@ -1943,8 +1943,8 @@ class SensorMetricTests(unittest.TestCase):
         sensors.next_nvidia_pci_discovery = 130.0
 
         with (
-            patch("hp_fan_control.hardware.time.monotonic", return_value=130.0),
-            patch("hp_fan_control.hardware.subprocess.run") as run,
+            patch("omen_fanctl.hardware.time.monotonic", return_value=130.0),
+            patch("omen_fanctl.hardware.subprocess.run") as run,
         ):
             snapshot = sensors.read()
 
@@ -1958,7 +1958,7 @@ class SensorMetricTests(unittest.TestCase):
 
     def test_stale_nvidia_pci_path_is_rediscovered_immediately(self):
         with patch(
-            "hp_fan_control.hardware.shutil.which",
+            "omen_fanctl.hardware.shutil.which",
             return_value="/usr/bin/nvidia-smi",
         ):
             sensors = initialized_sensors(self, include_nvidia_gpu=True)
@@ -1970,8 +1970,8 @@ class SensorMetricTests(unittest.TestCase):
         sensors.next_nvidia_pci_discovery = 200.0
 
         with (
-            patch("hp_fan_control.hardware.time.monotonic", return_value=100.0),
-            patch("hp_fan_control.hardware.subprocess.run") as run,
+            patch("omen_fanctl.hardware.time.monotonic", return_value=100.0),
+            patch("omen_fanctl.hardware.subprocess.run") as run,
         ):
             snapshot = sensors.read()
 
@@ -1985,7 +1985,7 @@ class SensorMetricTests(unittest.TestCase):
 
     def test_unreadable_nvidia_runtime_status_falls_back_to_query(self):
         with patch(
-            "hp_fan_control.hardware.shutil.which",
+            "omen_fanctl.hardware.shutil.which",
             return_value="/usr/bin/nvidia-smi",
         ):
             sensors = initialized_sensors(self, include_nvidia_gpu=True)
@@ -1997,7 +1997,7 @@ class SensorMetricTests(unittest.TestCase):
         )
 
         with patch(
-            "hp_fan_control.hardware.subprocess.run",
+            "omen_fanctl.hardware.subprocess.run",
             return_value=result,
         ) as run:
             snapshot = sensors.read()
@@ -2009,7 +2009,7 @@ class SensorMetricTests(unittest.TestCase):
 
     def test_nvidia_failure_includes_stderr(self):
         with patch(
-            "hp_fan_control.hardware.shutil.which",
+            "omen_fanctl.hardware.shutil.which",
             return_value="/usr/bin/nvidia-smi",
         ):
             sensors = initialized_sensors(self, include_nvidia_gpu=True)
@@ -2025,7 +2025,7 @@ class SensorMetricTests(unittest.TestCase):
         )
 
         with patch(
-            "hp_fan_control.hardware.subprocess.run",
+            "omen_fanctl.hardware.subprocess.run",
             side_effect=[available, failed, failed, failed],
         ):
             self.assertEqual(sensors.read().gpu, 61.0)
@@ -2039,7 +2039,7 @@ class SensorMetricTests(unittest.TestCase):
 
     def test_nvidia_os_error_retains_last_metrics_and_forgets_executable(self):
         with patch(
-            "hp_fan_control.hardware.shutil.which",
+            "omen_fanctl.hardware.shutil.which",
             return_value="/usr/bin/nvidia-smi",
         ):
             sensors = initialized_sensors(self, include_nvidia_gpu=True)
@@ -2050,10 +2050,10 @@ class SensorMetricTests(unittest.TestCase):
         )
         with (
             patch(
-                "hp_fan_control.hardware.subprocess.run",
+                "omen_fanctl.hardware.subprocess.run",
                 side_effect=[available, OSError("driver disappeared")],
             ),
-            patch("hp_fan_control.hardware.time.monotonic", return_value=100.0),
+            patch("omen_fanctl.hardware.time.monotonic", return_value=100.0),
         ):
             fresh = sensors.read()
             stale = sensors.read()
@@ -2069,15 +2069,15 @@ class SensorMetricTests(unittest.TestCase):
         result = SimpleNamespace(returncode=0, stdout="61, 80.0, 120.0\n")
         with (
             patch(
-                "hp_fan_control.hardware.shutil.which",
+                "omen_fanctl.hardware.shutil.which",
                 side_effect=[None, "/usr/bin/nvidia-smi"],
             ) as which,
             patch(
-                "hp_fan_control.hardware.subprocess.run",
+                "omen_fanctl.hardware.subprocess.run",
                 return_value=result,
             ),
             patch(
-                "hp_fan_control.hardware.time.monotonic",
+                "omen_fanctl.hardware.time.monotonic",
                 side_effect=[100.0, 100.0, 129.9, 130.0],
             ),
         ):
@@ -2097,7 +2097,7 @@ class SensorMetricTests(unittest.TestCase):
 
     def test_disabled_nvidia_source_has_no_staleness_status(self):
         with patch(
-            "hp_fan_control.hardware.find_nvidia_runtime_status_files"
+            "omen_fanctl.hardware.find_nvidia_runtime_status_files"
         ) as find_runtime_status:
             sensors = initialized_sensors(self, include_nvidia_gpu=False)
 
@@ -2151,7 +2151,7 @@ class SensorMetricTests(unittest.TestCase):
             hp_wmi_sensors_path=Path("/proc/hp_wmi_sensors"),
         )
         with patch(
-            "hp_fan_control.hardware.read_hp_wmi_ir_temperature",
+            "omen_fanctl.hardware.read_hp_wmi_ir_temperature",
             side_effect=[HardwareError("missing"), 41.0],
         ):
             first = sensors.read()
@@ -2165,7 +2165,7 @@ class SensorMetricTests(unittest.TestCase):
         sensors = initialized_sensors(self)
         sensors.nvidia_smi = "/usr/bin/nvidia-smi"
         result = SimpleNamespace(returncode=0, stdout="72, 174.5, 175.0\n")
-        with patch("hp_fan_control.hardware.subprocess.run", return_value=result):
+        with patch("omen_fanctl.hardware.subprocess.run", return_value=result):
             snapshot = sensors.read()
         self.assertEqual(snapshot.gpu, 72.0)
         self.assertEqual(snapshot.nvidia_power_draw_w, 174.5)
@@ -2175,7 +2175,7 @@ class SensorMetricTests(unittest.TestCase):
         sensors = initialized_sensors(self)
         sensors.nvidia_smi = "/usr/bin/nvidia-smi"
         result = SimpleNamespace(returncode=0, stdout="61, [N/A], [N/A]\n")
-        with patch("hp_fan_control.hardware.subprocess.run", return_value=result):
+        with patch("omen_fanctl.hardware.subprocess.run", return_value=result):
             snapshot = sensors.read()
         self.assertEqual(snapshot.gpu, 61.0)
         self.assertIsNone(snapshot.nvidia_power_draw_w)
@@ -2228,7 +2228,7 @@ class SensorMetricTests(unittest.TestCase):
             )
             sensors = Sensors(settings, hwmon_root, thermal_root)
 
-            with patch("hp_fan_control.hardware.LOG.warning") as warning:
+            with patch("omen_fanctl.hardware.LOG.warning") as warning:
                 snapshot = sensors.read()
 
         self.assertIsNone(snapshot.acpi)
@@ -2601,7 +2601,7 @@ class ControllerLoopTests(_ControllerTestCase):
             profile_path=self.profile,
         )
 
-        with patch("hp_fan_control.controller.LOG.info") as info:
+        with patch("omen_fanctl.controller.LOG.info") as info:
             controller.run()
 
         self.assertIn(("auto", None), fan.actions)
@@ -2766,7 +2766,7 @@ class ControllerLoopTests(_ControllerTestCase):
             csv_log=CsvLog(None),
             profile_path=self.profile,
         )
-        with patch("hp_fan_control.controller.LOG.error") as error:
+        with patch("omen_fanctl.controller.LOG.error") as error:
             controller.run()
         self.assertEqual(fan.actions[0][0], "manual")
         self.assertIn(("maximum", 255), fan.actions)
@@ -2837,8 +2837,8 @@ class ControllerShutdownTests(_ControllerTestCase):
         controller.auto_guard_until = controller.clock() + 60.0
 
         with (
-            patch("hp_fan_control.controller.LOG.critical") as critical,
-            patch("hp_fan_control.controller.LOG.error") as error,
+            patch("omen_fanctl.controller.LOG.critical") as critical,
+            patch("omen_fanctl.controller.LOG.error") as error,
         ):
             controller._failsafe_on_stop()
 
@@ -2870,7 +2870,7 @@ class ControllerShutdownTests(_ControllerTestCase):
 
         with (
             patch.object(controller, "_clear_auto_guard") as clear_guard,
-            patch("hp_fan_control.controller.LOG.critical") as critical,
+            patch("omen_fanctl.controller.LOG.critical") as critical,
         ):
             controller._failsafe_on_stop()
 
@@ -2919,7 +2919,7 @@ class ControllerShutdownTests(_ControllerTestCase):
                 "_clear_auto_guard",
                 side_effect=HardwareError("unlink failed"),
             ) as clear_guard,
-            patch("hp_fan_control.controller.LOG.error") as error,
+            patch("omen_fanctl.controller.LOG.error") as error,
         ):
             controller._failsafe_on_stop()
 
@@ -2945,7 +2945,7 @@ class RuntimeMarkerIsolation(unittest.TestCase):
         self.addCleanup(shutil.rmtree, directory)
         self.confirmed_board_path = Path(directory) / "board"
         patcher = patch(
-            "hp_fan_control.cli.CONFIRMED_BOARD_PATH", self.confirmed_board_path
+            "omen_fanctl.cli.CONFIRMED_BOARD_PATH", self.confirmed_board_path
         )
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -2961,7 +2961,7 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
     def _write_config(self, body):
         directory = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, directory)
-        path = Path(directory) / "fan-control.toml"
+        path = Path(directory) / "omen-fanctl.toml"
         path.write_text(body, encoding="utf-8")
         return path
 
@@ -2998,14 +2998,14 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
     def test_load_allowed_boards_falls_back_on_invalid_utf8(self):
         directory = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, directory)
-        path = Path(directory) / "fan-control.toml"
+        path = Path(directory) / "omen-fanctl.toml"
         path.write_bytes(b'\xff\xfe[daemon]\nallowed_boards = ["8C99"]\n')
         self.assertEqual(load_allowed_boards(path), DEFAULT_ALLOWED_BOARDS)
 
     def test_recovery_allowlist_keeps_a_confirmed_board_after_config_damage(self):
         directory = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory)
-        damaged = directory / "fan-control.toml"
+        damaged = directory / "omen-fanctl.toml"
         damaged.write_bytes(b"\xff\xfe")
         confirmed = directory / "board"
         record_confirmed_board("8C99", confirmed)
@@ -3030,18 +3030,18 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
     def test_failsafe_accepts_a_confirmed_board_when_the_config_is_damaged(self):
         directory = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory)
-        damaged = directory / "fan-control.toml"
+        damaged = directory / "omen-fanctl.toml"
         damaged.write_bytes(b"\xff\xfe")
         confirmed = directory / "board"
         record_confirmed_board("8C99", confirmed)
         fan = self._safe_fan()
         with (
-            patch("hp_fan_control.cli.CONFIRMED_BOARD_PATH", confirmed),
-            patch("hp_fan_control.cli.read_text", return_value="8C99"),
-            patch("hp_fan_control.cli.os.geteuid", return_value=0),
-            patch("hp_fan_control.cli.acquire_lock", return_value=Mock()),
-            patch("hp_fan_control.cli.HpFanHwmon", return_value=fan),
-            patch("hp_fan_control.cli.ensure_failsafe_fan_state") as failsafe,
+            patch("omen_fanctl.cli.CONFIRMED_BOARD_PATH", confirmed),
+            patch("omen_fanctl.cli.read_text", return_value="8C99"),
+            patch("omen_fanctl.cli.os.geteuid", return_value=0),
+            patch("omen_fanctl.cli.acquire_lock", return_value=Mock()),
+            patch("omen_fanctl.cli.HpFanHwmon", return_value=fan),
+            patch("omen_fanctl.cli.ensure_failsafe_fan_state") as failsafe,
         ):
             result = main(["--config", str(damaged), "--failsafe"])
 
@@ -3055,24 +3055,24 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
         settings = replace(fixed_policy_settings(), allowed_boards=("8C99",))
         observed = []
         with (
-            patch("hp_fan_control.cli.CONFIRMED_BOARD_PATH", confirmed),
-            patch("hp_fan_control.cli.Settings.load", return_value=settings),
-            patch("hp_fan_control.cli.read_text", return_value="8C99"),
-            patch("hp_fan_control.cli.validate_required_profile"),
-            patch("hp_fan_control.cli.os.geteuid", return_value=0),
-            patch("hp_fan_control.cli.acquire_lock", return_value=Mock()),
-            patch("hp_fan_control.cli.wait_for_hp_fan_hwmon") as wait_fan,
+            patch("omen_fanctl.cli.CONFIRMED_BOARD_PATH", confirmed),
+            patch("omen_fanctl.cli.Settings.load", return_value=settings),
+            patch("omen_fanctl.cli.read_text", return_value="8C99"),
+            patch("omen_fanctl.cli.validate_required_profile"),
+            patch("omen_fanctl.cli.os.geteuid", return_value=0),
+            patch("omen_fanctl.cli.acquire_lock", return_value=Mock()),
+            patch("omen_fanctl.cli.wait_for_hp_fan_hwmon") as wait_fan,
             patch(
-                "hp_fan_control.cli.wait_for_temperature_sensors",
+                "omen_fanctl.cli.wait_for_temperature_sensors",
                 return_value=Mock(spec=Sensors),
             ),
-            patch("hp_fan_control.cli.CsvLog", return_value=Mock(spec=CsvLog)),
+            patch("omen_fanctl.cli.CsvLog", return_value=Mock(spec=CsvLog)),
             patch(
-                "hp_fan_control.cli.SystemdNotifier.from_environment",
+                "omen_fanctl.cli.SystemdNotifier.from_environment",
                 return_value=Mock(spec=SystemdNotifier),
             ),
-            patch("hp_fan_control.cli.Controller", return_value=Mock(spec=Controller)),
-            patch("hp_fan_control.cli.signal.signal"),
+            patch("omen_fanctl.cli.Controller", return_value=Mock(spec=Controller)),
+            patch("omen_fanctl.cli.signal.signal"),
         ):
             fan = Mock(spec=HpFanHwmon)
             fan.path = Path("/sys/class/hwmon/hwmon7")
@@ -3090,29 +3090,29 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
 
     def _apply_run_patches(self, confirmed, settings, extra=()):
         """Patch a full apply-mode startup down to a Mock controller."""
-        wait_fan = patch("hp_fan_control.cli.wait_for_hp_fan_hwmon")
+        wait_fan = patch("omen_fanctl.cli.wait_for_hp_fan_hwmon")
         fan = self._safe_fan()
         started = wait_fan.start()
         started.return_value = fan
         self.fan = fan
         self.addCleanup(wait_fan.stop)
         for target in (
-            patch("hp_fan_control.cli.CONFIRMED_BOARD_PATH", confirmed),
-            patch("hp_fan_control.cli.Settings.load", return_value=settings),
-            patch("hp_fan_control.cli.read_text", return_value="8C99"),
-            patch("hp_fan_control.cli.validate_required_profile"),
-            patch("hp_fan_control.cli.os.geteuid", return_value=0),
-            patch("hp_fan_control.cli.acquire_lock", return_value=Mock()),
+            patch("omen_fanctl.cli.CONFIRMED_BOARD_PATH", confirmed),
+            patch("omen_fanctl.cli.Settings.load", return_value=settings),
+            patch("omen_fanctl.cli.read_text", return_value="8C99"),
+            patch("omen_fanctl.cli.validate_required_profile"),
+            patch("omen_fanctl.cli.os.geteuid", return_value=0),
+            patch("omen_fanctl.cli.acquire_lock", return_value=Mock()),
             patch(
-                "hp_fan_control.cli.wait_for_temperature_sensors",
+                "omen_fanctl.cli.wait_for_temperature_sensors",
                 return_value=Mock(spec=Sensors),
             ),
-            patch("hp_fan_control.cli.CsvLog", return_value=Mock(spec=CsvLog)),
+            patch("omen_fanctl.cli.CsvLog", return_value=Mock(spec=CsvLog)),
             patch(
-                "hp_fan_control.cli.SystemdNotifier.from_environment",
+                "omen_fanctl.cli.SystemdNotifier.from_environment",
                 return_value=Mock(spec=SystemdNotifier),
             ),
-            patch("hp_fan_control.cli.signal.signal"),
+            patch("omen_fanctl.cli.signal.signal"),
             *extra,
         ):
             target.start()
@@ -3129,7 +3129,7 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
         self._apply_run_patches(
             confirmed,
             settings,
-            extra=(patch("hp_fan_control.cli.Controller", return_value=controller),),
+            extra=(patch("omen_fanctl.cli.Controller", return_value=controller),),
         )
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("RUNTIME_DIRECTORY", None)
@@ -3149,7 +3149,7 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
         self._apply_run_patches(
             confirmed,
             settings,
-            extra=(patch("hp_fan_control.cli.Controller", return_value=controller),),
+            extra=(patch("omen_fanctl.cli.Controller", return_value=controller),),
         )
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("RUNTIME_DIRECTORY", None)
@@ -3166,7 +3166,7 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
         self._apply_run_patches(
             confirmed,
             settings,
-            extra=(patch("hp_fan_control.cli.run_actuator_test"),),
+            extra=(patch("omen_fanctl.cli.run_actuator_test"),),
         )
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("RUNTIME_DIRECTORY", None)
@@ -3185,7 +3185,7 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
             settings,
             extra=(
                 patch(
-                    "hp_fan_control.cli.Controller",
+                    "omen_fanctl.cli.Controller",
                     return_value=Mock(spec=Controller),
                 ),
             ),
@@ -3199,17 +3199,17 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
     def test_completed_recovery_drops_the_marker(self):
         directory = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory)
-        damaged = directory / "fan-control.toml"
+        damaged = directory / "omen-fanctl.toml"
         damaged.write_bytes(b"\xff\xfe")
         confirmed = directory / "board"
         record_confirmed_board("8C99", confirmed)
         with (
-            patch("hp_fan_control.cli.CONFIRMED_BOARD_PATH", confirmed),
-            patch("hp_fan_control.cli.read_text", return_value="8C99"),
-            patch("hp_fan_control.cli.os.geteuid", return_value=0),
-            patch("hp_fan_control.cli.acquire_lock", return_value=Mock()),
-            patch("hp_fan_control.cli.HpFanHwmon", return_value=self._safe_fan()),
-            patch("hp_fan_control.cli.ensure_failsafe_fan_state"),
+            patch("omen_fanctl.cli.CONFIRMED_BOARD_PATH", confirmed),
+            patch("omen_fanctl.cli.read_text", return_value="8C99"),
+            patch("omen_fanctl.cli.os.geteuid", return_value=0),
+            patch("omen_fanctl.cli.acquire_lock", return_value=Mock()),
+            patch("omen_fanctl.cli.HpFanHwmon", return_value=self._safe_fan()),
+            patch("omen_fanctl.cli.ensure_failsafe_fan_state"),
         ):
             result = main(["--config", str(damaged), "--failsafe"])
 
@@ -3219,16 +3219,16 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
     def test_rejected_recovery_keeps_the_marker(self):
         directory = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory)
-        damaged = directory / "fan-control.toml"
+        damaged = directory / "omen-fanctl.toml"
         damaged.write_bytes(b"\xff\xfe")
         confirmed = directory / "board"
         record_confirmed_board("8C99", confirmed)
         with (
-            patch("hp_fan_control.cli.CONFIRMED_BOARD_PATH", confirmed),
-            patch("hp_fan_control.cli.read_text", return_value="8DFF"),
-            patch("hp_fan_control.cli.os.geteuid", return_value=0),
-            patch("hp_fan_control.cli.ensure_failsafe_fan_state") as failsafe,
-            self.assertLogs("hp-fan-control", level="ERROR"),
+            patch("omen_fanctl.cli.CONFIRMED_BOARD_PATH", confirmed),
+            patch("omen_fanctl.cli.read_text", return_value="8DFF"),
+            patch("omen_fanctl.cli.os.geteuid", return_value=0),
+            patch("omen_fanctl.cli.ensure_failsafe_fan_state") as failsafe,
+            self.assertLogs("omen-fanctl", level="ERROR"),
         ):
             result = main(["--config", str(damaged), "--failsafe"])
 
@@ -3245,13 +3245,13 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
         self._apply_run_patches(
             confirmed,
             settings,
-            extra=(patch("hp_fan_control.cli.Controller", return_value=controller),),
+            extra=(patch("omen_fanctl.cli.Controller", return_value=controller),),
         )
         # The controller stop path only logs when it cannot select maximum fans.
         self.fan.status.return_value = (MANUAL_MODE, 128, 4200, 4400)
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("RUNTIME_DIRECTORY", None)
-            with self.assertLogs("hp-fan-control", level="ERROR") as logs:
+            with self.assertLogs("omen-fanctl", level="ERROR") as logs:
                 result = main(["--apply"])
 
         self.assertEqual(result, 0)
@@ -3268,7 +3268,7 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
             settings,
             extra=(
                 patch(
-                    "hp_fan_control.cli.run_actuator_test",
+                    "omen_fanctl.cli.run_actuator_test",
                     side_effect=HardwareError("failed to verify firmware Auto"),
                 ),
             ),
@@ -3291,7 +3291,7 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
             settings,
             extra=(
                 patch(
-                    "hp_fan_control.cli.Controller",
+                    "omen_fanctl.cli.Controller",
                     return_value=Mock(spec=Controller),
                 ),
             ),
@@ -3311,7 +3311,7 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
         record_confirmed_board("8C99", confirmed)
         fan = Mock(spec=HpFanHwmon)
         fan.status.side_effect = HardwareError("cannot read integer from pwm1_enable")
-        with self.assertLogs("hp-fan-control", level="ERROR") as logs:
+        with self.assertLogs("omen-fanctl", level="ERROR") as logs:
             clear_confirmed_board_if_safe(confirmed, fan)
 
         self.assertTrue(confirmed.exists())
@@ -3324,19 +3324,19 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
         record_confirmed_board("8C99", confirmed)
         fan = Mock(spec=HpFanHwmon)
         fan.status.side_effect = RuntimeError("unexpected")
-        with self.assertLogs("hp-fan-control", level="ERROR"):
+        with self.assertLogs("omen-fanctl", level="ERROR"):
             clear_confirmed_board_if_safe(confirmed, fan)
 
         self.assertTrue(confirmed.exists())
 
     def test_runtime_directory_identifies_only_the_managed_directory(self):
-        marker = Path("/run/hp-fan-control/board")
+        marker = Path("/run/omen-fanctl/board")
         cases = {
             "": False,
             "/run/other-unit": False,
-            "/run/hp-fan-control-backup": False,
-            "/run/hp-fan-control": True,
-            "/run/other-unit:/run/hp-fan-control": True,
+            "/run/omen-fanctl-backup": False,
+            "/run/omen-fanctl": True,
+            "/run/other-unit:/run/omen-fanctl": True,
         }
         for value, expected in cases.items():
             with self.subTest(runtime_directory=value):
@@ -3344,7 +3344,7 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
                     self.assertEqual(systemd_owns_runtime_directory(marker), expected)
 
     def test_inherited_invocation_id_does_not_claim_ownership(self):
-        marker = Path("/run/hp-fan-control/board")
+        marker = Path("/run/omen-fanctl/board")
         with patch.dict(os.environ, {"INVOCATION_ID": "b3f0"}):
             os.environ.pop("RUNTIME_DIRECTORY", None)
             self.assertFalse(systemd_owns_runtime_directory(marker))
@@ -3356,7 +3356,7 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
 
         with (
             patch("pathlib.Path.unlink", side_effect=OSError("read-only file system")),
-            self.assertLogs("hp-fan-control", level="ERROR") as logs,
+            self.assertLogs("omen-fanctl", level="ERROR") as logs,
         ):
             clear_confirmed_board(directory / "board")
 
@@ -3368,23 +3368,23 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
         confirmed = directory / "board"
         settings = replace(fixed_policy_settings(), allowed_boards=("8C99",))
         with (
-            patch("hp_fan_control.cli.CONFIRMED_BOARD_PATH", confirmed),
-            patch("hp_fan_control.cli.Settings.load", return_value=settings),
-            patch("hp_fan_control.cli.read_text", return_value="8C99"),
-            patch("hp_fan_control.cli.validate_required_profile"),
-            patch("hp_fan_control.cli.acquire_lock", return_value=Mock()),
-            patch("hp_fan_control.cli.wait_for_hp_fan_hwmon") as wait_fan,
+            patch("omen_fanctl.cli.CONFIRMED_BOARD_PATH", confirmed),
+            patch("omen_fanctl.cli.Settings.load", return_value=settings),
+            patch("omen_fanctl.cli.read_text", return_value="8C99"),
+            patch("omen_fanctl.cli.validate_required_profile"),
+            patch("omen_fanctl.cli.acquire_lock", return_value=Mock()),
+            patch("omen_fanctl.cli.wait_for_hp_fan_hwmon") as wait_fan,
             patch(
-                "hp_fan_control.cli.wait_for_temperature_sensors",
+                "omen_fanctl.cli.wait_for_temperature_sensors",
                 return_value=Mock(spec=Sensors),
             ),
-            patch("hp_fan_control.cli.CsvLog", return_value=Mock(spec=CsvLog)),
+            patch("omen_fanctl.cli.CsvLog", return_value=Mock(spec=CsvLog)),
             patch(
-                "hp_fan_control.cli.SystemdNotifier.from_environment",
+                "omen_fanctl.cli.SystemdNotifier.from_environment",
                 return_value=Mock(spec=SystemdNotifier),
             ),
-            patch("hp_fan_control.cli.Controller", return_value=Mock(spec=Controller)),
-            patch("hp_fan_control.cli.signal.signal"),
+            patch("omen_fanctl.cli.Controller", return_value=Mock(spec=Controller)),
+            patch("omen_fanctl.cli.signal.signal"),
         ):
             wait_fan.return_value = Mock(spec=HpFanHwmon)
             wait_fan.return_value.path = Path("/sys/class/hwmon/hwmon7")
@@ -3397,11 +3397,11 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
         path = self._write_config('[daemon]\nallowed_boards = ["8C99"]\n')
         fan = self._safe_fan()
         with (
-            patch("hp_fan_control.cli.read_text", return_value="8C99"),
-            patch("hp_fan_control.cli.os.geteuid", return_value=0),
-            patch("hp_fan_control.cli.acquire_lock", return_value=Mock()),
-            patch("hp_fan_control.cli.HpFanHwmon", return_value=fan),
-            patch("hp_fan_control.cli.ensure_failsafe_fan_state") as failsafe,
+            patch("omen_fanctl.cli.read_text", return_value="8C99"),
+            patch("omen_fanctl.cli.os.geteuid", return_value=0),
+            patch("omen_fanctl.cli.acquire_lock", return_value=Mock()),
+            patch("omen_fanctl.cli.HpFanHwmon", return_value=fan),
+            patch("omen_fanctl.cli.ensure_failsafe_fan_state") as failsafe,
         ):
             result = main(["--config", str(path), "--failsafe"])
 
@@ -3411,10 +3411,10 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
     def test_failsafe_rejects_a_board_outside_the_allowlist(self):
         path = self._write_config('[daemon]\nallowed_boards = ["8C99"]\n')
         with (
-            patch("hp_fan_control.cli.read_text", return_value="8D87"),
-            patch("hp_fan_control.cli.os.geteuid", return_value=0),
-            patch("hp_fan_control.cli.ensure_failsafe_fan_state") as failsafe,
-            self.assertLogs("hp-fan-control", level="ERROR") as logs,
+            patch("omen_fanctl.cli.read_text", return_value="8D87"),
+            patch("omen_fanctl.cli.os.geteuid", return_value=0),
+            patch("omen_fanctl.cli.ensure_failsafe_fan_state") as failsafe,
+            self.assertLogs("omen-fanctl", level="ERROR") as logs,
         ):
             result = main(["--config", str(path), "--failsafe"])
 
@@ -3425,10 +3425,10 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
     def test_restore_auto_rejects_a_board_outside_the_allowlist(self):
         path = self._write_config('[daemon]\nallowed_boards = ["8C99"]\n')
         with (
-            patch("hp_fan_control.cli.read_text", return_value="8D87"),
-            patch("hp_fan_control.cli.os.geteuid", return_value=0),
-            patch("hp_fan_control.cli.restore_firmware_auto") as restore,
-            self.assertLogs("hp-fan-control", level="ERROR") as logs,
+            patch("omen_fanctl.cli.read_text", return_value="8D87"),
+            patch("omen_fanctl.cli.os.geteuid", return_value=0),
+            patch("omen_fanctl.cli.restore_firmware_auto") as restore,
+            self.assertLogs("omen-fanctl", level="ERROR") as logs,
         ):
             result = main(["--config", str(path), "--restore-auto"])
 
@@ -3459,27 +3459,27 @@ class MainStartupTests(RuntimeMarkerIsolation):
         notifier = Mock(spec=SystemdNotifier)
         log_path = Path("/tmp/requested-telemetry.csv")
         with (
-            patch("hp_fan_control.cli.Settings.load", return_value=settings),
-            patch("hp_fan_control.cli.read_text", return_value="8D87"),
-            patch("hp_fan_control.cli.validate_required_profile"),
-            patch("hp_fan_control.cli.os.geteuid", return_value=0),
-            patch("hp_fan_control.cli.acquire_lock", return_value=lock),
+            patch("omen_fanctl.cli.Settings.load", return_value=settings),
+            patch("omen_fanctl.cli.read_text", return_value="8D87"),
+            patch("omen_fanctl.cli.validate_required_profile"),
+            patch("omen_fanctl.cli.os.geteuid", return_value=0),
+            patch("omen_fanctl.cli.acquire_lock", return_value=lock),
             patch(
-                "hp_fan_control.cli.CONFIRMED_BOARD_PATH",
+                "omen_fanctl.cli.CONFIRMED_BOARD_PATH",
                 self._confirmed_board_path(),
             ),
-            patch("hp_fan_control.cli.wait_for_hp_fan_hwmon", return_value=fan),
+            patch("omen_fanctl.cli.wait_for_hp_fan_hwmon", return_value=fan),
             patch(
-                "hp_fan_control.cli.wait_for_temperature_sensors",
+                "omen_fanctl.cli.wait_for_temperature_sensors",
                 return_value=sensors,
             ),
-            patch("hp_fan_control.cli.CsvLog", return_value=csv_log) as csv_type,
+            patch("omen_fanctl.cli.CsvLog", return_value=csv_log) as csv_type,
             patch(
-                "hp_fan_control.cli.SystemdNotifier.from_environment",
+                "omen_fanctl.cli.SystemdNotifier.from_environment",
                 return_value=notifier,
             ),
-            patch("hp_fan_control.cli.Controller", return_value=controller) as factory,
-            patch("hp_fan_control.cli.signal.signal") as install_signal,
+            patch("omen_fanctl.cli.Controller", return_value=controller) as factory,
+            patch("omen_fanctl.cli.signal.signal") as install_signal,
         ):
             result = main(
                 [
@@ -3524,23 +3524,23 @@ class MainStartupTests(RuntimeMarkerIsolation):
         fan = self._safe_fan()
         sensors = Mock(spec=Sensors)
         with (
-            patch("hp_fan_control.cli.Settings.load", return_value=settings),
-            patch("hp_fan_control.cli.read_text", return_value="8D87"),
-            patch("hp_fan_control.cli.validate_required_profile"),
-            patch("hp_fan_control.cli.os.geteuid", return_value=0),
-            patch("hp_fan_control.cli.acquire_lock", return_value=lock),
+            patch("omen_fanctl.cli.Settings.load", return_value=settings),
+            patch("omen_fanctl.cli.read_text", return_value="8D87"),
+            patch("omen_fanctl.cli.validate_required_profile"),
+            patch("omen_fanctl.cli.os.geteuid", return_value=0),
+            patch("omen_fanctl.cli.acquire_lock", return_value=lock),
             patch(
-                "hp_fan_control.cli.CONFIRMED_BOARD_PATH",
+                "omen_fanctl.cli.CONFIRMED_BOARD_PATH",
                 self._confirmed_board_path(),
             ),
-            patch("hp_fan_control.cli.wait_for_hp_fan_hwmon", return_value=fan),
+            patch("omen_fanctl.cli.wait_for_hp_fan_hwmon", return_value=fan),
             patch(
-                "hp_fan_control.cli.wait_for_temperature_sensors",
+                "omen_fanctl.cli.wait_for_temperature_sensors",
                 return_value=sensors,
             ),
-            patch("hp_fan_control.cli.run_actuator_test") as actuator_test,
-            patch("hp_fan_control.cli.Controller") as controller_type,
-            patch("hp_fan_control.cli.CsvLog") as csv_type,
+            patch("omen_fanctl.cli.run_actuator_test") as actuator_test,
+            patch("omen_fanctl.cli.Controller") as controller_type,
+            patch("omen_fanctl.cli.CsvLog") as csv_type,
         ):
             result = main(["--apply", "--actuator-test", "60", "--duration", "12"])
 
@@ -3585,17 +3585,17 @@ class MainStartupTests(RuntimeMarkerIsolation):
                     side_effect=HardwareError("stop after settings capture")
                 )
                 with (
-                    patch("hp_fan_control.cli.Settings.load", return_value=base),
-                    patch("hp_fan_control.cli.read_text", return_value="8D87"),
-                    patch("hp_fan_control.cli.validate_required_profile"),
-                    patch("hp_fan_control.cli.dry_run_lock_path"),
-                    patch("hp_fan_control.cli.acquire_lock", return_value=lock),
-                    patch("hp_fan_control.cli.wait_for_hp_fan_hwmon"),
+                    patch("omen_fanctl.cli.Settings.load", return_value=base),
+                    patch("omen_fanctl.cli.read_text", return_value="8D87"),
+                    patch("omen_fanctl.cli.validate_required_profile"),
+                    patch("omen_fanctl.cli.dry_run_lock_path"),
+                    patch("omen_fanctl.cli.acquire_lock", return_value=lock),
+                    patch("omen_fanctl.cli.wait_for_hp_fan_hwmon"),
                     patch(
-                        "hp_fan_control.cli.wait_for_temperature_sensors",
+                        "omen_fanctl.cli.wait_for_temperature_sensors",
                         wait_for_sensors,
                     ),
-                    patch("hp_fan_control.cli.LOG.error"),
+                    patch("omen_fanctl.cli.LOG.error"),
                 ):
                     result = main([*arguments, "--no-log-file"])
 
@@ -3621,17 +3621,17 @@ class MainStartupTests(RuntimeMarkerIsolation):
                 acquire = Mock()
                 with (
                     patch(
-                        "hp_fan_control.cli.Settings.load",
+                        "omen_fanctl.cli.Settings.load",
                         return_value=settings,
                     ),
-                    patch("hp_fan_control.cli.read_text", return_value="8D87"),
-                    patch("hp_fan_control.cli.validate_required_profile"),
+                    patch("omen_fanctl.cli.read_text", return_value="8D87"),
+                    patch("omen_fanctl.cli.validate_required_profile"),
                     patch(
-                        "hp_fan_control.cli.os.geteuid",
+                        "omen_fanctl.cli.os.geteuid",
                         return_value=effective_uid,
                     ),
-                    patch("hp_fan_control.cli.acquire_lock", acquire),
-                    patch("hp_fan_control.cli.LOG.error"),
+                    patch("omen_fanctl.cli.acquire_lock", acquire),
+                    patch("omen_fanctl.cli.LOG.error"),
                 ):
                     result = main(arguments)
 
@@ -3649,10 +3649,10 @@ class MainStartupTests(RuntimeMarkerIsolation):
             raise AssertionError(f"unexpected read: {path}")
 
         with (
-            patch("hp_fan_control.cli.read_text", side_effect=fake_read_text),
-            patch("hp_fan_control.cli.acquire_lock", return_value=lock),
+            patch("omen_fanctl.cli.read_text", side_effect=fake_read_text),
+            patch("omen_fanctl.cli.acquire_lock", return_value=lock),
             patch(
-                "hp_fan_control.cli.wait_for_hp_fan_hwmon",
+                "omen_fanctl.cli.wait_for_hp_fan_hwmon",
                 side_effect=HardwareError("hp hwmon startup timeout"),
             ),
         ):
@@ -3666,12 +3666,12 @@ class MainStartupTests(RuntimeMarkerIsolation):
     def test_main_closes_lock_when_k10temp_startup_times_out(self):
         lock = Mock()
         with (
-            patch("hp_fan_control.cli.read_text", return_value="8D87"),
-            patch("hp_fan_control.cli.validate_required_profile"),
-            patch("hp_fan_control.cli.acquire_lock", return_value=lock),
-            patch("hp_fan_control.cli.wait_for_hp_fan_hwmon"),
+            patch("omen_fanctl.cli.read_text", return_value="8D87"),
+            patch("omen_fanctl.cli.validate_required_profile"),
+            patch("omen_fanctl.cli.acquire_lock", return_value=lock),
+            patch("omen_fanctl.cli.wait_for_hp_fan_hwmon"),
             patch(
-                "hp_fan_control.cli.wait_for_temperature_sensors",
+                "omen_fanctl.cli.wait_for_temperature_sensors",
                 side_effect=HardwareError("k10temp startup timeout"),
             ),
         ):
@@ -3683,7 +3683,7 @@ class MainStartupTests(RuntimeMarkerIsolation):
         lock.close.assert_called_once_with()
 
     def test_main_preserves_successful_system_exit_without_explicit_code(self):
-        with patch("hp_fan_control.cli.parse_args", side_effect=SystemExit(None)):
+        with patch("omen_fanctl.cli.parse_args", side_effect=SystemExit(None)):
             self.assertEqual(main([]), 0)
 
     def test_main_returns_retryable_exit_code_for_unavailable_required_profile(self):
@@ -3699,13 +3699,13 @@ class MainStartupTests(RuntimeMarkerIsolation):
             raise AssertionError(f"unexpected read: {path}")
 
         with (
-            patch("hp_fan_control.cli.Settings.load", return_value=settings),
-            patch("hp_fan_control.cli.read_text", side_effect=fake_read_text),
+            patch("omen_fanctl.cli.Settings.load", return_value=settings),
+            patch("omen_fanctl.cli.read_text", side_effect=fake_read_text),
             patch(
-                "hp_fan_control.cli.validate_required_profile",
+                "omen_fanctl.cli.validate_required_profile",
                 side_effect=HardwareError("required platform profile startup timeout"),
             ),
-            patch("hp_fan_control.cli.acquire_lock", acquire),
+            patch("omen_fanctl.cli.acquire_lock", acquire),
         ):
             self.assertEqual(
                 main(["--no-log-file"]),
@@ -3725,9 +3725,9 @@ class RecoveryCommandTests(RuntimeMarkerIsolation):
     def test_actuator_test_restores_auto(self):
         fan = FakeFan()
         with (
-            patch("hp_fan_control.cli.time.monotonic", side_effect=[0.0, 0.0, 2.0]),
-            patch("hp_fan_control.cli.time.sleep"),
-            patch("hp_fan_control.cli.signal.signal"),
+            patch("omen_fanctl.cli.time.monotonic", side_effect=[0.0, 0.0, 2.0]),
+            patch("omen_fanctl.cli.time.sleep"),
+            patch("omen_fanctl.cli.signal.signal"),
         ):
             run_actuator_test(fan, FakeSensors(50), 60, 1)
         self.assertEqual(fan.actions[0][0], "manual")
@@ -3821,11 +3821,11 @@ class RecoveryCommandTests(RuntimeMarkerIsolation):
         fan = FakeFan()
         fan.mode = MANUAL_MODE
         with (
-            patch("hp_fan_control.cli.read_text", return_value="8D87"),
-            patch("hp_fan_control.cli.os.geteuid", return_value=0),
-            patch("hp_fan_control.cli.acquire_lock", return_value=lock),
-            patch("hp_fan_control.cli.HpFanHwmon", return_value=fan),
-            patch("hp_fan_control.cli.Settings.load") as load_settings,
+            patch("omen_fanctl.cli.read_text", return_value="8D87"),
+            patch("omen_fanctl.cli.os.geteuid", return_value=0),
+            patch("omen_fanctl.cli.acquire_lock", return_value=lock),
+            patch("omen_fanctl.cli.HpFanHwmon", return_value=fan),
+            patch("omen_fanctl.cli.Settings.load") as load_settings,
         ):
             self.assertEqual(main(["--restore-auto"]), 0)
         load_settings.assert_not_called()
@@ -3838,13 +3838,13 @@ class RecoveryCommandTests(RuntimeMarkerIsolation):
         fan.mode = MANUAL_MODE
         guard = self.root / "missing-auto-guard"
         with (
-            patch("hp_fan_control.cli.read_text", return_value="8D87"),
-            patch("hp_fan_control.cli.os.geteuid", return_value=0),
-            patch("hp_fan_control.cli.acquire_lock", return_value=lock),
-            patch("hp_fan_control.cli.HpFanHwmon", return_value=fan),
-            patch("hp_fan_control.cli.wait_for_hp_fan_hwmon") as wait_for_hwmon,
-            patch("hp_fan_control.cli.AUTO_GUARD_PATH", guard),
-            patch("hp_fan_control.cli.Settings.load") as load_settings,
+            patch("omen_fanctl.cli.read_text", return_value="8D87"),
+            patch("omen_fanctl.cli.os.geteuid", return_value=0),
+            patch("omen_fanctl.cli.acquire_lock", return_value=lock),
+            patch("omen_fanctl.cli.HpFanHwmon", return_value=fan),
+            patch("omen_fanctl.cli.wait_for_hp_fan_hwmon") as wait_for_hwmon,
+            patch("omen_fanctl.cli.AUTO_GUARD_PATH", guard),
+            patch("omen_fanctl.cli.Settings.load") as load_settings,
         ):
             self.assertEqual(main(["--failsafe"]), 0)
         load_settings.assert_not_called()
@@ -3855,11 +3855,11 @@ class RecoveryCommandTests(RuntimeMarkerIsolation):
     def test_failsafe_closes_lock_when_hwmon_initialization_fails(self):
         lock = Mock()
         with (
-            patch("hp_fan_control.cli.read_text", return_value="8D87"),
-            patch("hp_fan_control.cli.os.geteuid", return_value=0),
-            patch("hp_fan_control.cli.acquire_lock", return_value=lock),
+            patch("omen_fanctl.cli.read_text", return_value="8D87"),
+            patch("omen_fanctl.cli.os.geteuid", return_value=0),
+            patch("omen_fanctl.cli.acquire_lock", return_value=lock),
             patch(
-                "hp_fan_control.cli.HpFanHwmon",
+                "omen_fanctl.cli.HpFanHwmon",
                 side_effect=HardwareError("hp hwmon unavailable"),
             ),
         ):
@@ -3876,7 +3876,7 @@ class SystemdNotifierTests(unittest.TestCase):
         context.__exit__ = Mock(return_value=False)
         with (
             patch.dict(
-                "hp_fan_control.controller.os.environ",
+                "omen_fanctl.controller.os.environ",
                 {
                     "NOTIFY_SOCKET": "@notify",
                     "WATCHDOG_PID": str(os.getpid()),
@@ -3884,7 +3884,7 @@ class SystemdNotifierTests(unittest.TestCase):
                 },
                 clear=True,
             ),
-            patch("hp_fan_control.controller.socket.socket", return_value=context),
+            patch("omen_fanctl.controller.socket.socket", return_value=context),
         ):
             notifier = SystemdNotifier.from_environment()
             notifier.watchdog()
@@ -3898,11 +3898,11 @@ class SystemdNotifierTests(unittest.TestCase):
         context.__exit__ = Mock(return_value=False)
         with (
             patch.dict(
-                "hp_fan_control.controller.os.environ",
+                "omen_fanctl.controller.os.environ",
                 {"NOTIFY_SOCKET": "/run/notify", "WATCHDOG_PID": "999999"},
                 clear=True,
             ),
-            patch("hp_fan_control.controller.socket.socket", return_value=context),
+            patch("omen_fanctl.controller.socket.socket", return_value=context),
         ):
             notifier = SystemdNotifier.from_environment()
             notifier.ready()
@@ -3921,11 +3921,11 @@ class SystemdNotifierTests(unittest.TestCase):
 
         with (
             patch(
-                "hp_fan_control.controller.socket.socket",
+                "omen_fanctl.controller.socket.socket",
                 side_effect=[OSError("temporary failure"), context],
             ) as socket_factory,
-            patch("hp_fan_control.controller.LOG.warning") as warning,
-            patch("hp_fan_control.controller.LOG.info") as info,
+            patch("omen_fanctl.controller.LOG.warning") as warning,
+            patch("omen_fanctl.controller.LOG.info") as info,
         ):
             notifier.ready()
             notifier.watchdog()
@@ -3944,7 +3944,7 @@ class PlatformProfileMonitorTests(unittest.TestCase):
             path.write_text("balanced\n")
             poller = Mock()
             poller.poll.return_value = [(7, select.POLLPRI)]
-            with patch("hp_fan_control.hardware.select.poll", return_value=poller):
+            with patch("omen_fanctl.hardware.select.poll", return_value=poller):
                 monitor = PlatformProfileMonitor(path)
                 self.assertEqual(monitor.current, "balanced")
                 path.write_text("performance\n")
@@ -3958,7 +3958,7 @@ class PlatformProfileMonitorTests(unittest.TestCase):
         handle = Mock()
         path.open.return_value = handle
         with (
-            patch("hp_fan_control.hardware.select.poll"),
+            patch("omen_fanctl.hardware.select.poll"),
             patch.object(
                 PlatformProfileMonitor,
                 "_read",
@@ -4024,7 +4024,7 @@ class FakeHwmonTests(unittest.TestCase):
         fan = initialized_fan(self)
         failure = HardwareError("PWM write failed")
         with patch(
-            "hp_fan_control.hardware.write_int",
+            "omen_fanctl.hardware.write_int",
             side_effect=[None, failure, None],
         ) as write:
             with self.assertRaisesRegex(HardwareError, "PWM write failed"):
@@ -4044,10 +4044,10 @@ class FakeHwmonTests(unittest.TestCase):
         rollback_failure = HardwareError("Auto rollback failed")
         with (
             patch(
-                "hp_fan_control.hardware.write_int",
+                "omen_fanctl.hardware.write_int",
                 side_effect=[None, pwm_failure, rollback_failure],
             ) as write,
-            patch("hp_fan_control.hardware.LOG.critical") as critical,
+            patch("omen_fanctl.hardware.LOG.critical") as critical,
             self.assertRaisesRegex(HardwareError, "PWM write failed"),
         ):
             fan.set_manual(100)
@@ -4069,8 +4069,8 @@ class FakeHwmonTests(unittest.TestCase):
         fan = initialized_fan(self)
 
         with (
-            patch("hp_fan_control.hardware.read_int", return_value=AUTO_MODE),
-            patch("hp_fan_control.hardware.write_int") as write,
+            patch("omen_fanctl.hardware.read_int", return_value=AUTO_MODE),
+            patch("omen_fanctl.hardware.write_int") as write,
         ):
             fan.update_manual(120)
 
@@ -4086,8 +4086,8 @@ class FakeHwmonTests(unittest.TestCase):
         fan = initialized_fan(self)
 
         with (
-            patch("hp_fan_control.hardware.read_int", return_value=AUTO_MODE),
-            patch("hp_fan_control.hardware.write_int") as write,
+            patch("omen_fanctl.hardware.read_int", return_value=AUTO_MODE),
+            patch("omen_fanctl.hardware.write_int") as write,
         ):
             fan.update_manual(120)
             with self.assertRaisesRegex(
@@ -4108,8 +4108,8 @@ class FakeHwmonTests(unittest.TestCase):
         fan = initialized_fan(self)
 
         with (
-            patch("hp_fan_control.hardware.read_int", return_value=MANUAL_MODE),
-            patch("hp_fan_control.hardware.write_int") as write,
+            patch("omen_fanctl.hardware.read_int", return_value=MANUAL_MODE),
+            patch("omen_fanctl.hardware.write_int") as write,
         ):
             fan.update_manual(120, write_pwm=False)
 
@@ -4119,8 +4119,8 @@ class FakeHwmonTests(unittest.TestCase):
         fan = initialized_fan(self)
 
         with (
-            patch("hp_fan_control.hardware.read_int", return_value=MAX_MODE),
-            patch("hp_fan_control.hardware.write_int") as write,
+            patch("omen_fanctl.hardware.read_int", return_value=MAX_MODE),
+            patch("omen_fanctl.hardware.write_int") as write,
         ):
             fan.update_manual(100)
 
@@ -4130,8 +4130,8 @@ class FakeHwmonTests(unittest.TestCase):
         fan = initialized_fan(self)
 
         with (
-            patch("hp_fan_control.hardware.read_int", return_value=3),
-            patch("hp_fan_control.hardware.write_int") as write,
+            patch("omen_fanctl.hardware.read_int", return_value=3),
+            patch("omen_fanctl.hardware.write_int") as write,
             self.assertRaisesRegex(HardwareError, "unexpected fan mode"),
         ):
             fan.update_manual(100)
@@ -4158,15 +4158,15 @@ class HwmonStartupTests(unittest.TestCase):
 
             with (
                 patch(
-                    "hp_fan_control.hardware.time.monotonic",
+                    "omen_fanctl.hardware.time.monotonic",
                     side_effect=[100.0, 100.0],
                 ),
                 patch(
-                    "hp_fan_control.hardware.time.sleep",
+                    "omen_fanctl.hardware.time.sleep",
                     side_effect=publish_sensor,
                 ) as sleep,
-                patch("hp_fan_control.hardware.LOG.warning") as log_warning,
-                patch("hp_fan_control.hardware.LOG.info") as log_info,
+                patch("omen_fanctl.hardware.LOG.warning") as log_warning,
+                patch("omen_fanctl.hardware.LOG.info") as log_info,
             ):
                 sensors = wait_for_temperature_sensors(settings, root=root)
 
@@ -4194,15 +4194,15 @@ class HwmonStartupTests(unittest.TestCase):
 
             with (
                 patch(
-                    "hp_fan_control.hardware.time.monotonic",
+                    "omen_fanctl.hardware.time.monotonic",
                     side_effect=[100.0, 100.0],
                 ),
                 patch(
-                    "hp_fan_control.hardware.time.sleep",
+                    "omen_fanctl.hardware.time.sleep",
                     side_effect=publish_temperature,
                 ) as sleep,
-                patch("hp_fan_control.hardware.LOG.warning") as log_warning,
-                patch("hp_fan_control.hardware.LOG.info") as log_info,
+                patch("omen_fanctl.hardware.LOG.warning") as log_warning,
+                patch("omen_fanctl.hardware.LOG.info") as log_info,
             ):
                 sensors = wait_for_temperature_sensors(settings, root=root)
 
@@ -4221,14 +4221,14 @@ class HwmonStartupTests(unittest.TestCase):
         )
         with (
             patch(
-                "hp_fan_control.hardware.Sensors",
+                "omen_fanctl.hardware.Sensors",
                 side_effect=HardwareNotReadyError("not ready"),
             ),
             patch(
-                "hp_fan_control.hardware.time.monotonic",
+                "omen_fanctl.hardware.time.monotonic",
                 side_effect=[100.0, 120.0],
             ),
-            patch("hp_fan_control.hardware.time.sleep") as sleep,
+            patch("omen_fanctl.hardware.time.sleep") as sleep,
             self.assertRaisesRegex(
                 HardwareError,
                 "k10temp temperature source did not become ready within 20 seconds",
@@ -4253,14 +4253,14 @@ class HwmonStartupTests(unittest.TestCase):
 
             with (
                 patch(
-                    "hp_fan_control.hardware.time.monotonic",
+                    "omen_fanctl.hardware.time.monotonic",
                     side_effect=[100.0, 100.0],
                 ),
                 patch(
-                    "hp_fan_control.hardware.time.sleep",
+                    "omen_fanctl.hardware.time.sleep",
                     side_effect=publish_attributes,
                 ) as sleep,
-                patch("hp_fan_control.hardware.LOG.info") as log_info,
+                patch("omen_fanctl.hardware.LOG.info") as log_info,
             ):
                 fan = wait_for_hp_fan_hwmon(root=root)
 
@@ -4272,11 +4272,11 @@ class HwmonStartupTests(unittest.TestCase):
         fan = Mock(spec=HpFanHwmon)
         with (
             patch(
-                "hp_fan_control.hardware.HpFanHwmon",
+                "omen_fanctl.hardware.HpFanHwmon",
                 side_effect=[HardwareNotReadyError("not ready"), fan],
             ) as constructor,
-            patch("hp_fan_control.hardware.time.monotonic", side_effect=[100.0, 100.0]),
-            patch("hp_fan_control.hardware.time.sleep") as sleep,
+            patch("omen_fanctl.hardware.time.monotonic", side_effect=[100.0, 100.0]),
+            patch("omen_fanctl.hardware.time.sleep") as sleep,
         ):
             self.assertIs(wait_for_hp_fan_hwmon(), fan)
 
@@ -4286,11 +4286,11 @@ class HwmonStartupTests(unittest.TestCase):
     def test_fails_after_hp_hwmon_startup_timeout(self):
         with (
             patch(
-                "hp_fan_control.hardware.HpFanHwmon",
+                "omen_fanctl.hardware.HpFanHwmon",
                 side_effect=HardwareNotReadyError("not ready"),
             ),
-            patch("hp_fan_control.hardware.time.monotonic", side_effect=[100.0, 120.0]),
-            patch("hp_fan_control.hardware.time.sleep") as sleep,
+            patch("omen_fanctl.hardware.time.monotonic", side_effect=[100.0, 120.0]),
+            patch("omen_fanctl.hardware.time.sleep") as sleep,
             self.assertRaisesRegex(
                 HardwareError,
                 "did not become ready within 20 seconds",
@@ -4303,10 +4303,10 @@ class HwmonStartupTests(unittest.TestCase):
     def test_does_not_retry_non_transient_hwmon_error(self):
         with (
             patch(
-                "hp_fan_control.hardware.HpFanHwmon",
+                "omen_fanctl.hardware.HpFanHwmon",
                 side_effect=HardwareError("multiple hp devices"),
             ),
-            patch("hp_fan_control.hardware.time.sleep") as sleep,
+            patch("omen_fanctl.hardware.time.sleep") as sleep,
             self.assertRaisesRegex(HardwareError, "multiple hp devices"),
         ):
             wait_for_hp_fan_hwmon()
@@ -4316,12 +4316,12 @@ class HwmonStartupTests(unittest.TestCase):
 
 class EntryPointTests(unittest.TestCase):
     def test_package_exports_every_name_declared_in_all(self):
-        exports = hp_fan_control_package.__all__
+        exports = omen_fanctl_package.__all__
 
         self.assertEqual(len(exports), len(set(exports)))
         for name in exports:
             with self.subTest(name=name):
-                self.assertTrue(hasattr(hp_fan_control_package, name))
+                self.assertTrue(hasattr(omen_fanctl_package, name))
 
     def test_script_entry_point_displays_help(self):
         result = subprocess.run(
@@ -4339,7 +4339,7 @@ class EntryPointTests(unittest.TestCase):
         environment = os.environ.copy()
         environment["PYTHONPATH"] = str(DAEMON_PATH)
         result = subprocess.run(
-            [sys.executable, "-m", "hp_fan_control", "--help"],
+            [sys.executable, "-m", "omen_fanctl", "--help"],
             cwd=PROJECT_ROOT,
             env=environment,
             check=False,
@@ -4425,7 +4425,7 @@ class SystemdUnitTests(unittest.TestCase):
         policy = LOGROTATE_PATH.read_text(encoding="utf-8")
 
         self.assertIn(
-            "/var/log/hp-fan-control/hp-fan-control.csv {\n",
+            "/var/log/omen-fanctl/omen-fanctl.csv {\n",
             policy,
         )
         self.assertNotIn("*.csv", policy)

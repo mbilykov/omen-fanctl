@@ -3,7 +3,7 @@
 
 import sys
 
-from hp_fan_control.cli import main
+from omen_fanctl.cli import main
 
 
 if __name__ == "__main__":

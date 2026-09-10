@@ -36,9 +36,9 @@ from .hardware import (
 )
 
 
-LOG = logging.getLogger("hp-fan-control")
-AUTO_GUARD_PATH = Path("/run/hp-fan-control/auto-guard")
-CONFIRMED_BOARD_PATH = Path("/run/hp-fan-control/board")
+LOG = logging.getLogger("omen-fanctl")
+AUTO_GUARD_PATH = Path("/run/omen-fanctl/auto-guard")
+CONFIRMED_BOARD_PATH = Path("/run/omen-fanctl/board")
 CONFIGURATION_ERROR_EXIT_STATUS = 78
 
 
@@ -86,7 +86,7 @@ def acquire_lock(path: Path) -> TextIOWrapper:
 
 
 def dry_run_lock_path() -> Path:
-    return Path("/tmp") / f"hp-fan-control-dry-run-{os.geteuid()}.lock"
+    return Path("/tmp") / f"omen-fanctl-dry-run-{os.geteuid()}.lock"
 
 
 def _csv_log_path(args: argparse.Namespace) -> Path | None:
@@ -94,7 +94,7 @@ def _csv_log_path(args: argparse.Namespace) -> Path | None:
         return None
     if args.log_file:
         return args.log_file
-    return Path.cwd() / "hp-fan-control.csv"
+    return Path.cwd() / "omen-fanctl.csv"
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
@@ -107,7 +107,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path("/etc/hp-fan-control/fan-control.toml"),
+        default=Path("/etc/omen-fanctl/omen-fanctl.toml"),
         help="configuration file",
     )
     operation_group = parser.add_mutually_exclusive_group()
@@ -141,7 +141,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     log_group.add_argument(
         "--log-file",
         type=Path,
-        help="CSV output path (default: hp-fan-control.csv in the current directory)",
+        help="CSV output path (default: omen-fanctl.csv in the current directory)",
     )
     log_group.add_argument(
         "--no-log-file", action="store_true", help="disable CSV output"
@@ -394,7 +394,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 )
             if os.geteuid() != 0:
                 raise HardwareError("fan-control writes must be run as root (use sudo)")
-            lock_handle = acquire_lock(Path("/run/hp-fan-control/control.lock"))
+            lock_handle = acquire_lock(Path("/run/omen-fanctl/control.lock"))
             # Recovery commands deliberately do not wait for hwmon: --failsafe
             # runs from ExecStopPost and must never delay service shutdown.
             fan = HpFanHwmon()
@@ -433,7 +433,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 "--status-interval must be >= daemon sample_interval_s"
             )
 
-        lock_path = Path("/run/hp-fan-control/control.lock")
+        lock_path = Path("/run/omen-fanctl/control.lock")
         if not args.apply:
             lock_path = dry_run_lock_path()
         # Keep the file object alive for the lifetime of main; closing it releases

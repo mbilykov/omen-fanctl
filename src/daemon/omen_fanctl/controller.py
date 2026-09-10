@@ -27,7 +27,7 @@ from .hardware import (
 )
 
 
-LOG = logging.getLogger("hp-fan-control")
+LOG = logging.getLogger("omen-fanctl")
 OPTIONAL_CONTROL_SENSORS = frozenset({"ir"})
 OPTIONAL_SENSOR_MISSING_RELEASE_SAMPLES = 3
 

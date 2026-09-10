@@ -78,8 +78,8 @@ command -v perl >/dev/null || die "perl was not found"
 command -v hexdump >/dev/null || die "hexdump was not found"
 module_is_loaded || die "hp_wmi is not loaded"
 
-if pgrep -f '[h]p_fan_control.py' >/dev/null; then
-    die "hp_fan_control.py is running; stop it before capturing"
+if pgrep -f '[o]men_fanctl.py' >/dev/null; then
+    die "omen_fanctl.py is running; stop it before capturing"
 fi
 
 hp_hwmon="$(find_hp_hwmon)" || die "HP hwmon device was not found"

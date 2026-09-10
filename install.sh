@@ -2,13 +2,13 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-INSTALL_DIR=/usr/local/lib/hp-fan-control
-DAEMON_SOURCE_DIR=$SCRIPT_DIR/src/daemon/hp_fan_control
-DOC_DIR=/usr/local/share/doc/hp-fan-control
-CONFIG_DIR=/etc/hp-fan-control
-UNIT_PATH=/etc/systemd/system/hp-fan-control.service
-TMPFILES_PATH=/etc/tmpfiles.d/hp-fan-control.conf
-LOGROTATE_PATH=/etc/logrotate.d/hp-fan-control
+INSTALL_DIR=/usr/local/lib/omen-fanctl
+DAEMON_SOURCE_DIR=$SCRIPT_DIR/src/daemon/omen_fanctl
+DOC_DIR=/usr/local/share/doc/omen-fanctl
+CONFIG_DIR=/etc/omen-fanctl
+UNIT_PATH=/etc/systemd/system/omen-fanctl.service
+TMPFILES_PATH=/etc/tmpfiles.d/omen-fanctl.conf
+LOGROTATE_PATH=/etc/logrotate.d/omen-fanctl
 START_NOW=false
 ENABLE_NOW=false
 
@@ -70,12 +70,12 @@ fi
 
 log "Verifying source files"
 for required in \
-    "$SCRIPT_DIR/src/daemon/hp_fan_control.py" \
-    "$SCRIPT_DIR/src/config/fan-control.toml" \
+    "$SCRIPT_DIR/src/daemon/omen_fanctl.py" \
+    "$SCRIPT_DIR/src/config/omen-fanctl.toml" \
     "$SCRIPT_DIR/README.md" \
-    "$SCRIPT_DIR/src/systemd/hp-fan-control.service" \
-    "$SCRIPT_DIR/src/logrotate/hp-fan-control" \
-    "$SCRIPT_DIR/src/tmpfiles/hp-fan-control.conf"; do
+    "$SCRIPT_DIR/src/systemd/omen-fanctl.service" \
+    "$SCRIPT_DIR/src/logrotate/omen-fanctl" \
+    "$SCRIPT_DIR/src/tmpfiles/omen-fanctl.conf"; do
     if [[ ! -f "$required" ]]; then
         echo "ERROR: required source file is missing: $required" >&2
         exit 1
@@ -101,14 +101,14 @@ for source in "${DAEMON_SOURCES[@]}"; do
     fi
 done
 
-if systemctl cat hp-fan-control.service >/dev/null 2>&1; then
-    log "Existing hp-fan-control installation detected"
-    if systemctl is-active --quiet hp-fan-control.service; then
+if systemctl cat omen-fanctl.service >/dev/null 2>&1; then
+    log "Existing omen-fanctl installation detected"
+    if systemctl is-active --quiet omen-fanctl.service; then
         log "Service is active; checking whether it can be stopped safely"
-        if [[ -e /run/hp-fan-control/auto-guard ]]; then
+        if [[ -e /run/omen-fanctl/auto-guard ]]; then
             echo "ERROR: refusing to stop the existing service during Auto guard" >&2
             echo "Wait for 'state=sleeping', then retry." >&2
-            echo "Monitor with: journalctl -fu hp-fan-control.service" >&2
+            echo "Monitor with: journalctl -fu omen-fanctl.service" >&2
             exit 1
         fi
         HP_HWMON=
@@ -127,8 +127,8 @@ if systemctl cat hp-fan-control.service >/dev/null 2>&1; then
             echo "Switch to Balanced, wait for 'state=sleeping', then retry." >&2
             exit 1
         fi
-        log "Fan control is in BIOS Auto; stopping hp-fan-control.service"
-        systemctl stop hp-fan-control.service
+        log "Fan control is in BIOS Auto; stopping omen-fanctl.service"
+        systemctl stop omen-fanctl.service
         log "Service stopped"
         if [[ -n "${HP_HWMON:-}" ]] && [[ "$(<"$HP_HWMON/pwm1_enable")" != 2 ]]; then
             echo "ERROR: service stopped in maximum fail-safe; files were not replaced" >&2
@@ -139,48 +139,48 @@ if systemctl cat hp-fan-control.service >/dev/null 2>&1; then
         log "Service is already stopped"
     fi
 else
-    log "No existing hp-fan-control installation detected"
+    log "No existing omen-fanctl installation detected"
 fi
 
 for source in "${DAEMON_SOURCES[@]}"; do
     install_file 0644 "$source" \
-        "$INSTALL_DIR/hp_fan_control/${source##*/}"
+        "$INSTALL_DIR/omen_fanctl/${source##*/}"
 done
-install_file 0755 "$SCRIPT_DIR/src/daemon/hp_fan_control.py" \
-    "$INSTALL_DIR/hp_fan_control.py"
+install_file 0755 "$SCRIPT_DIR/src/daemon/omen_fanctl.py" \
+    "$INSTALL_DIR/omen_fanctl.py"
 install_file 0644 "$SCRIPT_DIR/README.md" "$DOC_DIR/README.md"
-install_file 0644 "$SCRIPT_DIR/src/systemd/hp-fan-control.service" "$UNIT_PATH"
-install_file 0644 "$SCRIPT_DIR/src/logrotate/hp-fan-control" "$LOGROTATE_PATH"
-install_file 0644 "$SCRIPT_DIR/src/tmpfiles/hp-fan-control.conf" \
+install_file 0644 "$SCRIPT_DIR/src/systemd/omen-fanctl.service" "$UNIT_PATH"
+install_file 0644 "$SCRIPT_DIR/src/logrotate/omen-fanctl" "$LOGROTATE_PATH"
+install_file 0644 "$SCRIPT_DIR/src/tmpfiles/omen-fanctl.conf" \
     "$TMPFILES_PATH"
 
 log "Creating telemetry directory and applying retention policy"
 systemd-tmpfiles --create "$TMPFILES_PATH"
 
-if [[ -e "$CONFIG_DIR/fan-control.toml" ]]; then
-    log "Preserving existing configuration: $CONFIG_DIR/fan-control.toml"
+if [[ -e "$CONFIG_DIR/omen-fanctl.toml" ]]; then
+    log "Preserving existing configuration: $CONFIG_DIR/omen-fanctl.toml"
 else
-    install_file 0644 "$SCRIPT_DIR/src/config/fan-control.toml" \
-        "$CONFIG_DIR/fan-control.toml"
+    install_file 0644 "$SCRIPT_DIR/src/config/omen-fanctl.toml" \
+        "$CONFIG_DIR/omen-fanctl.toml"
 fi
 
 log "Reloading systemd units"
 systemctl daemon-reload
 
 if [[ "$ENABLE_NOW" == true ]]; then
-    log "Enabling and starting hp-fan-control.service"
-    systemctl enable --now hp-fan-control.service
+    log "Enabling and starting omen-fanctl.service"
+    systemctl enable --now omen-fanctl.service
     log "Installation complete; service is enabled and running"
-    systemctl --no-pager --full status hp-fan-control.service || true
+    systemctl --no-pager --full status omen-fanctl.service || true
 elif [[ "$START_NOW" == true ]]; then
-    log "Starting hp-fan-control.service without changing its boot enablement"
-    systemctl start hp-fan-control.service
+    log "Starting omen-fanctl.service without changing its boot enablement"
+    systemctl start omen-fanctl.service
     log "Installation complete; service is running"
-    systemctl --no-pager --full status hp-fan-control.service || true
+    systemctl --no-pager --full status omen-fanctl.service || true
 else
     log "Installation complete; service was not started"
-    echo "Review $CONFIG_DIR/fan-control.toml, then run one of:"
-    echo "  sudo systemctl start hp-fan-control.service"
-    echo "  sudo systemctl enable --now hp-fan-control.service"
+    echo "Review $CONFIG_DIR/omen-fanctl.toml, then run one of:"
+    echo "  sudo systemctl start omen-fanctl.service"
+    echo "  sudo systemctl enable --now omen-fanctl.service"
     echo "Run './install.sh --help' to see all installation options."
 fi

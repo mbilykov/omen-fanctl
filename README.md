@@ -1,7 +1,9 @@
-# HP fan-control daemon for performance profile
+# omen-fanctl
 
-Linux fan-control service for HP systems where firmware Auto mode does not
-provide sufficient cooling under the Performance platform profile.
+Linux fan-control daemon for the HP OMEN MAX 16 (board `8D87`), where firmware
+Auto mode under-cools the Performance platform profile. Other OMEN/Victus
+boards using the same `hp-wmi` interface may work, but require
+[hardware validation](#hardware-validation) first.
 
 ## Navigation
 
@@ -100,8 +102,8 @@ sudo pacman -S --needed logrotate
 Clone the repository:
 
 ```bash
-git clone https://github.com/<owner>/hp-fan-control.git
-cd hp-fan-control
+git clone https://github.com/mbilykov/omen-fanctl.git
+cd omen-fanctl
 ```
 
 Display the installer options:
@@ -129,7 +131,7 @@ Install and enable the service immediately:
 sudo ./install.sh --enable-now
 ```
 
-The configuration is installed at `/etc/hp-fan-control/fan-control.toml`.
+The configuration is installed at `/etc/omen-fanctl/omen-fanctl.toml`.
 Existing configuration is preserved during upgrades.
 
 Invalid configuration exits with status 78 and leaves the systemd unit in the
@@ -142,22 +144,22 @@ service normally.
 Start or stop the installed service:
 
 ```bash
-sudo systemctl start hp-fan-control.service
-sudo systemctl stop hp-fan-control.service
+sudo systemctl start omen-fanctl.service
+sudo systemctl stop omen-fanctl.service
 ```
 
 Enable or disable automatic startup at boot. These commands do not change the
 current running state:
 
 ```bash
-sudo systemctl enable hp-fan-control.service
-sudo systemctl disable hp-fan-control.service
+sudo systemctl enable omen-fanctl.service
+sudo systemctl disable omen-fanctl.service
 ```
 
 Show the current service status:
 
 ```bash
-systemctl status hp-fan-control.service
+systemctl status omen-fanctl.service
 ```
 
 ## Uninstallation
@@ -168,7 +170,7 @@ Remove the service while preserving its configuration and telemetry:
 sudo ./uninstall.sh
 ```
 
-Also remove `/etc/hp-fan-control/fan-control.toml`:
+Also remove `/etc/omen-fanctl/omen-fanctl.toml`:
 
 ```bash
 sudo ./uninstall.sh --purge-config
@@ -176,7 +178,7 @@ sudo ./uninstall.sh --purge-config
 
 The uninstaller refuses to stop the service during `auto-guard` or while the
 fan interface is outside firmware Auto mode. Wait for `state=sleeping` before
-retrying. Telemetry under `/var/log/hp-fan-control/` is always preserved.
+retrying. Telemetry under `/var/log/omen-fanctl/` is always preserved.
 
 ## Custom per-sensor curves
 
@@ -224,14 +226,14 @@ each retained hysteresis level unambiguous.
 Follow service events and state transitions:
 
 ```bash
-journalctl -fu hp-fan-control.service
+journalctl -fu omen-fanctl.service
 ```
 
 The journal records state changes immediately and rate-limits unchanged status
 messages to one entry every 30 seconds.
 
 Full-resolution telemetry is appended once per second to
-`/var/log/hp-fan-control/hp-fan-control.csv`. Records include:
+`/var/log/omen-fanctl/omen-fanctl.csv`. Records include:
 
 - platform profile and controller state;
 - raw and EWMA-filtered CPU, GPU, IR, and optional ACPI temperatures, including
@@ -315,7 +317,7 @@ Crash recovery is independent of Python cleanup. The systemd unit uses a
 15-second watchdog and `ExecStopPost=... --failsafe`. If the process exits,
 hangs, or receives `SIGKILL` during Manual, Max, or guarded Auto, the recovery
 command selects maximum fans before systemd restarts the service. A guard
-marker in `/run/hp-fan-control/` makes this decision survive loss of the main
+marker in `/run/omen-fanctl/` makes this decision survive loss of the main
 process. The service records its allowlisted board in the same directory once
 it takes fan ownership, so recovery stays available on any validated board even
 if the configuration file is damaged or removed while the fans are owned.
@@ -330,8 +332,8 @@ its marker, so the recovery that has to clean up is never locked out. The
 daemon derives its heartbeat interval from systemd's
 `WATCHDOG_USEC`, so long sensor sampling intervals do not starve the watchdog.
 
-The executable `src/daemon/hp_fan_control.py` is a compatibility entry point.
-Implementation is split by responsibility under `src/daemon/hp_fan_control/`:
+The executable `src/daemon/omen_fanctl.py` is a compatibility entry point.
+Implementation is split by responsibility under `src/daemon/omen_fanctl/`:
 configuration and curves, hardware adapters, the control state machine, and
 the command-line lifecycle. The installer preserves the same executable path
 used by the systemd unit.
@@ -363,8 +365,8 @@ cat /sys/class/dmi/id/board_name
 ```
 
 Add that value to `allowed_boards` in the configuration used for testing. Work
-on the repository copy, `src/config/fan-control.toml`, rather than an installed
-`/etc/hp-fan-control/fan-control.toml`, so a partially validated board cannot
+on the repository copy, `src/config/omen-fanctl.toml`, rather than an installed
+`/etc/omen-fanctl/omen-fanctl.toml`, so a partially validated board cannot
 reach the systemd service:
 
 ```toml
@@ -375,7 +377,7 @@ allowed_boards = ["8D87", "8C99"]
 The entry only permits the remaining steps to run. It does not assert that the
 board is supported. Steps 3 to 6 run from the repository and need nothing else;
 step 7 exercises the installed service, so add the board to
-`/etc/hp-fan-control/fan-control.toml` only once those earlier steps have
+`/etc/omen-fanctl/omen-fanctl.toml` only once those earlier steps have
 passed.
 
 The recovery commands `--restore-auto` and `--failsafe` read the same list,
@@ -409,8 +411,8 @@ index name temp_c
 ### 3. Run read-only mode
 
 ```bash
-python3 src/daemon/hp_fan_control.py \
-  --config src/config/fan-control.toml --duration 60
+python3 src/daemon/omen_fanctl.py \
+  --config src/config/omen-fanctl.toml --duration 60
 ```
 
 Review sensor selection, temperatures, requested PWM, and warnings. This mode
@@ -421,8 +423,8 @@ does not write fan controls.
 Only after the read-only output of the previous step has been reviewed:
 
 ```bash
-sudo python3 src/daemon/hp_fan_control.py \
-  --config src/config/fan-control.toml \
+sudo python3 src/daemon/omen_fanctl.py \
+  --config src/config/omen-fanctl.toml \
   --apply --actuator-test 60 --duration 15
 ```
 
@@ -434,7 +436,7 @@ The test requests 60% PWM for 15 seconds and must restore
 Follow the controller in one terminal:
 
 ```bash
-journalctl -fu hp-fan-control.service
+journalctl -fu omen-fanctl.service
 ```
 
 Use a bounded CPU workload in another terminal:
@@ -475,8 +477,8 @@ have been verified:
 
 ```bash
 sudo systemctl kill --kill-whom=main --signal=SIGKILL \
-  hp-fan-control.service
-journalctl -u hp-fan-control.service --since=-1min --no-pager
+  omen-fanctl.service
+journalctl -u omen-fanctl.service --since=-1min --no-pager
 ```
 
 The journal must show the killed process, `maximum fail-safe verified`, and a
@@ -487,7 +489,7 @@ Results for any additional board should include DMI and BIOS identifiers,
 kernel version, hwmon channels, dry-run logs, actuator behavior, fan mapping,
 CPU/GPU workload telemetry, profile handoff, Auto-guard behavior, and crash
 recovery. Do not treat a board as supported, or leave it in the installed
-`/etc/hp-fan-control/fan-control.toml`, until every step above has passed, and
+`/etc/omen-fanctl/omen-fanctl.toml`, until every step above has passed, and
 never add a board based only on a matching product family.
 
 ## License

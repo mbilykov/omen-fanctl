@@ -1,4 +1,4 @@
-"""Run the daemon with ``python -m hp_fan_control``."""
+"""Run the daemon with ``python -m omen_fanctl``."""
 
 import sys
 
