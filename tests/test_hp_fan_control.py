@@ -158,7 +158,22 @@ def initialized_sensors(test, **changes):
     }
     defaults.update(changes)
     settings = settings_with(**defaults)
-    return Sensors(settings, root)
+    pci_root = root / "pci"
+    pci_root.mkdir()
+    if settings.include_nvidia_gpu:
+        nvidia = pci_root / "0000:c3:00.0"
+        power = nvidia / "power"
+        power.mkdir(parents=True)
+        (nvidia / "vendor").write_text("0x10de\n")
+        (nvidia / "class").write_text("0x030000\n")
+        (power / "runtime_status").write_text("active\n")
+        nvidia_audio = pci_root / "0000:c3:00.1"
+        audio_power = nvidia_audio / "power"
+        audio_power.mkdir(parents=True)
+        (nvidia_audio / "vendor").write_text("0x10de\n")
+        (nvidia_audio / "class").write_text("0x040300\n")
+        (audio_power / "runtime_status").write_text("active\n")
+    return Sensors(settings, root, pci_root=pci_root)
 
 
 def initialized_sensors_with_amd_gpu(test, temperature_c=85.0):
@@ -173,13 +188,15 @@ def initialized_sensors_with_amd_gpu(test, temperature_c=85.0):
     gpu.mkdir()
     (gpu / "name").write_text("amdgpu\n")
     (gpu / "temp1_input").write_text(f"{temperature_c * 1000:.0f}\n")
+    pci_root = root / "pci"
+    pci_root.mkdir()
     settings = settings_with(
         include_acpi=False,
         include_amd_gpu=True,
         include_nvidia_gpu=False,
         include_hp_wmi_ir=False,
     )
-    return Sensors(settings, root), root, gpu
+    return Sensors(settings, root, pci_root=pci_root), root, gpu
 
 
 def initialized_fan(test):
@@ -1054,6 +1071,21 @@ class ControlDecisionTests(unittest.TestCase):
             self.policy.observe_activations(missing)
             self.assertFalse(self.policy.cool_enough_for_auto(missing))
 
+    def test_runtime_suspended_activated_gpu_allows_auto_release(self):
+        self.policy.observe_activations(
+            TemperatureSnapshot(cpu=40.0, gpu=65.0, acpi=None)
+        )
+        suspended = TemperatureSnapshot(
+            cpu=40.0,
+            gpu=None,
+            acpi=None,
+            nvidia_runtime_suspended=True,
+        )
+
+        self.policy.observe_activations(suspended)
+
+        self.assertTrue(self.policy.cool_enough_for_auto(suspended))
+
     def test_missing_activated_ir_stops_blocking_auto_after_bounded_outage(self):
         self.policy.observe_activations(
             TemperatureSnapshot(cpu=40.0, gpu=40.0, acpi=None, ir=44.0)
@@ -1761,6 +1793,167 @@ class SensorMetricTests(unittest.TestCase):
             "%s recovered", "NVIDIA GPU temperature source"
         )
 
+    def test_suspended_nvidia_gpu_skips_query_and_clears_cached_metrics(self):
+        with patch(
+            "hp_fan_control.hardware.shutil.which",
+            return_value="/usr/bin/nvidia-smi",
+        ):
+            sensors = initialized_sensors(self, include_nvidia_gpu=True)
+        sensors.last_nvidia_metrics = (61.0, 80.0, 120.0)
+        sensors.nvidia_gpu_health.available()
+        self.assertEqual(len(sensors.nvidia_runtime_status_files), 1)
+        sensors.nvidia_runtime_status_files[0].write_text("suspended\n")
+
+        with patch("hp_fan_control.hardware.subprocess.run") as run:
+            snapshot = sensors.read()
+
+        run.assert_not_called()
+        self.assertIsNone(snapshot.gpu)
+        self.assertIsNone(snapshot.nvidia_power_draw_w)
+        self.assertIsNone(snapshot.nvidia_power_limit_w)
+        self.assertIsNone(snapshot.nvidia_metrics_stale)
+        self.assertTrue(snapshot.nvidia_runtime_suspended)
+        self.assertEqual(sensors.last_nvidia_metrics, (None, None, None))
+        self.assertFalse(sensors.nvidia_gpu_health.failed)
+        self.assertEqual(sensors.nvidia_gpu_health.consecutive_failures, 0)
+
+    def test_nvidia_failure_after_runtime_suspend_does_not_reuse_old_metrics(self):
+        with patch(
+            "hp_fan_control.hardware.shutil.which",
+            return_value="/usr/bin/nvidia-smi",
+        ):
+            sensors = initialized_sensors(self, include_nvidia_gpu=True)
+        runtime_status = sensors.nvidia_runtime_status_files[0]
+        fresh_result = SimpleNamespace(
+            returncode=0,
+            stdout="65, 80.0, 120.0\n",
+            stderr="",
+        )
+
+        with patch(
+            "hp_fan_control.hardware.subprocess.run",
+            side_effect=[
+                fresh_result,
+                subprocess.TimeoutExpired("nvidia-smi", 2.0),
+            ],
+        ):
+            fresh = sensors.read()
+            runtime_status.write_text("suspended\n")
+            suspended = sensors.read()
+            runtime_status.write_text("active\n")
+            failed_after_wake = sensors.read()
+
+        self.assertEqual(fresh.gpu, 65.0)
+        self.assertIsNone(suspended.gpu)
+        self.assertIsNone(failed_after_wake.gpu)
+        self.assertIsNone(failed_after_wake.nvidia_power_draw_w)
+        self.assertIsNone(failed_after_wake.nvidia_power_limit_w)
+        self.assertIsNone(failed_after_wake.nvidia_metrics_stale)
+
+    def test_nvidia_query_resumes_when_runtime_status_becomes_active(self):
+        with patch(
+            "hp_fan_control.hardware.shutil.which",
+            return_value="/usr/bin/nvidia-smi",
+        ):
+            sensors = initialized_sensors(self, include_nvidia_gpu=True)
+        runtime_status = sensors.nvidia_runtime_status_files[0]
+        runtime_status.write_text("suspended\n")
+        result = SimpleNamespace(
+            returncode=0,
+            stdout="61, 80.0, 120.0\n",
+            stderr="",
+        )
+
+        with patch(
+            "hp_fan_control.hardware.subprocess.run",
+            return_value=result,
+        ) as run:
+            suspended = sensors.read()
+            runtime_status.write_text("active\n")
+            active = sensors.read()
+
+        self.assertIsNone(suspended.gpu)
+        self.assertEqual(active.gpu, 61.0)
+        self.assertFalse(active.nvidia_metrics_stale)
+        self.assertFalse(active.nvidia_runtime_suspended)
+        run.assert_called_once()
+
+    def test_periodically_discovers_late_nvidia_pci_device(self):
+        with patch(
+            "hp_fan_control.hardware.shutil.which",
+            return_value="/usr/bin/nvidia-smi",
+        ):
+            sensors = initialized_sensors(self, include_nvidia_gpu=True)
+        runtime_status = sensors.nvidia_runtime_status_files[0]
+        runtime_status.write_text("suspended\n")
+        sensors.nvidia_runtime_status_files = ()
+        sensors.next_nvidia_pci_discovery = 130.0
+
+        with (
+            patch("hp_fan_control.hardware.time.monotonic", return_value=130.0),
+            patch("hp_fan_control.hardware.subprocess.run") as run,
+        ):
+            snapshot = sensors.read()
+
+        run.assert_not_called()
+        self.assertTrue(snapshot.nvidia_runtime_suspended)
+        self.assertEqual(
+            sensors.nvidia_runtime_status_files,
+            (runtime_status,),
+        )
+        self.assertEqual(sensors.next_nvidia_pci_discovery, 160.0)
+
+    def test_stale_nvidia_pci_path_is_rediscovered_immediately(self):
+        with patch(
+            "hp_fan_control.hardware.shutil.which",
+            return_value="/usr/bin/nvidia-smi",
+        ):
+            sensors = initialized_sensors(self, include_nvidia_gpu=True)
+        old_status = sensors.nvidia_runtime_status_files[0]
+        new_device = sensors.pci_root / "0000:c4:00.0"
+        old_status.parents[1].rename(new_device)
+        new_status = new_device / "power" / "runtime_status"
+        new_status.write_text("suspended\n")
+        sensors.next_nvidia_pci_discovery = 200.0
+
+        with (
+            patch("hp_fan_control.hardware.time.monotonic", return_value=100.0),
+            patch("hp_fan_control.hardware.subprocess.run") as run,
+        ):
+            snapshot = sensors.read()
+
+        run.assert_not_called()
+        self.assertTrue(snapshot.nvidia_runtime_suspended)
+        self.assertEqual(
+            sensors.nvidia_runtime_status_files,
+            (new_status,),
+        )
+        self.assertEqual(sensors.next_nvidia_pci_discovery, 130.0)
+
+    def test_unreadable_nvidia_runtime_status_falls_back_to_query(self):
+        with patch(
+            "hp_fan_control.hardware.shutil.which",
+            return_value="/usr/bin/nvidia-smi",
+        ):
+            sensors = initialized_sensors(self, include_nvidia_gpu=True)
+        sensors.nvidia_runtime_status_files[0].unlink()
+        result = SimpleNamespace(
+            returncode=0,
+            stdout="61, 80.0, 120.0\n",
+            stderr="",
+        )
+
+        with patch(
+            "hp_fan_control.hardware.subprocess.run",
+            return_value=result,
+        ) as run:
+            snapshot = sensors.read()
+
+        self.assertEqual(snapshot.gpu, 61.0)
+        self.assertFalse(snapshot.nvidia_metrics_stale)
+        self.assertIsNone(snapshot.nvidia_runtime_suspended)
+        run.assert_called_once()
+
     def test_nvidia_failure_includes_stderr(self):
         with patch(
             "hp_fan_control.hardware.shutil.which",
@@ -1851,10 +2044,14 @@ class SensorMetricTests(unittest.TestCase):
         self.assertEqual(which.call_count, 2)
 
     def test_disabled_nvidia_source_has_no_staleness_status(self):
-        sensors = initialized_sensors(self, include_nvidia_gpu=False)
+        with patch(
+            "hp_fan_control.hardware.find_nvidia_runtime_status_files"
+        ) as find_runtime_status:
+            sensors = initialized_sensors(self, include_nvidia_gpu=False)
 
         snapshot = sensors.read()
 
+        find_runtime_status.assert_not_called()
         self.assertIsNone(snapshot.nvidia_power_draw_w)
         self.assertIsNone(snapshot.nvidia_power_limit_w)
         self.assertIsNone(snapshot.nvidia_metrics_stale)
@@ -2310,6 +2507,31 @@ class ControllerLoopTests(_ControllerTestCase):
         self.assertNotIn(("auto", None), fan.actions)
         self.assertEqual(fan.actions[-1], ("maximum", 255))
         self.assertEqual(fan.mode, MAX_MODE)
+
+    def test_runtime_suspended_gpu_releases_manual_to_bios_auto(self):
+        settings = Settings.load(CONFIG_PATH)
+        hot = TemperatureSnapshot(cpu=40.0, gpu=65.0, acpi=None)
+        suspended = TemperatureSnapshot(
+            cpu=40.0,
+            gpu=None,
+            acpi=None,
+            nvidia_runtime_suspended=True,
+        )
+        fan = FakeFan()
+        controller = controller_with_fake_time(
+            settings=settings,
+            fan=fan,
+            sensors=SequenceSensors([hot, suspended]),
+            apply=True,
+            duration_s=2.0 * settings.sample_interval_s,
+            csv_log=CsvLog(None),
+            profile_path=self.profile,
+        )
+
+        controller.run()
+
+        self.assertIn(("auto", None), fan.actions)
+        self.assertFalse(controller.manual_active)
 
     def test_missing_optional_ir_eventually_allows_bios_auto(self):
         settings = Settings.load(CONFIG_PATH)

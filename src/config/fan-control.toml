@@ -68,12 +68,16 @@ hp_wmi_sensors_path = "/proc/hp_wmi_sensors"
 # comparison, without allowing it to affect fan control.
 include_acpi = false
 include_amd_gpu = true
-# Uses nvidia-smi when present and retries discovery every 30 seconds. A
-# configured source logs loss and recovery. A previously available NVIDIA
-# source reuses its last metrics with nvidia_metrics_stale=true for two failed
-# reads, then fails safe on the third. Physical disappearance of a previously
-# available AMD GPU fails safe immediately. If its amdgpu hwmon remains present
-# but unreadable, the last AMD temperature is reused with
+# Uses nvidia-smi when present and rediscovers the tool and NVIDIA PCI runtime
+# status paths every 30 seconds. An RTD3-suspended GPU is not queried, so
+# telemetry does not wake it and its expected lack of temperature does not
+# block return to firmware Auto. A configured active source logs loss and
+# recovery. A previously available
+# NVIDIA source reuses its last metrics with nvidia_metrics_stale=true for two
+# failed reads, then fails safe on the third; runtime suspend ends that cache's
+# lifetime. Physical disappearance of a previously available AMD GPU fails safe
+# immediately. If its amdgpu hwmon remains present but unreadable, the last AMD
+# temperature is reused with
 # amd_gpu_temperature_stale=true for two failed reads; the third fails safe.
 include_nvidia_gpu = true
 

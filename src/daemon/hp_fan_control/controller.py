@@ -340,6 +340,10 @@ class ControlPolicy:
     def cool_enough_for_auto(self, snapshot: TemperatureSnapshot) -> bool:
         for name, raw_value in snapshot.control_temperatures().items():
             if raw_value is None:
+                # A confirmed RTD3 suspend means the NVIDIA GPU is powered
+                # down, not that an activated temperature source failed.
+                if name == "gpu" and snapshot.nvidia_runtime_suspended is True:
+                    continue
                 # Do not hand control back to firmware without a cool reading
                 # from a sensor that made this Manual cycle necessary. Optional
                 # sources age out in observe_activations after a bounded outage.

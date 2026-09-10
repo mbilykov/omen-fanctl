@@ -181,8 +181,9 @@ retrying. Telemetry under `/var/log/hp-fan-control/` is always preserved.
 
 The supplied configuration selects the extracted factory tables with
 `curves.preset`. To define custom tables, remove `preset` and add a
-`[curves.cpu]` table. CPU is the required base curve; omitted `gpu`, `ir`, and
-`acpi` tables fall back to it.
+`[curves.cpu]` table. CPU is the required base curve; omitted `gpu` and `ir`
+tables fall back to it. An omitted `acpi` table uses the `ir` curve when
+present, otherwise it also falls back to CPU.
 
 ```toml
 [curves.cpu]
@@ -299,10 +300,15 @@ the daemon logs the degraded state and continues with CPU/GPU. Loss of the
 mandatory CPU source, or loss of any previously available GPU source, while
 software control or `auto-guard` is active selects maximum fans. CPU and AMD
 GPU hwmon paths are rediscovered after driver reset or device re-probe;
-`nvidia-smi` discovery is retried every 30 seconds, while NVIDIA query failures
-and all sensor recoveries are logged once per transition. The last valid NVIDIA
-metrics bridge up to two consecutive query failures; the third failure selects
-the maximum-fan fail-safe.
+`nvidia-smi` and NVIDIA PCI runtime-status paths are rediscovered every 30
+seconds. An NVIDIA GPU already in runtime suspend is not queried, avoiding a
+telemetry-induced wake-up; polling resumes when its PCI runtime status becomes
+active. Its expected lack of a temperature while powered down does not block a
+Manual-to-Auto handoff. NVIDIA query failures and all sensor recoveries are
+logged once per transition. The last valid NVIDIA metrics bridge up to two
+consecutive query failures; the third failure selects the maximum-fan
+fail-safe. Runtime suspend clears that cache so readings from an earlier
+powered-on session cannot bridge a later wake-up.
 
 Crash recovery is independent of Python cleanup. The systemd unit uses a
 15-second watchdog and `ExecStopPost=... --failsafe`. If the process exits,

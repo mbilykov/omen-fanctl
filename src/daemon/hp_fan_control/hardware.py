@@ -31,6 +31,8 @@ K10TEMP_STARTUP_TIMEOUT_S = 20.0
 K10TEMP_STARTUP_RETRY_S = 1.0
 NVIDIA_DISCOVERY_INTERVAL_S = 30.0
 NVIDIA_FAILURE_THRESHOLD = 3
+NVIDIA_PCI_VENDOR = "0x10de"
+NVIDIA_GPU_PCI_CLASSES = frozenset({"0x030000", "0x030200"})
 
 
 class HardwareError(RuntimeError):
@@ -218,6 +220,29 @@ def find_hwmon(name: str, root: Path = Path("/sys/class/hwmon")) -> list[Path]:
     return matches
 
 
+def find_nvidia_runtime_status_files(
+    root: Path = Path("/sys/bus/pci/devices"),
+) -> tuple[Path, ...]:
+    """Find runtime-PM status files without accessing the NVIDIA driver."""
+    try:
+        devices = tuple(root.iterdir())
+    except OSError:
+        return ()
+    matches: list[Path] = []
+    for device in devices:
+        try:
+            vendor = read_text(device / "vendor")
+            device_class = read_text(device / "class")
+        except OSError:
+            continue
+        if (
+            vendor == NVIDIA_PCI_VENDOR
+            and device_class in NVIDIA_GPU_PCI_CLASSES
+        ):
+            matches.append(device / "power" / "runtime_status")
+    return tuple(sorted(matches))
+
+
 def read_hwmon_temperatures(directory: Path) -> list[float]:
     values: list[float] = []
     for path in sorted(directory.glob("temp*_input")):
@@ -291,6 +316,7 @@ class TemperatureSnapshot:
     nvidia_power_limit_w: float | None = None
     nvidia_metrics_stale: bool | None = None
     amd_gpu_temperature_stale: bool | None = None
+    nvidia_runtime_suspended: bool | None = None
 
     def control_temperatures(self) -> dict[str, float | None]:
         return {name: getattr(self, name) for name in CONTROL_SENSORS}
@@ -313,6 +339,7 @@ class Sensors:
         settings: Settings,
         hwmon_root: Path = Path("/sys/class/hwmon"),
         thermal_root: Path = Path("/sys/class/thermal"),
+        pci_root: Path = Path("/sys/bus/pci/devices"),
     ):
         self.settings = settings
         self.hwmon_root = hwmon_root
@@ -326,14 +353,26 @@ class Sensors:
         self.amd_gpu_hwmons = (
             find_hwmon("amdgpu", hwmon_root) if settings.include_amd_gpu else []
         )
+        self.pci_root = pci_root
         self.nvidia_smi = None
         self.next_nvidia_discovery = 0.0
+        self.next_nvidia_pci_discovery = 0.0
         if settings.include_nvidia_gpu:
+            now = time.monotonic()
             self.nvidia_smi = shutil.which("nvidia-smi")
             if not self.nvidia_smi:
                 self.next_nvidia_discovery = (
-                    time.monotonic() + NVIDIA_DISCOVERY_INTERVAL_S
+                    now + NVIDIA_DISCOVERY_INTERVAL_S
                 )
+            self.nvidia_runtime_status_files = (
+                find_nvidia_runtime_status_files(pci_root)
+            )
+            self.next_nvidia_pci_discovery = (
+                now + NVIDIA_DISCOVERY_INTERVAL_S
+            )
+        else:
+            self.nvidia_runtime_status_files = ()
+        self.nvidia_runtime_suspended: bool | None = None
         self.cpu_health = SourceHealth(
             "CPU temperature source", FailurePolicy.REQUIRED
         )
@@ -421,18 +460,55 @@ class Sensors:
     def _nvidia_metrics(
         self,
     ) -> tuple[float | None, float | None, float | None, bool | None]:
+        self.nvidia_runtime_suspended = None
+        if not self.nvidia_smi and not self.settings.include_nvidia_gpu:
+            return None, None, None, None
+        now = time.monotonic()
         if not self.nvidia_smi:
-            if self.settings.include_nvidia_gpu:
-                now = time.monotonic()
-                if now >= self.next_nvidia_discovery:
-                    self.nvidia_smi = shutil.which("nvidia-smi")
-                    self.next_nvidia_discovery = (
-                        now + NVIDIA_DISCOVERY_INTERVAL_S
+            if now >= self.next_nvidia_discovery:
+                self.nvidia_smi = shutil.which("nvidia-smi")
+                self.next_nvidia_discovery = now + NVIDIA_DISCOVERY_INTERVAL_S
+            if not self.nvidia_smi:
+                return self._nvidia_failure("nvidia-smi was not found")
+        if now >= self.next_nvidia_pci_discovery:
+            self.nvidia_runtime_status_files = (
+                find_nvidia_runtime_status_files(self.pci_root)
+            )
+            self.next_nvidia_pci_discovery = (
+                now + NVIDIA_DISCOVERY_INTERVAL_S
+            )
+        if self.nvidia_runtime_status_files:
+            try:
+                runtime_statuses = tuple(
+                    read_text(path)
+                    for path in self.nvidia_runtime_status_files
+                )
+            except OSError:
+                # A reset or hotplug can invalidate the saved PCI path between
+                # periodic scans. Rediscover once and retry in this sample.
+                self.nvidia_runtime_status_files = (
+                    find_nvidia_runtime_status_files(self.pci_root)
+                )
+                self.next_nvidia_pci_discovery = (
+                    now + NVIDIA_DISCOVERY_INTERVAL_S
+                )
+                try:
+                    runtime_statuses = tuple(
+                        read_text(path)
+                        for path in self.nvidia_runtime_status_files
                     )
-                if not self.nvidia_smi:
-                    return self._nvidia_failure("nvidia-smi was not found")
-            else:
-                return None, None, None, None
+                except OSError:
+                    runtime_statuses = ()
+            if runtime_statuses:
+                self.nvidia_runtime_suspended = all(
+                    status == "suspended" for status in runtime_statuses
+                )
+                if self.nvidia_runtime_suspended:
+                    # Querying NVML wakes an RTD3-suspended dGPU. It has no
+                    # current cooling demand. Its metrics also cannot safely
+                    # bridge a later wake-up, so end their cache lifetime here.
+                    self.last_nvidia_metrics = (None, None, None)
+                    return None, None, None, None
         try:
             result = subprocess.run(
                 [
@@ -539,6 +615,7 @@ class Sensors:
             nvidia_power_limit_w=power_limit,
             nvidia_metrics_stale=nvidia_metrics_stale,
             amd_gpu_temperature_stale=self.amd_gpu_temperature_stale,
+            nvidia_runtime_suspended=self.nvidia_runtime_suspended,
         )
 
 
