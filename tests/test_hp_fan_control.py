@@ -28,7 +28,6 @@ import hp_fan_control as hp_fan_control_package  # noqa: E402
 from hp_fan_control.cli import (  # noqa: E402
     AUTO_GUARD_PATH,
     CONFIGURATION_ERROR_EXIT_STATUS,
-    CONFIRMED_BOARD_PATH,
     clear_confirmed_board,
     clear_confirmed_board_if_safe,
     systemd_owns_runtime_directory,
@@ -329,7 +328,9 @@ class ConversionTests(unittest.TestCase):
 
     def test_round_trip(self):
         for percent in (25, 35, 50, 75, 95):
-            self.assertAlmostEqual(pwm_to_percent(percent_to_pwm(percent)), percent, delta=0.2)
+            self.assertAlmostEqual(
+                pwm_to_percent(percent_to_pwm(percent)), percent, delta=0.2
+            )
 
     def test_half_pwm_values_round_up(self):
         self.assertEqual(percent_to_pwm(hp_level_percent(22)), 94)
@@ -578,7 +579,9 @@ class CsvLogTests(unittest.TestCase):
                 log.write({})
             log.close()
 
-        self.assertTrue(any("CSV telemetry recovered" in line for line in captured.output))
+        self.assertTrue(
+            any("CSV telemetry recovered" in line for line in captured.output)
+        )
 
 
 

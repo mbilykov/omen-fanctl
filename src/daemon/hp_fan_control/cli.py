@@ -25,7 +25,6 @@ from .config import (
 from .controller import Controller, CsvLog, SystemdNotifier
 from .hardware import (
     AUTO_MODE,
-    MANUAL_MODE,
     MAX_MODE,
     HardwareError,
     HpFanHwmon,

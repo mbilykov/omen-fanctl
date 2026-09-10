@@ -1,0 +1,11 @@
+# Static checks for the fan-control daemon. Kept deliberately small: the rules
+# below describe the style this tree already follows, so a clean run means a
+# change is consistent with its surroundings rather than reformatted to taste.
+line-length = 88
+target-version = "py311"
+
+[lint]
+# E/W: pycodestyle. F: pyflakes, which catches unused imports and undefined
+# names. Import sorting and refactoring rules are deliberately left out; they
+# would rewrite existing code without finding defects.
+select = ["E", "W", "F"]
