@@ -18,9 +18,7 @@ LOG = logging.getLogger("hp-fan-control")
 AUTO_MODE = 2
 MANUAL_MODE = 1
 MAX_MODE = 0
-PLATFORM_PROFILE_CHOICES_PATH = Path(
-    "/sys/firmware/acpi/platform_profile_choices"
-)
+PLATFORM_PROFILE_CHOICES_PATH = Path("/sys/firmware/acpi/platform_profile_choices")
 CONTROL_SENSORS = ("cpu", "gpu", "ir")
 AMD_GPU_READ_FAILURE_THRESHOLD = 3
 PLATFORM_PROFILE_STARTUP_TIMEOUT_S = 20.0
@@ -82,17 +80,12 @@ class SourceHealth:
             and self.ever_available
         )
         threshold = (
-            self.failure_threshold
-            if failure_threshold is None
-            else failure_threshold
+            self.failure_threshold if failure_threshold is None else failure_threshold
         )
         # An override changes the severity of this failure, not the identity of
         # the failure streak. A fail-fast cause must therefore take effect even
         # if earlier failures in the streak used a debounce threshold.
-        if (
-            (required or required_after_loss)
-            and self.consecutive_failures >= threshold
-        ):
+        if (required or required_after_loss) and self.consecutive_failures >= threshold:
             raise HardwareError(f"{self.name} unavailable: {reason}")
 
 
@@ -106,9 +99,7 @@ class PlatformProfileMonitor:
             handle = path.open("r", encoding="ascii")
             self.handle = handle
             self.poller = select.poll()
-            self.poller.register(
-                self.handle.fileno(), select.POLLPRI | select.POLLERR
-            )
+            self.poller.register(self.handle.fileno(), select.POLLPRI | select.POLLERR)
             self.current = self._read()
         except (OSError, HardwareError) as exc:
             if handle is not None:
@@ -117,9 +108,7 @@ class PlatformProfileMonitor:
                 except OSError:
                     pass
             if isinstance(exc, OSError):
-                raise HardwareError(
-                    f"cannot monitor platform profile: {exc}"
-                ) from exc
+                raise HardwareError(f"cannot monitor platform profile: {exc}") from exc
             raise
 
     def _read(self) -> str:
@@ -148,6 +137,7 @@ class PlatformProfileMonitor:
 
     def close(self) -> None:
         self.handle.close()
+
 
 def read_text(path: Path) -> str:
     return path.read_text(encoding="ascii").strip()
@@ -235,10 +225,7 @@ def find_nvidia_runtime_status_files(
             device_class = read_text(device / "class")
         except OSError:
             continue
-        if (
-            vendor == NVIDIA_PCI_VENDOR
-            and device_class in NVIDIA_GPU_PCI_CLASSES
-        ):
+        if vendor == NVIDIA_PCI_VENDOR and device_class in NVIDIA_GPU_PCI_CLASSES:
             matches.append(device / "power" / "runtime_status")
     return tuple(sorted(matches))
 
@@ -273,9 +260,7 @@ def read_hp_wmi_ir_temperature(path: Path) -> float:
     try:
         lines = path.read_text(encoding="ascii").splitlines()
     except OSError as exc:
-        raise HardwareError(
-            f"cannot read HP WMI IR sensor from {path}: {exc}"
-        ) from exc
+        raise HardwareError(f"cannot read HP WMI IR sensor from {path}: {exc}") from exc
 
     if not lines or lines[0].split() != ["index", "name", "temp_c"]:
         raise HardwareError(f"invalid HP WMI sensor header in {path}")
@@ -325,9 +310,7 @@ class TemperatureSnapshot:
     def raw_control_hottest(self) -> float:
         """Return the hottest sensor that is allowed to control the fans."""
         return max(
-            value
-            for value in self.control_temperatures().values()
-            if value is not None
+            value for value in self.control_temperatures().values() if value is not None
         )
 
 
@@ -361,21 +344,15 @@ class Sensors:
             now = time.monotonic()
             self.nvidia_smi = shutil.which("nvidia-smi")
             if not self.nvidia_smi:
-                self.next_nvidia_discovery = (
-                    now + NVIDIA_DISCOVERY_INTERVAL_S
-                )
-            self.nvidia_runtime_status_files = (
-                find_nvidia_runtime_status_files(pci_root)
+                self.next_nvidia_discovery = now + NVIDIA_DISCOVERY_INTERVAL_S
+            self.nvidia_runtime_status_files = find_nvidia_runtime_status_files(
+                pci_root
             )
-            self.next_nvidia_pci_discovery = (
-                now + NVIDIA_DISCOVERY_INTERVAL_S
-            )
+            self.next_nvidia_pci_discovery = now + NVIDIA_DISCOVERY_INTERVAL_S
         else:
             self.nvidia_runtime_status_files = ()
         self.nvidia_runtime_suspended: bool | None = None
-        self.cpu_health = SourceHealth(
-            "CPU temperature source", FailurePolicy.REQUIRED
-        )
+        self.cpu_health = SourceHealth("CPU temperature source", FailurePolicy.REQUIRED)
         self.amd_gpu_health = SourceHealth(
             "AMD GPU temperature source",
             FailurePolicy.REQUIRED_AFTER_AVAILABLE,
@@ -387,9 +364,11 @@ class Sensors:
             FailurePolicy.REQUIRED_AFTER_AVAILABLE,
             failure_threshold=NVIDIA_FAILURE_THRESHOLD,
         )
-        self.last_nvidia_metrics: tuple[
-            float | None, float | None, float | None
-        ] = (None, None, None)
+        self.last_nvidia_metrics: tuple[float | None, float | None, float | None] = (
+            None,
+            None,
+            None,
+        )
         self.ir_health = SourceHealth(
             "optional HP WMI IR sensor", FailurePolicy.OPTIONAL
         )
@@ -471,31 +450,25 @@ class Sensors:
             if not self.nvidia_smi:
                 return self._nvidia_failure("nvidia-smi was not found")
         if now >= self.next_nvidia_pci_discovery:
-            self.nvidia_runtime_status_files = (
-                find_nvidia_runtime_status_files(self.pci_root)
+            self.nvidia_runtime_status_files = find_nvidia_runtime_status_files(
+                self.pci_root
             )
-            self.next_nvidia_pci_discovery = (
-                now + NVIDIA_DISCOVERY_INTERVAL_S
-            )
+            self.next_nvidia_pci_discovery = now + NVIDIA_DISCOVERY_INTERVAL_S
         if self.nvidia_runtime_status_files:
             try:
                 runtime_statuses = tuple(
-                    read_text(path)
-                    for path in self.nvidia_runtime_status_files
+                    read_text(path) for path in self.nvidia_runtime_status_files
                 )
             except OSError:
                 # A reset or hotplug can invalidate the saved PCI path between
                 # periodic scans. Rediscover once and retry in this sample.
-                self.nvidia_runtime_status_files = (
-                    find_nvidia_runtime_status_files(self.pci_root)
+                self.nvidia_runtime_status_files = find_nvidia_runtime_status_files(
+                    self.pci_root
                 )
-                self.next_nvidia_pci_discovery = (
-                    now + NVIDIA_DISCOVERY_INTERVAL_S
-                )
+                self.next_nvidia_pci_discovery = now + NVIDIA_DISCOVERY_INTERVAL_S
                 try:
                     runtime_statuses = tuple(
-                        read_text(path)
-                        for path in self.nvidia_runtime_status_files
+                        read_text(path) for path in self.nvidia_runtime_status_files
                     )
                 except OSError:
                     runtime_statuses = ()
@@ -523,9 +496,7 @@ class Sensors:
             )
         except OSError as exc:
             self.nvidia_smi = None
-            self.next_nvidia_discovery = (
-                time.monotonic() + NVIDIA_DISCOVERY_INTERVAL_S
-            )
+            self.next_nvidia_discovery = time.monotonic() + NVIDIA_DISCOVERY_INTERVAL_S
             return self._nvidia_failure(exc)
         except subprocess.TimeoutExpired as exc:
             return self._nvidia_failure(exc)

@@ -60,9 +60,7 @@ def acquire_lock(path: Path) -> TextIOWrapper:
                 f"lock must be a regular file owned by uid {os.geteuid()}: {path}"
             )
         os.fchmod(descriptor, 0o600)
-        handle: TextIOWrapper = os.fdopen(
-            descriptor, "r+", encoding="ascii"
-        )
+        handle: TextIOWrapper = os.fdopen(descriptor, "r+", encoding="ascii")
     except Exception:
         os.close(descriptor)
         raise
@@ -181,8 +179,7 @@ def run_actuator_test(
 ) -> None:
     if not minimum_percent <= percent <= 100.0:
         raise ConfigurationError(
-            "--actuator-test must be between "
-            f"{minimum_percent:g} and 100 percent"
+            f"--actuator-test must be between {minimum_percent:g} and 100 percent"
         )
     if not 1.0 <= duration_s <= 60.0:
         raise ConfigurationError(
@@ -251,9 +248,7 @@ def restore_firmware_auto(fan: HpFanHwmon) -> None:
         fan.restore_auto()
     restored_mode, _, fan1, fan2 = fan.status()
     if restored_mode != AUTO_MODE:
-        raise HardwareError(
-            f"failed to verify firmware Auto: mode={restored_mode}"
-        )
+        raise HardwareError(f"failed to verify firmware Auto: mode={restored_mode}")
     LOG.info("firmware Auto verified; fans=%d/%d", fan1, fan2)
 
 
@@ -379,9 +374,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         args = parse_args(argv)
     except SystemExit as exc:
         return (
-            0
-            if exc.code is None or exc.code == 0
-            else CONFIGURATION_ERROR_EXIT_STATUS
+            0 if exc.code is None or exc.code == 0 else CONFIGURATION_ERROR_EXIT_STATUS
         )
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -397,8 +390,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             allowed = recovery_allowed_boards(args.config, CONFIRMED_BOARD_PATH)
             if board not in allowed:
                 raise HardwareError(
-                    f"fan recovery is only allowed on boards {allowed}, "
-                    f"found {board!r}"
+                    f"fan recovery is only allowed on boards {allowed}, found {board!r}"
                 )
             if os.geteuid() != 0:
                 raise HardwareError("fan-control writes must be run as root (use sudo)")

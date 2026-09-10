@@ -114,9 +114,7 @@ class Curve:
                 raise ConfigurationError(
                     "curve low_temperature_c requires stepped = true"
                 )
-            if any(
-                b <= a for a, b in zip(self.pwm_percent, self.pwm_percent[1:])
-            ):
+            if any(b <= a for a, b in zip(self.pwm_percent, self.pwm_percent[1:])):
                 raise ConfigurationError(
                     "curve PWM values must be strictly increasing when "
                     "low_temperature_c is set"
@@ -125,17 +123,11 @@ class Curve:
                 raise ConfigurationError(
                     "curve falling-temperature and PWM lists differ in length"
                 )
-            if any(
-                not math.isfinite(value) for value in self.fall_temperatures
-            ):
-                raise ConfigurationError(
-                    "curve falling temperatures must be finite"
-                )
+            if any(not math.isfinite(value) for value in self.fall_temperatures):
+                raise ConfigurationError("curve falling temperatures must be finite")
             if any(
                 b <= a
-                for a, b in zip(
-                    self.fall_temperatures, self.fall_temperatures[1:]
-                )
+                for a, b in zip(self.fall_temperatures, self.fall_temperatures[1:])
             ):
                 raise ConfigurationError(
                     "curve falling temperatures must be strictly increasing"
@@ -273,19 +265,13 @@ class Settings:
         configuration_table(raw, "", TOP_LEVEL_KEYS)
         daemon = configuration_table(raw.get("daemon", {}), "daemon", DAEMON_KEYS)
         ewma = configuration_table(raw.get("ewma", {}), "ewma", EWMA_KEYS)
-        sensors = configuration_table(
-            raw.get("sensors", {}), "sensors", SENSOR_KEYS
-        )
-        curve_data = configuration_table(
-            raw.get("curve", {}), "curve", CURVE_KEYS
-        )
+        sensors = configuration_table(raw.get("sensors", {}), "sensors", SENSOR_KEYS)
+        curve_data = configuration_table(raw.get("curve", {}), "curve", CURVE_KEYS)
         curves_data = configuration_table(
             raw.get("curves", {}), "curves", NAMED_CURVE_KEYS
         )
         named_curve_data = {
-            name: configuration_table(
-                curves_data[name], f"curves.{name}", CURVE_KEYS
-            )
+            name: configuration_table(curves_data[name], f"curves.{name}", CURVE_KEYS)
             for name in ("cpu", "gpu", "ir", "acpi")
             if name in curves_data
         }
@@ -334,9 +320,7 @@ class Settings:
                     daemon.get("critical_release_temp_c", 82.0)
                 ),
                 emergency_hold_s=float(daemon.get("emergency_hold_s", 10.0)),
-                decrease_hysteresis_c=float(
-                    daemon.get("decrease_hysteresis_c", 3.0)
-                ),
+                decrease_hysteresis_c=float(daemon.get("decrease_hysteresis_c", 3.0)),
                 max_rise_percent_per_update=float(
                     daemon.get("max_rise_percent_per_update", 20.0)
                 ),
@@ -355,9 +339,7 @@ class Settings:
                 ir_release_hysteresis_c=float(
                     daemon.get("ir_release_hysteresis_c", 1.0)
                 ),
-                auto_guard_s=float(
-                    daemon.get("auto_guard_s", 180.0)
-                ),
+                auto_guard_s=float(daemon.get("auto_guard_s", 180.0)),
                 include_hp_wmi_ir=bool(sensors.get("include_hp_wmi_ir", True)),
                 hp_wmi_sensors_path=Path(
                     str(sensors.get("hp_wmi_sensors_path", "/proc/hp_wmi_sensors"))
@@ -437,9 +419,7 @@ class Settings:
         if self.release_temp_c >= self.activation_temp_c:
             raise ConfigurationError("release_temp_c must be below activation_temp_c")
         if self.fan_stop_temp_c >= self.activation_temp_c:
-            raise ConfigurationError(
-                "fan_stop_temp_c must be below activation_temp_c"
-            )
+            raise ConfigurationError("fan_stop_temp_c must be below activation_temp_c")
         if self.critical_release_temp_c >= self.critical_temp_c:
             raise ConfigurationError(
                 "critical_release_temp_c must be below critical_temp_c"
@@ -449,9 +429,7 @@ class Settings:
         if self.emergency_hold_s < 0:
             raise ConfigurationError("emergency_hold_s must be non-negative")
         if not 0 <= self.decrease_hysteresis_c <= MAX_DECREASE_HYSTERESIS_C:
-            raise ConfigurationError(
-                "decrease_hysteresis_c must be between 0 and 20"
-            )
+            raise ConfigurationError("decrease_hysteresis_c must be between 0 and 20")
         if not 0 < self.ir_release_hysteresis_c < self.activation_temp_c:
             raise ConfigurationError(
                 "ir_release_hysteresis_c must be positive and below activation_temp_c"

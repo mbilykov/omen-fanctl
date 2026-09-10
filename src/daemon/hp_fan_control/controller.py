@@ -95,6 +95,7 @@ class SystemdNotifier:
     def stopping(self) -> None:
         self.notify("STOPPING=1")
 
+
 @dataclass
 class Ewma:
     rise_alpha: float
@@ -108,6 +109,7 @@ class Ewma:
             alpha = self.rise_alpha if sample >= self.value else self.fall_alpha
             self.value = alpha * sample + (1.0 - alpha) * self.value
         return self.value
+
 
 class CsvLog:
     """Flush each telemetry row immediately so crashes retain prior samples."""
@@ -173,9 +175,7 @@ class CsvLog:
                     archive = path.with_name(f"{path.name}.previous")
                     index = 1
                     while archive.exists():
-                        archive = path.with_name(
-                            f"{path.name}.previous.{index}"
-                        )
+                        archive = path.with_name(f"{path.name}.previous.{index}")
                         index += 1
                     path.rename(archive)
                     LOG.warning(
@@ -258,9 +258,7 @@ class ControlPolicy:
             "acpi": None,
         }
         self._activated_sensors: set[str] = set()
-        self._optional_missing_samples = {
-            name: 0 for name in OPTIONAL_CONTROL_SENSORS
-        }
+        self._optional_missing_samples = {name: 0 for name in OPTIONAL_CONTROL_SENSORS}
         self._winning_sensor = ""
 
     @property
@@ -307,9 +305,7 @@ class ControlPolicy:
             "acpi": None,
         }
         self._activated_sensors = self.activation_sources(snapshot)
-        self._optional_missing_samples = {
-            name: 0 for name in OPTIONAL_CONTROL_SENSORS
-        }
+        self._optional_missing_samples = {name: 0 for name in OPTIONAL_CONTROL_SENSORS}
         self._winning_sensor = ""
 
     def reset(self) -> None:
@@ -321,9 +317,7 @@ class ControlPolicy:
             "acpi": None,
         }
         self._activated_sensors.clear()
-        self._optional_missing_samples = {
-            name: 0 for name in OPTIONAL_CONTROL_SENSORS
-        }
+        self._optional_missing_samples = {name: 0 for name in OPTIONAL_CONTROL_SENSORS}
         self._winning_sensor = ""
 
     def activation_threshold(self, sensor: str) -> float:
@@ -517,9 +511,7 @@ class Controller:
 
     def _wait_for_profile_change(self, timeout_s: float) -> None:
         assert self.profile_monitor is not None
-        watchdog_interval = getattr(
-            self.notifier, "watchdog_interval_s", None
-        )
+        watchdog_interval = getattr(self.notifier, "watchdog_interval_s", None)
         if not isinstance(watchdog_interval, (int, float)):
             watchdog_interval = None
         remaining = timeout_s
@@ -610,9 +602,7 @@ class Controller:
             try:
                 self.auto_guard_path.unlink(missing_ok=True)
             except OSError as exc:
-                raise HardwareError(
-                    f"cannot clear firmware Auto guard: {exc}"
-                ) from exc
+                raise HardwareError(f"cannot clear firmware Auto guard: {exc}") from exc
 
     def _auto_guard_active(self, now: float) -> bool:
         if self.auto_guard_until is None:
@@ -697,9 +687,7 @@ class Controller:
             for name in ("cpu", "gpu", "ir", "acpi")
         }
         filtered = filtered or {name: None for name in self.filters}
-        nvidia_power_draw_w = (
-            None if snapshot is None else snapshot.nvidia_power_draw_w
-        )
+        nvidia_power_draw_w = None if snapshot is None else snapshot.nvidia_power_draw_w
         nvidia_power_limit_w = (
             None if snapshot is None else snapshot.nvidia_power_limit_w
         )
@@ -844,8 +832,7 @@ class Controller:
                             or failure[0] != self.last_sensor_failure[0]
                         ):
                             LOG.error(
-                                "sensor failure during control; "
-                                "selecting maximum: %s",
+                                "sensor failure during control; selecting maximum: %s",
                                 exc,
                             )
                         self._maximum()
@@ -926,9 +913,8 @@ class Controller:
                         state = "emergency"
                         requested = PWM_MAX
                         note = "waiting for critical release"
-                elif (
-                    not self.manual_active
-                    and not self.policy.should_activate(snapshot)
+                elif not self.manual_active and not self.policy.should_activate(
+                    snapshot
                 ):
                     state = "auto-guard" if auto_guard_active else "bios-auto"
                     requested = None

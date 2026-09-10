@@ -290,8 +290,11 @@ class CurveTests(unittest.TestCase):
         )
 
         for message, arguments in cases:
-            with self.subTest(values=message), self.assertRaisesRegex(
-                ConfigurationError, f"curve {message} must be finite"
+            with (
+                self.subTest(values=message),
+                self.assertRaisesRegex(
+                    ConfigurationError, f"curve {message} must be finite"
+                ),
             ):
                 Curve(*arguments)
 
@@ -300,17 +303,18 @@ class CurveTests(unittest.TestCase):
         at_83 = curve.target_percent(83.0)
         self.assertAlmostEqual(at_83, hp_level_percent(37))
         self.assertAlmostEqual(curve.target_percent(79.0, at_83), at_83)
-        self.assertAlmostEqual(
-            curve.target_percent(78.9, at_83), hp_level_percent(34)
-        )
+        self.assertAlmostEqual(curve.target_percent(78.9, at_83), hp_level_percent(34))
 
     def test_factory_step_rejects_previous_value_between_levels(self):
         curve = hp_factory_performance_curves()["cpu"]
 
         for temperature in (77.3, 84.0):
-            with self.subTest(temperature=temperature), self.assertRaisesRegex(
-                ValueError,
-                "previous stepped target is not a curve level",
+            with (
+                self.subTest(temperature=temperature),
+                self.assertRaisesRegex(
+                    ValueError,
+                    "previous stepped target is not a curve level",
+                ),
             ):
                 curve.target_percent(temperature, 66.9)
 
@@ -372,9 +376,7 @@ class LockTests(unittest.TestCase):
             try:
                 self.assertEqual(lock.read_text(), expected)
                 self.assertEqual(lock.stat().st_mode & 0o777, 0o600)
-                with self.assertRaisesRegex(
-                    HardwareError, "another controller holds"
-                ):
+                with self.assertRaisesRegex(HardwareError, "another controller holds"):
                     acquire_lock(lock)
                 self.assertEqual(lock.read_text(), expected)
             finally:
@@ -519,7 +521,8 @@ class CsvLogTests(unittest.TestCase):
             old_fields = tuple(
                 field
                 for field in CsvLog.FIELDS
-                if field not in {
+                if field
+                not in {
                     "amd_gpu_temperature_stale",
                     "nvidia_metrics_stale",
                 }
@@ -582,7 +585,6 @@ class CsvLogTests(unittest.TestCase):
         self.assertTrue(
             any("CSV telemetry recovered" in line for line in captured.output)
         )
-
 
 
 class _ControllerTestCase(unittest.TestCase):
@@ -691,15 +693,33 @@ class ControllerTelemetryTests(_ControllerTestCase):
             patch("hp_fan_control.controller.time.monotonic", return_value=1.0),
         ):
             controller.log_sample(
-                0, "balanced", "handoff", snapshot, filtered, 70, 100,
+                0,
+                "balanced",
+                "handoff",
+                snapshot,
+                filtered,
+                70,
+                100,
                 "cooling before firmware Auto",
             )
             controller.log_sample(
-                0, "balanced", "handoff", snapshot, filtered, 70, 100,
+                0,
+                "balanced",
+                "handoff",
+                snapshot,
+                filtered,
+                70,
+                100,
                 "cooling before firmware Auto",
             )
             controller.log_sample(
-                0, "balanced", "handoff", snapshot, filtered, 70, 100,
+                0,
+                "balanced",
+                "handoff",
+                snapshot,
+                filtered,
+                70,
+                100,
                 "new handoff detail",
             )
         self.assertEqual(log_info.call_count, 2)
@@ -777,9 +797,7 @@ class ControllerTelemetryTests(_ControllerTestCase):
             ["1.0", "31.0", "61.0", "91.0"],
         )
         self.assertTrue(all(row["cpu_raw_c"] == "" for row in failure_rows))
-        self.assertTrue(
-            all(row["nvidia_metrics_stale"] == "" for row in failure_rows)
-        )
+        self.assertTrue(all(row["nvidia_metrics_stale"] == "" for row in failure_rows))
         self.assertTrue(
             all(row["amd_gpu_temperature_stale"] == "" for row in failure_rows)
         )
@@ -787,7 +805,8 @@ class ControllerTelemetryTests(_ControllerTestCase):
         failure_statuses = [
             logged
             for logged in info.call_args_list
-            if logged.args and logged.args[0].startswith("state=%-14s")
+            if logged.args
+            and logged.args[0].startswith("state=%-14s")
             and logged.args[1] == "sensor-failure"
         ]
         self.assertEqual(len(failure_statuses), 4)
@@ -796,9 +815,7 @@ class ControllerTelemetryTests(_ControllerTestCase):
         root = self.root
         csv_path = root / "telemetry.csv"
         sensors = Mock()
-        sensors.read.side_effect = HardwareError(
-            "mandatory CPU source disappeared"
-        )
+        sensors.read.side_effect = HardwareError("mandatory CPU source disappeared")
         fan = FakeFan()
         csv_log = CsvLog(csv_path)
         controller = controller_with_fake_time(
@@ -886,18 +903,14 @@ class ControlDecisionTests(unittest.TestCase):
             self.policy.sensor_targets["cpu"] = 50.0
 
     def test_uses_hottest_sensor(self):
-        pwm, hottest = self.policy.desired_pwm(
-            {"cpu": 65.0, "gpu": 70.0, "acpi": 60.0}
-        )
+        pwm, hottest = self.policy.desired_pwm({"cpu": 65.0, "gpu": 70.0, "acpi": 60.0})
         self.assertEqual(hottest, 70)
         self.assertAlmostEqual(pwm_to_percent(pwm), hp_level_percent(23), delta=0.3)
         self.assertEqual(self.policy.winning_sensor, "gpu")
 
     def test_limits_fan_speed_decrease(self):
         self.policy.set_commanded_pwm(percent_to_pwm(80))
-        pwm, _ = self.policy.desired_pwm(
-            {"cpu": 60.0, "gpu": 50.0, "acpi": 50.0}
-        )
+        pwm, _ = self.policy.desired_pwm({"cpu": 60.0, "gpu": 50.0, "acpi": 50.0})
         self.assertAlmostEqual(pwm_to_percent(pwm), 72, delta=0.4)
 
     def test_rechecks_manual_mode_when_pwm_is_unchanged(self):
@@ -1154,9 +1167,7 @@ class ControlDecisionTests(unittest.TestCase):
         )
 
     def test_acpi_proxy_is_telemetry_only(self):
-        snapshot = TemperatureSnapshot(
-            cpu=44.0, gpu=44.0, acpi=95.0, ir=None
-        )
+        snapshot = TemperatureSnapshot(cpu=44.0, gpu=44.0, acpi=95.0, ir=None)
 
         self.assertEqual(self.policy.activation_sources(snapshot), set())
         self.assertTrue(self.policy.cool_enough_for_auto(snapshot))
@@ -1168,12 +1179,8 @@ class ControlDecisionTests(unittest.TestCase):
         )
         self.assertEqual(hottest, 44.0)
         self.assertEqual(self.policy.winning_sensor, "cpu")
-        self.assertAlmostEqual(
-            pwm_to_percent(pwm), hp_level_percent(19), delta=0.3
-        )
-        self.assertAlmostEqual(
-            self.policy.sensor_targets["acpi"], hp_level_percent(47)
-        )
+        self.assertAlmostEqual(pwm_to_percent(pwm), hp_level_percent(19), delta=0.3)
+        self.assertAlmostEqual(self.policy.sensor_targets["acpi"], hp_level_percent(47))
 
     def test_acpi_only_input_raises_hardware_error(self):
         with self.assertRaisesRegex(
@@ -1185,14 +1192,10 @@ class ControlDecisionTests(unittest.TestCase):
 
     def test_raw_fan_stop_threshold_controls_auto_handoff(self):
         self.assertFalse(
-            self.policy.cool_enough_for_auto(
-                TemperatureSnapshot(46.0, 44.0, None)
-            )
+            self.policy.cool_enough_for_auto(TemperatureSnapshot(46.0, 44.0, None))
         )
         self.assertTrue(
-            self.policy.cool_enough_for_auto(
-                TemperatureSnapshot(45.0, 45.0, None)
-            )
+            self.policy.cool_enough_for_auto(TemperatureSnapshot(45.0, 45.0, None))
         )
 
 
@@ -1248,9 +1251,7 @@ class SettingsTests(unittest.TestCase):
     def test_loads_factory_preset(self):
         config = CONFIG_PATH
         settings = Settings.load(config)
-        self.assertEqual(
-            settings.curve_source, "hp-vibrance-stx-n22x9-performance"
-        )
+        self.assertEqual(settings.curve_source, "hp-vibrance-stx-n22x9-performance")
         self.assertEqual(
             set(dict(settings.curves or ())),
             {"cpu", "gpu", "ir"},
@@ -1410,9 +1411,7 @@ preset = "hp-vibrance-stx-n22x9-performance"
                 encoding="utf-8",
             )
 
-            self.assertEqual(
-                Settings.load(config).allowed_boards, ("8D87", "8C99")
-            )
+            self.assertEqual(Settings.load(config).allowed_boards, ("8D87", "8C99"))
 
     def test_settings_curves_are_immutable_and_hashable(self):
         settings = Settings.load(CONFIG_PATH)
@@ -1673,9 +1672,7 @@ class SensorMetricTests(unittest.TestCase):
             "AMD GPU temperature source",
             "no amdgpu hwmon device was found during rediscovery",
         )
-        info.assert_called_once_with(
-            "%s recovered", "AMD GPU temperature source"
-        )
+        info.assert_called_once_with("%s recovered", "AMD GPU temperature source")
 
     def test_single_unreadable_amd_gpu_sample_does_not_fail_safe(self):
         sensors, _, _ = initialized_sensors_with_amd_gpu(self)
@@ -1847,9 +1844,7 @@ class SensorMetricTests(unittest.TestCase):
             self.assertEqual(sensors.read().gpu, 61.0)
 
         warning.assert_called_once()
-        info.assert_called_once_with(
-            "%s recovered", "NVIDIA GPU temperature source"
-        )
+        info.assert_called_once_with("%s recovered", "NVIDIA GPU temperature source")
 
     def test_suspended_nvidia_gpu_skips_query_and_clears_cached_metrics(self):
         with patch(
@@ -2038,8 +2033,7 @@ class SensorMetricTests(unittest.TestCase):
             self.assertEqual(sensors.read().gpu, 61.0)
             with self.assertRaisesRegex(
                 HardwareError,
-                "status 9: Failed to initialize NVML: "
-                "Driver/library version mismatch",
+                "status 9: Failed to initialize NVML: Driver/library version mismatch",
             ):
                 sensors.read()
 
@@ -2600,13 +2594,9 @@ class ControllerLoopTests(_ControllerTestCase):
         controller = controller_with_fake_time(
             settings=settings,
             fan=fan,
-            sensors=SequenceSensors(
-                [hot_ir] + [missing_ir] * missing_sample_count
-            ),
+            sensors=SequenceSensors([hot_ir] + [missing_ir] * missing_sample_count),
             apply=True,
-            duration_s=(
-                (missing_sample_count + 1) * settings.sample_interval_s
-            ),
+            duration_s=((missing_sample_count + 1) * settings.sample_interval_s),
             csv_log=CsvLog(None),
             profile_path=self.profile,
         )
@@ -2940,6 +2930,7 @@ class ControllerShutdownTests(_ControllerTestCase):
             ANY,
         )
 
+
 class RuntimeMarkerIsolation(unittest.TestCase):
     """Keeps tests away from the runtime marker of a live system service.
 
@@ -2975,9 +2966,7 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
         return path
 
     def test_load_allowed_boards_reads_configured_list(self):
-        path = self._write_config(
-            "[daemon]\nallowed_boards = [\"8D87\", \"8C99\"]\n"
-        )
+        path = self._write_config('[daemon]\nallowed_boards = ["8D87", "8C99"]\n')
         self.assertEqual(load_allowed_boards(path), ("8D87", "8C99"))
 
     def test_load_allowed_boards_falls_back_when_file_is_missing(self):
@@ -2985,7 +2974,7 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
         self.assertEqual(load_allowed_boards(missing), DEFAULT_ALLOWED_BOARDS)
 
     def test_load_allowed_boards_falls_back_on_unrelated_syntax_error(self):
-        path = self._write_config("[daemon\nallowed_boards = [\"8C99\"]\n")
+        path = self._write_config('[daemon\nallowed_boards = ["8C99"]\n')
         self.assertEqual(load_allowed_boards(path), DEFAULT_ALLOWED_BOARDS)
 
     def test_load_allowed_boards_falls_back_on_empty_list(self):
@@ -3003,16 +2992,14 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
         self.assertEqual(load_allowed_boards(path), DEFAULT_ALLOWED_BOARDS)
 
     def test_load_allowed_boards_trims_entries(self):
-        path = self._write_config(
-            '[daemon]\nallowed_boards = [" 8C99 ", ""]\n'
-        )
+        path = self._write_config('[daemon]\nallowed_boards = [" 8C99 ", ""]\n')
         self.assertEqual(load_allowed_boards(path), ("8C99",))
 
     def test_load_allowed_boards_falls_back_on_invalid_utf8(self):
         directory = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, directory)
         path = Path(directory) / "fan-control.toml"
-        path.write_bytes(b"\xff\xfe[daemon]\nallowed_boards = [\"8C99\"]\n")
+        path.write_bytes(b'\xff\xfe[daemon]\nallowed_boards = ["8C99"]\n')
         self.assertEqual(load_allowed_boards(path), DEFAULT_ALLOWED_BOARDS)
 
     def test_recovery_allowlist_keeps_a_confirmed_board_after_config_damage(self):
@@ -3023,19 +3010,17 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
         confirmed = directory / "board"
         record_confirmed_board("8C99", confirmed)
 
-        self.assertEqual(
-            recovery_allowed_boards(damaged, confirmed), ("8D87", "8C99")
-        )
+        self.assertEqual(recovery_allowed_boards(damaged, confirmed), ("8D87", "8C99"))
 
     def test_recovery_allowlist_does_not_duplicate_a_configured_board(self):
-        path = self._write_config("[daemon]\nallowed_boards = [\"8C99\"]\n")
+        path = self._write_config('[daemon]\nallowed_boards = ["8C99"]\n')
         confirmed = path.parent / "board"
         record_confirmed_board("8C99", confirmed)
 
         self.assertEqual(recovery_allowed_boards(path, confirmed), ("8C99",))
 
     def test_recovery_allowlist_ignores_a_missing_or_unreadable_marker(self):
-        path = self._write_config("[daemon]\nallowed_boards = [\"8C99\"]\n")
+        path = self._write_config('[daemon]\nallowed_boards = ["8C99"]\n')
         absent = path.parent / "board"
         self.assertEqual(recovery_allowed_boards(path, absent), ("8C99",))
 
@@ -3097,9 +3082,7 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
                 return fan
 
             wait_fan.side_effect = discover_fan
-            with patch.dict(
-                os.environ, {"RUNTIME_DIRECTORY": str(confirmed.parent)}
-            ):
+            with patch.dict(os.environ, {"RUNTIME_DIRECTORY": str(confirmed.parent)}):
                 result = main(["--apply"])
 
         self.assertEqual(result, 0)
@@ -3207,9 +3190,7 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
                 ),
             ),
         )
-        with patch.dict(
-            os.environ, {"RUNTIME_DIRECTORY": str(confirmed.parent)}
-        ):
+        with patch.dict(os.environ, {"RUNTIME_DIRECTORY": str(confirmed.parent)}):
             result = main(["--apply"])
 
         self.assertEqual(result, 0)
@@ -3360,9 +3341,7 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
         for value, expected in cases.items():
             with self.subTest(runtime_directory=value):
                 with patch.dict(os.environ, {"RUNTIME_DIRECTORY": value}):
-                    self.assertEqual(
-                        systemd_owns_runtime_directory(marker), expected
-                    )
+                    self.assertEqual(systemd_owns_runtime_directory(marker), expected)
 
     def test_inherited_invocation_id_does_not_claim_ownership(self):
         marker = Path("/run/hp-fan-control/board")
@@ -3376,9 +3355,7 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
         clear_confirmed_board(directory / "absent")
 
         with (
-            patch(
-                "pathlib.Path.unlink", side_effect=OSError("read-only file system")
-            ),
+            patch("pathlib.Path.unlink", side_effect=OSError("read-only file system")),
             self.assertLogs("hp-fan-control", level="ERROR") as logs,
         ):
             clear_confirmed_board(directory / "board")
@@ -3417,7 +3394,7 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
         self.assertFalse(confirmed.exists())
 
     def test_failsafe_accepts_an_allowlisted_non_default_board(self):
-        path = self._write_config("[daemon]\nallowed_boards = [\"8C99\"]\n")
+        path = self._write_config('[daemon]\nallowed_boards = ["8C99"]\n')
         fan = self._safe_fan()
         with (
             patch("hp_fan_control.cli.read_text", return_value="8C99"),
@@ -3432,7 +3409,7 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
         failsafe.assert_called_once_with(fan, AUTO_GUARD_PATH)
 
     def test_failsafe_rejects_a_board_outside_the_allowlist(self):
-        path = self._write_config("[daemon]\nallowed_boards = [\"8C99\"]\n")
+        path = self._write_config('[daemon]\nallowed_boards = ["8C99"]\n')
         with (
             patch("hp_fan_control.cli.read_text", return_value="8D87"),
             patch("hp_fan_control.cli.os.geteuid", return_value=0),
@@ -3446,7 +3423,7 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
         failsafe.assert_not_called()
 
     def test_restore_auto_rejects_a_board_outside_the_allowlist(self):
-        path = self._write_config("[daemon]\nallowed_boards = [\"8C99\"]\n")
+        path = self._write_config('[daemon]\nallowed_boards = ["8C99"]\n')
         with (
             patch("hp_fan_control.cli.read_text", return_value="8D87"),
             patch("hp_fan_control.cli.os.geteuid", return_value=0),
@@ -3565,9 +3542,7 @@ class MainStartupTests(RuntimeMarkerIsolation):
             patch("hp_fan_control.cli.Controller") as controller_type,
             patch("hp_fan_control.cli.CsvLog") as csv_type,
         ):
-            result = main(
-                ["--apply", "--actuator-test", "60", "--duration", "12"]
-            )
+            result = main(["--apply", "--actuator-test", "60", "--duration", "12"])
 
         self.assertEqual(result, 0)
         actuator_test.assert_called_once_with(
@@ -3728,9 +3703,7 @@ class MainStartupTests(RuntimeMarkerIsolation):
             patch("hp_fan_control.cli.read_text", side_effect=fake_read_text),
             patch(
                 "hp_fan_control.cli.validate_required_profile",
-                side_effect=HardwareError(
-                    "required platform profile startup timeout"
-                ),
+                side_effect=HardwareError("required platform profile startup timeout"),
             ),
             patch("hp_fan_control.cli.acquire_lock", acquire),
         ):
@@ -3893,6 +3866,7 @@ class RecoveryCommandTests(RuntimeMarkerIsolation):
             self.assertEqual(main(["--failsafe"]), 1)
 
         lock.close.assert_called_once_with()
+
 
 class SystemdNotifierTests(unittest.TestCase):
     def test_abstract_notify_socket_is_supported(self):
@@ -4200,9 +4174,7 @@ class HwmonStartupTests(unittest.TestCase):
             self.assertEqual(sensors.read().cpu, 50.0)
             sleep.assert_called_once_with(1.0)
             log_warning.assert_called_once()
-            log_info.assert_called_once_with(
-                "k10temp temperature source became ready"
-            )
+            log_info.assert_called_once_with("k10temp temperature source became ready")
 
     def test_waits_for_valid_k10temp_input_on_real_filesystem(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -4238,9 +4210,7 @@ class HwmonStartupTests(unittest.TestCase):
             self.assertEqual(sensors.read().cpu, 50.0)
             sleep.assert_called_once_with(1.0)
             log_warning.assert_called_once()
-            log_info.assert_called_once_with(
-                "k10temp temperature source became ready"
-            )
+            log_info.assert_called_once_with("k10temp temperature source became ready")
 
     def test_fails_after_k10temp_startup_timeout(self):
         settings = settings_with(
@@ -4448,9 +4418,7 @@ class SystemdUnitTests(unittest.TestCase):
         )
         restart_s = float(settings["RestartSec"].removesuffix("s"))
         burst = int(settings["StartLimitBurst"])
-        interval_s = float(
-            settings["StartLimitIntervalSec"].removesuffix("s")
-        )
+        interval_s = float(settings["StartLimitIntervalSec"].removesuffix("s"))
         self.assertGreater(restart_s * burst, interval_s)
 
     def test_csv_rotation_targets_only_the_stable_log(self):
@@ -4472,6 +4440,7 @@ class SystemdUnitTests(unittest.TestCase):
         ):
             with self.subTest(directive=directive):
                 self.assertIn(f"    {directive}\n", policy)
+
 
 if __name__ == "__main__":
     unittest.main()
