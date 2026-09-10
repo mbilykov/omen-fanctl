@@ -326,6 +326,34 @@ work run only when required.
    fan-stop window for 180 seconds. New heat immediately restores Manual
    control. A profile change during this interval does not cancel protection.
 8. Once the guard expires outside Performance, the daemon enters `sleeping`.
+9. A stop signal is answered by returning the fans to firmware Auto when the
+   hottest raw control temperature is at or below `stop_handoff_max_temp_c`
+   (70 C by default, `false` to disable). Reboot and poweroff arrive as
+   `SIGTERM` while software control is usually still active, and the
+   maximum-fan fail-safe would otherwise run the fans at full speed for the
+   rest of the shutdown and into the next power-on. The fail-safe still applies
+   above that temperature, when maximum mode is already selected or was
+   asserted externally, and when the fan mode is unreadable or unrecognised.
+   It also applies unless the last sample describes the machine being handed
+   over: temperatures unreadable, older than five seconds, holding a reading
+   reused after a failed query, taken while a depended-on source is failing, or
+   missing a control sensor that activated the current Manual cycle and has not
+   yet aged out all block the handoff, the last of those by the same rule the
+   normal Auto handoff uses. Source health is reported separately from the
+   readings because a query that fails with no cache to reuse yields neither a
+   temperature nor a staleness flag, and another GPU can fill the aggregated
+   value in its place. The firmware
+   fan-stop window is unattended once the daemon is gone. That age limit is
+   measured on `CLOCK_BOOTTIME`, so a sample from before a system suspend is
+   never recent, and a `sample_interval_s` above the limit hands off only when
+   a stop arrives within five seconds of a sample; such a cadence is reported
+   once at startup. A stop taken during `auto-guard` retires the guard without
+   writing Auto again: `hp-wmi` re-applies the fan settings on every mode
+   write, which could restart the firmware fan-stop window just as the daemon
+   exits.
+   An installed configuration that predates this setting omits the key, which
+   means the same as `false`: upgrades keep the unconditional fail-safe until
+   the key is added by hand or by `install.sh --replace-config`.
 
 Controller states:
 
@@ -356,7 +384,9 @@ powered-on session cannot bridge a later wake-up.
 Crash recovery is independent of Python cleanup. The systemd unit uses a
 15-second watchdog and `ExecStopPost=... --failsafe`. If the process exits,
 hangs, or receives `SIGKILL` during Manual, Max, or guarded Auto, the recovery
-command selects maximum fans before systemd restarts the service. A guard
+command selects maximum fans before systemd restarts the service. A requested
+stop that completed a cool handoff leaves firmware Auto and no guard behind, so
+the same command verifies Auto instead of escalating. A guard
 marker in `/run/omen-fanctl/` makes this decision survive loss of the main
 process. The service records its allowlisted board in the same directory once
 it takes fan ownership, so recovery stays available on any validated board even
@@ -524,6 +554,22 @@ journalctl -u omen-fanctl.service --since=-1min --no-pager
 The journal must show the killed process, `maximum fail-safe verified`, and a
 new service process. The fan interface must transition directly to maximum
 without an intermediate unsafe Auto handoff.
+
+### 8. Validate the stop handoff
+
+With the machine idle and Manual control active, stop the service:
+
+```bash
+sudo systemctl stop omen-fanctl.service
+journalctl -u omen-fanctl.service --since=-1min --no-pager
+cat /sys/class/hwmon/hwmon*/pwm1_enable
+```
+
+The journal must show `stop requested at ... C; returning the fans to firmware
+Auto` followed by `firmware Auto verified`, and `pwm1_enable` must read `2`.
+Repeat the same stop under a sustained workload above
+`stop_handoff_max_temp_c`: that run must instead log
+`selecting maximum fans` and `maximum fail-safe verified`.
 
 Results for any additional board should include DMI and BIOS identifiers,
 kernel version, hwmon channels, dry-run logs, actuator behavior, fan mapping,

@@ -58,6 +58,22 @@ class SourceHealth:
     ever_available: bool = False
     consecutive_failures: int = 0
 
+    @property
+    def degraded(self) -> bool:
+        """True while a source this daemon depends on is failing.
+
+        A source that never became available was never depended on, and an
+        OPTIONAL one is expected to come and go. Both are silent by design.
+        """
+        if not self.failed:
+            return False
+        if self.policy is FailurePolicy.REQUIRED:
+            return True
+        return (
+            self.policy is FailurePolicy.REQUIRED_AFTER_AVAILABLE
+            and self.ever_available
+        )
+
     def available(self) -> None:
         if self.failed:
             LOG.info("%s recovered", self.name)
@@ -302,6 +318,7 @@ class TemperatureSnapshot:
     nvidia_metrics_stale: bool | None = None
     amd_gpu_temperature_stale: bool | None = None
     nvidia_runtime_suspended: bool | None = None
+    degraded_sources: tuple[str, ...] = ()
 
     def control_temperatures(self) -> dict[str, float | None]:
         return {name: getattr(self, name) for name in CONTROL_SENSORS}
@@ -312,6 +329,16 @@ class TemperatureSnapshot:
         return max(
             value for value in self.control_temperatures().values() if value is not None
         )
+
+    @property
+    def has_cached_readings(self) -> bool:
+        """True when a reading was reused after its source failed to answer.
+
+        Such a sample still describes the machine well enough to keep cooling
+        it, which is why the control loop accepts it, but it is not a
+        measurement of the present moment.
+        """
+        return bool(self.nvidia_metrics_stale or self.amd_gpu_temperature_stale)
 
 
 class Sensors:
@@ -566,6 +593,32 @@ class Sensors:
         self.ir_health.available()
         return value
 
+    def _degraded_sources(self) -> tuple[str, ...]:
+        """Name the depended-on sources that are currently failing.
+
+        A reused reading is one symptom of this, but not the only one: a query
+        that fails with no cache to fall back on reports neither a temperature
+        nor staleness, which is what an NVIDIA GPU does on the first failed
+        query after leaving runtime suspend. Callers that need a complete
+        description of the machine, such as the stop handoff, ask here instead
+        of inferring health from the values.
+
+        An RTD3-suspended NVIDIA GPU is excluded: it is powered down, not
+        failing, which is the same exception the Auto handoff makes.
+        """
+        suspended = self.nvidia_gpu_health if self.nvidia_runtime_suspended else None
+        return tuple(
+            health.name
+            for health in (
+                self.cpu_health,
+                self.amd_gpu_health,
+                self.nvidia_gpu_health,
+                self.ir_health,
+                self.acpi_health,
+            )
+            if health is not suspended and health.degraded
+        )
+
     def read(self) -> TemperatureSnapshot:
         cpu_temperature = self._cpu_temperature()
         (
@@ -577,16 +630,21 @@ class Sensors:
         gpu_values = [self._amd_gpu_temperature(), nvidia_temperature]
         valid_gpu = [value for value in gpu_values if value is not None]
         gpu_temperature = max(valid_gpu) if valid_gpu else None
+        # Every source has reported by now, so their health describes this
+        # sample rather than the previous one.
+        acpi_temperature = self._acpi_temperature()
+        ir_temperature = self._hp_wmi_ir_temperature()
         return TemperatureSnapshot(
             cpu=cpu_temperature,
             gpu=gpu_temperature,
-            acpi=self._acpi_temperature(),
-            ir=self._hp_wmi_ir_temperature(),
+            acpi=acpi_temperature,
+            ir=ir_temperature,
             nvidia_power_draw_w=power_draw,
             nvidia_power_limit_w=power_limit,
             nvidia_metrics_stale=nvidia_metrics_stale,
             amd_gpu_temperature_stale=self.amd_gpu_temperature_stale,
             nvidia_runtime_suspended=self.nvidia_runtime_suspended,
+            degraded_sources=self._degraded_sources(),
         )
 
 

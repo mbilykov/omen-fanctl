@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -62,7 +63,9 @@ from omen_fanctl.controller import (  # noqa: E402
     CsvLog,
     Ewma,
     OPTIONAL_SENSOR_MISSING_RELEASE_SAMPLES,
+    STOP_HANDOFF_MAX_TEMPERATURE_AGE_S,
     SystemdNotifier,
+    boottime,
 )
 from omen_fanctl.hardware import (  # noqa: E402
     AUTO_MODE,
@@ -118,6 +121,7 @@ def fixed_policy_settings():
         curve=curves["cpu"],
         ir_release_hysteresis_c=1.0,
         auto_guard_s=180.0,
+        stop_handoff_max_temp_c=70.0,
         include_hp_wmi_ir=True,
         curves=tuple(curves.items()),
         curve_source="fixed-test-factory",
@@ -139,7 +143,23 @@ class FakeClock:
 
 def controller_with_fake_time(**kwargs):
     clock = FakeClock()
-    return Controller(clock=clock, wait=clock.wait, **kwargs)
+    return Controller(
+        clock=clock,
+        freshness_clock=clock,
+        wait=clock.wait,
+        **kwargs,
+    )
+
+
+def stop_after_first_sample(controller):
+    """Deliver a stop signal the way systemd does: between two samples."""
+    original = controller.wait
+
+    def wait(timeout_s):
+        controller.stop_requested = True
+        return original(timeout_s)
+
+    controller.wait = wait
 
 
 def parse_systemd_settings(unit: str) -> dict[str, str]:
@@ -1257,6 +1277,63 @@ class SettingsTests(unittest.TestCase):
         # The release threshold still governs a sensor-failure or adopted maximum.
         self.assertEqual(settings.critical_release_temp_c, 82.0)
 
+    def test_shipped_configuration_hands_cool_fans_back_on_stop(self):
+        settings = Settings.load(CONFIG_PATH)
+        self.assertEqual(settings.stop_handoff_max_temp_c, 70.0)
+
+    def test_upgraded_configuration_without_the_key_keeps_maximum_on_stop(self):
+        # Upgrades preserve the installed file, so a missing key must not
+        # change how a validated release answers a stop.
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "omen-fanctl.toml"
+            config.write_text(
+                """
+[daemon]
+allowed_boards = ["8D87"]
+
+[curves]
+preset = "performance-extended"
+""",
+                encoding="utf-8",
+            )
+
+            self.assertIsNone(Settings.load(config).stop_handoff_max_temp_c)
+
+    def test_stop_handoff_temperature_must_be_a_temperature_or_false(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "omen-fanctl.toml"
+            config.write_text(
+                """
+[daemon]
+allowed_boards = ["8D87"]
+stop_handoff_max_temp_c = true
+
+[curves]
+preset = "performance-extended"
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ConfigurationError,
+                "stop_handoff_max_temp_c must be a temperature or false",
+            ):
+                Settings.load(config)
+
+    def test_stop_handoff_temperature_must_stay_below_critical_release(self):
+        settings = replace(
+            fixed_policy_settings(),
+            stop_handoff_max_temp_c=82.0,
+        )
+        with self.assertRaisesRegex(
+            ConfigurationError,
+            "stop_handoff_max_temp_c must be below critical_release_temp_c",
+        ):
+            settings.validate()
+
+    def test_stop_handoff_temperature_may_be_disabled(self):
+        replace(fixed_policy_settings(), stop_handoff_max_temp_c=None).validate()
+
     def test_critical_temp_must_be_a_temperature_or_false(self):
         with tempfile.TemporaryDirectory() as temporary:
             config = Path(temporary) / "omen-fanctl.toml"
@@ -2105,7 +2182,15 @@ class SensorMetricTests(unittest.TestCase):
         self.assertIsNone(failed_after_wake.gpu)
         self.assertIsNone(failed_after_wake.nvidia_power_draw_w)
         self.assertIsNone(failed_after_wake.nvidia_power_limit_w)
+        # No reading and no cache to reuse, so staleness cannot report this.
         self.assertIsNone(failed_after_wake.nvidia_metrics_stale)
+        self.assertFalse(failed_after_wake.has_cached_readings)
+        self.assertEqual(
+            failed_after_wake.degraded_sources,
+            ("NVIDIA GPU temperature source",),
+        )
+        # The suspended sample is a powered-down GPU, not a failing one.
+        self.assertEqual(suspended.degraded_sources, ())
 
     def test_nvidia_query_resumes_when_runtime_status_becomes_active(self):
         with patch(
@@ -3076,6 +3161,424 @@ class ControllerShutdownTests(_ControllerTestCase):
             profile_path=self.profile,
         )
         controller.run()
+        self.assertEqual(fan.actions[0][0], "manual")
+        self.assertEqual(fan.actions[-1][0], "maximum")
+        self.assertEqual(fan.mode, MAX_MODE)
+
+    def _stopping_controller(self, **changes):
+        settings = replace(fixed_policy_settings(), **changes)
+        fan = FakeFan()
+        controller = controller_with_fake_time(
+            settings=settings,
+            fan=fan,
+            sensors=FakeSensors(50),
+            apply=True,
+            duration_s=None,
+            csv_log=CsvLog(None),
+            auto_guard_path=self.root / "auto-guard",
+        )
+        fan.set_manual(81)
+        fan.actions.clear()
+        controller.manual_active = True
+        controller.stop_requested = True
+        controller.last_snapshot = TemperatureSnapshot(cpu=55.0, gpu=50.0, acpi=None)
+        controller.last_snapshot_at = controller.freshness_clock()
+        controller.auto_guard_until = controller.clock() + 60.0
+        return controller, fan
+
+    def test_requested_stop_returns_cool_fans_to_firmware_auto(self):
+        guard = self.root / "auto-guard"
+        guard.write_text("active\n")
+        controller, fan = self._stopping_controller()
+
+        controller._failsafe_on_stop()
+
+        self.assertEqual(fan.actions, [("auto", None)])
+        self.assertEqual(fan.mode, AUTO_MODE)
+        self.assertFalse(guard.exists())
+        self.assertIsNone(controller.auto_guard_until)
+        self.assertFalse(controller.manual_active)
+
+    def test_requested_stop_above_the_handoff_limit_selects_maximum(self):
+        controller, fan = self._stopping_controller()
+        controller.last_snapshot = TemperatureSnapshot(cpu=70.1, gpu=50.0, acpi=None)
+
+        controller._failsafe_on_stop()
+
+        self.assertEqual(fan.mode, MAX_MODE)
+
+    def test_requested_stop_without_a_temperature_selects_maximum(self):
+        controller, fan = self._stopping_controller()
+        controller.last_snapshot = None
+
+        controller._failsafe_on_stop()
+
+        self.assertEqual(fan.mode, MAX_MODE)
+
+    def test_requested_stop_holding_maximum_fans_keeps_them(self):
+        controller, fan = self._stopping_controller()
+        controller.emergency = True
+
+        controller._failsafe_on_stop()
+
+        self.assertEqual(fan.mode, MAX_MODE)
+
+    def test_requested_stop_keeps_an_externally_asserted_maximum(self):
+        # Manual control preserves a maximum asserted by the EC or by the user
+        # without entering the emergency state, so the mode has to be read.
+        controller, fan = self._stopping_controller()
+        fan.mode = MAX_MODE
+
+        controller._failsafe_on_stop()
+
+        self.assertNotIn(("auto", None), fan.actions)
+        self.assertEqual(fan.mode, MAX_MODE)
+
+    def test_requested_stop_waits_for_a_missing_activated_sensor(self):
+        # IR drove this Manual cycle and then disappeared. CPU and GPU alone
+        # look cool, but the sensor that caused the cycle has not been read.
+        controller, fan = self._stopping_controller()
+        controller.policy.observe_activations(
+            TemperatureSnapshot(cpu=50.0, gpu=50.0, acpi=None, ir=80.0)
+        )
+        controller.last_snapshot = TemperatureSnapshot(
+            cpu=50.0, gpu=50.0, acpi=None, ir=None
+        )
+
+        with patch("omen_fanctl.controller.LOG.warning") as warning:
+            controller._failsafe_on_stop()
+
+        self.assertNotIn(("auto", None), fan.actions)
+        self.assertEqual(fan.mode, MAX_MODE)
+        warning.assert_any_call(
+            "stop requested while activated control sensors %s are missing; "
+            "keeping the maximum-fan fail-safe",
+            "ir",
+        )
+
+    def test_stop_hands_off_once_a_missing_sensor_has_aged_out(self):
+        controller, fan = self._stopping_controller()
+        missing = TemperatureSnapshot(cpu=50.0, gpu=50.0, acpi=None, ir=None)
+        controller.policy.observe_activations(
+            TemperatureSnapshot(cpu=50.0, gpu=50.0, acpi=None, ir=80.0)
+        )
+        for _ in range(OPTIONAL_SENSOR_MISSING_RELEASE_SAMPLES):
+            controller.policy.observe_activations(missing)
+        controller.last_snapshot = missing
+
+        controller._failsafe_on_stop()
+
+        self.assertEqual(fan.actions, [("auto", None)])
+        self.assertEqual(fan.mode, AUTO_MODE)
+
+    def test_requested_stop_refuses_a_degraded_source_without_a_cache(self):
+        # An NVIDIA query that fails after runtime suspend has no cached value
+        # to mark stale, and an AMD GPU can still fill the aggregated reading.
+        controller, fan = self._stopping_controller()
+        controller.last_snapshot = TemperatureSnapshot(
+            cpu=55.0,
+            gpu=50.0,
+            acpi=None,
+            nvidia_runtime_suspended=False,
+            degraded_sources=("NVIDIA GPU temperature source",),
+        )
+
+        with patch("omen_fanctl.controller.LOG.warning") as warning:
+            controller._failsafe_on_stop()
+
+        self.assertNotIn(("auto", None), fan.actions)
+        self.assertEqual(fan.mode, MAX_MODE)
+        warning.assert_any_call(
+            "stop requested while %s degraded; keeping the maximum-fan fail-safe",
+            "NVIDIA GPU temperature source",
+        )
+
+    def test_a_failed_query_after_wake_blocks_the_stop_handoff(self):
+        # End to end over the real sensor layer: the sample that a first failed
+        # NVIDIA query after runtime suspend produces must not be handed off.
+        with patch(
+            "omen_fanctl.hardware.shutil.which",
+            return_value="/usr/bin/nvidia-smi",
+        ):
+            sensors = initialized_sensors(self, include_nvidia_gpu=True)
+        runtime_status = sensors.nvidia_runtime_status_files[0]
+        fresh = SimpleNamespace(returncode=0, stdout="65, 80.0, 120.0\n", stderr="")
+
+        with patch(
+            "omen_fanctl.hardware.subprocess.run",
+            side_effect=[fresh, subprocess.TimeoutExpired("nvidia-smi", 2.0)],
+        ):
+            sensors.read()
+            runtime_status.write_text("suspended\n")
+            sensors.read()
+            runtime_status.write_text("active\n")
+            after_wake = sensors.read()
+
+        controller, fan = self._stopping_controller()
+        controller.last_snapshot = after_wake
+
+        controller._failsafe_on_stop()
+
+        # Nothing else about this sample would have refused the handoff.
+        self.assertLess(after_wake.raw_control_hottest, 70.0)
+        self.assertFalse(after_wake.has_cached_readings)
+        self.assertNotIn(("auto", None), fan.actions)
+        self.assertEqual(fan.mode, MAX_MODE)
+
+    def test_requested_stop_refuses_reused_sensor_readings(self):
+        controller, fan = self._stopping_controller()
+        controller.last_snapshot = TemperatureSnapshot(
+            cpu=55.0,
+            gpu=50.0,
+            acpi=None,
+            nvidia_metrics_stale=True,
+        )
+
+        with patch("omen_fanctl.controller.LOG.warning") as warning:
+            controller._failsafe_on_stop()
+
+        self.assertNotIn(("auto", None), fan.actions)
+        self.assertEqual(fan.mode, MAX_MODE)
+        warning.assert_any_call(
+            "stop requested on reused sensor readings; "
+            "keeping the maximum-fan fail-safe"
+        )
+
+    def test_requested_stop_refuses_a_reused_amd_reading(self):
+        controller, fan = self._stopping_controller()
+        controller.last_snapshot = TemperatureSnapshot(
+            cpu=55.0,
+            gpu=50.0,
+            acpi=None,
+            amd_gpu_temperature_stale=True,
+        )
+
+        controller._failsafe_on_stop()
+
+        self.assertEqual(fan.mode, MAX_MODE)
+
+    def test_a_powered_down_gpu_does_not_block_the_stop_handoff(self):
+        # An RTD3-suspended NVIDIA GPU is expected to have no temperature,
+        # which is the same exception the normal Auto handoff makes.
+        controller, fan = self._stopping_controller()
+        controller.policy.observe_activations(
+            TemperatureSnapshot(cpu=50.0, gpu=80.0, acpi=None)
+        )
+        controller.last_snapshot = TemperatureSnapshot(
+            cpu=55.0,
+            gpu=None,
+            acpi=None,
+            nvidia_runtime_suspended=True,
+        )
+
+        controller._failsafe_on_stop()
+
+        self.assertEqual(fan.actions, [("auto", None)])
+        self.assertEqual(fan.mode, AUTO_MODE)
+
+    def test_requested_stop_selects_maximum_from_an_unknown_mode(self):
+        controller, fan = self._stopping_controller()
+        fan.mode = 7
+
+        with patch("omen_fanctl.controller.LOG.error") as error:
+            controller._failsafe_on_stop()
+
+        self.assertNotIn(("auto", None), fan.actions)
+        self.assertEqual(fan.mode, MAX_MODE)
+        error.assert_any_call(
+            "unexpected fan mode %s on stop; keeping the maximum-fan fail-safe",
+            7,
+        )
+
+    def test_stop_during_the_guard_clears_it_without_rewriting_auto(self):
+        # hp-wmi re-applies the fan settings on every mode write, so a
+        # redundant Auto write could restart the firmware fan-stop window.
+        guard = self.root / "auto-guard"
+        guard.write_text("active\n")
+        controller, fan = self._stopping_controller()
+        controller.manual_active = False
+        fan.mode = AUTO_MODE
+
+        controller._failsafe_on_stop()
+
+        self.assertEqual(fan.actions, [])
+        self.assertEqual(fan.mode, AUTO_MODE)
+        self.assertFalse(guard.exists())
+        self.assertIsNone(controller.auto_guard_until)
+
+    def test_requested_stop_selects_maximum_when_the_mode_is_unreadable(self):
+        controller, fan = self._stopping_controller()
+        fan.status = Mock(side_effect=HardwareError("read failed"))
+
+        with patch("omen_fanctl.controller.LOG.error") as error:
+            controller._failsafe_on_stop()
+
+        self.assertNotIn(("auto", None), fan.actions)
+        self.assertEqual(fan.mode, MAX_MODE)
+        error.assert_any_call(
+            "cannot read the fan mode before a stop handoff: %s",
+            ANY,
+        )
+
+    def test_reading_from_before_a_suspend_is_not_fresh(self):
+        # CLOCK_MONOTONIC stops while the system is suspended, so scheduling
+        # time can look unchanged across hours of sleep.
+        controller, fan = self._stopping_controller()
+        monotonic = controller.clock
+        controller.freshness_clock = lambda: monotonic() + 3600.0
+
+        controller._failsafe_on_stop()
+
+        self.assertLess(
+            controller.clock() - controller.last_snapshot_at,
+            STOP_HANDOFF_MAX_TEMPERATURE_AGE_S,
+        )
+        self.assertNotIn(("auto", None), fan.actions)
+        self.assertEqual(fan.mode, MAX_MODE)
+
+    def test_freshness_is_measured_on_a_suspend_aware_clock(self):
+        controller = Controller(
+            settings=fixed_policy_settings(),
+            fan=FakeFan(),
+            sensors=FakeSensors(50),
+            apply=False,
+            duration_s=None,
+            csv_log=CsvLog(None),
+        )
+
+        self.assertIs(controller.freshness_clock, boottime)
+        # CLOCK_BOOTTIME is CLOCK_MONOTONIC plus the time spent suspended, so
+        # it cannot read behind a CLOCK_MONOTONIC value sampled before it.
+        monotonic = time.monotonic()
+        self.assertGreaterEqual(boottime(), monotonic)
+
+    def test_requested_stop_selects_maximum_from_a_stale_reading(self):
+        controller, fan = self._stopping_controller()
+        controller.last_snapshot_at = (
+            controller.freshness_clock() - STOP_HANDOFF_MAX_TEMPERATURE_AGE_S - 0.1
+        )
+
+        with patch("omen_fanctl.controller.LOG.warning") as warning:
+            controller._failsafe_on_stop()
+
+        self.assertNotIn(("auto", None), fan.actions)
+        self.assertEqual(fan.mode, MAX_MODE)
+        warning.assert_any_call(
+            "stop requested with no sample newer than %g seconds; "
+            "keeping the maximum-fan fail-safe",
+            STOP_HANDOFF_MAX_TEMPERATURE_AGE_S,
+        )
+
+    def test_reading_at_the_freshness_limit_still_hands_off(self):
+        controller, fan = self._stopping_controller()
+        controller.last_snapshot_at = (
+            controller.freshness_clock() - STOP_HANDOFF_MAX_TEMPERATURE_AGE_S
+        )
+
+        controller._failsafe_on_stop()
+
+        self.assertEqual(fan.mode, AUTO_MODE)
+
+    def test_sampling_slower_than_the_freshness_limit_is_reported(self):
+        fan = FakeFan()
+        controller = controller_with_fake_time(
+            settings=replace(
+                fixed_policy_settings(),
+                sample_interval_s=STOP_HANDOFF_MAX_TEMPERATURE_AGE_S + 1.0,
+                control_interval_s=STOP_HANDOFF_MAX_TEMPERATURE_AGE_S + 1.0,
+            ),
+            fan=fan,
+            sensors=FakeSensors(50),
+            apply=True,
+            duration_s=0.0,
+            csv_log=CsvLog(None),
+            profile_path=self.profile,
+        )
+
+        with patch("omen_fanctl.controller.LOG.warning") as warning:
+            controller.run()
+
+        warning.assert_any_call(
+            "sample_interval_s=%g is above the %g-second freshness limit for "
+            "the stop handoff; a stop will select maximum fans unless it "
+            "arrives within that limit of a sample",
+            STOP_HANDOFF_MAX_TEMPERATURE_AGE_S + 1.0,
+            STOP_HANDOFF_MAX_TEMPERATURE_AGE_S,
+        )
+
+    def test_unrequested_exit_selects_maximum_even_when_cool(self):
+        controller, fan = self._stopping_controller()
+        controller.stop_requested = False
+
+        controller._failsafe_on_stop()
+
+        self.assertEqual(fan.mode, MAX_MODE)
+
+    def test_disabled_stop_handoff_selects_maximum_on_every_exit(self):
+        controller, fan = self._stopping_controller(stop_handoff_max_temp_c=None)
+
+        controller._failsafe_on_stop()
+
+        self.assertEqual(fan.mode, MAX_MODE)
+
+    def test_stop_handoff_falls_back_to_maximum_when_auto_is_refused(self):
+        controller, fan = self._stopping_controller()
+        fan.restore_auto = Mock(side_effect=HardwareError("write failed"))
+
+        with patch("omen_fanctl.controller.LOG.critical") as critical:
+            controller._failsafe_on_stop()
+
+        self.assertEqual(fan.mode, MAX_MODE)
+        critical.assert_any_call("failed to restore firmware Auto on stop: %s", ANY)
+
+    def test_stop_handoff_selects_maximum_when_the_guard_survives(self):
+        guard = self.root / "auto-guard"
+        guard.mkdir()
+        controller, fan = self._stopping_controller()
+
+        with patch("omen_fanctl.controller.LOG.error") as error:
+            controller._failsafe_on_stop()
+
+        self.assertEqual(fan.mode, MAX_MODE)
+        error.assert_any_call(
+            "cannot clear the Auto guard after a stop handoff: %s",
+            ANY,
+        )
+
+    def test_signalled_run_leaves_cool_fans_in_firmware_auto(self):
+        fan = FakeFan()
+        controller = controller_with_fake_time(
+            settings=fixed_policy_settings(),
+            fan=fan,
+            sensors=FakeSensors(65),
+            apply=True,
+            duration_s=None,
+            csv_log=CsvLog(None),
+            profile_path=self.profile,
+        )
+        stop_after_first_sample(controller)
+
+        controller.run()
+
+        self.assertEqual(fan.actions[0][0], "manual")
+        self.assertEqual(fan.actions[-1], ("auto", None))
+        self.assertEqual(fan.mode, AUTO_MODE)
+
+    def test_signalled_run_under_load_still_selects_maximum(self):
+        fan = FakeFan()
+        controller = controller_with_fake_time(
+            settings=fixed_policy_settings(),
+            fan=fan,
+            sensors=FakeSensors(75),
+            apply=True,
+            duration_s=None,
+            csv_log=CsvLog(None),
+            profile_path=self.profile,
+        )
+        stop_after_first_sample(controller)
+
+        controller.run()
+
         self.assertEqual(fan.actions[0][0], "manual")
         self.assertEqual(fan.actions[-1][0], "maximum")
         self.assertEqual(fan.mode, MAX_MODE)

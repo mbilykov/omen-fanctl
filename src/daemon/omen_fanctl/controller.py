@@ -18,6 +18,7 @@ from .config import PWM_MAX, Settings, clamp, percent_to_pwm, pwm_to_percent
 from .hardware import (
     AUTO_MODE,
     CONTROL_SENSORS,
+    MANUAL_MODE,
     MAX_MODE,
     HardwareError,
     HpFanHwmon,
@@ -30,6 +31,25 @@ from .hardware import (
 LOG = logging.getLogger("omen-fanctl")
 OPTIONAL_CONTROL_SENSORS = frozenset({"ir"})
 OPTIONAL_SENSOR_MISSING_RELEASE_SAMPLES = 3
+# Oldest reading the stop handoff will decide from. A stop is answered from the
+# last completed sample rather than a fresh read, which would add sensor
+# latency and a new failure mode to the shutdown path. Heat rises fast enough
+# that an older reading says nothing useful about the machine being handed to
+# the firmware, so anything staler keeps the maximum-fan fail-safe.
+STOP_HANDOFF_MAX_TEMPERATURE_AGE_S = 5.0
+
+
+def boottime() -> float:
+    """Monotonic time that keeps counting while the system is suspended.
+
+    The controller schedules from ``time.monotonic``, which stops during
+    suspend: on resume its timers continue where they left off, which is what
+    the Auto guard and the emergency hold want. A temperature reading is the
+    opposite case. It ages in wall-clock time whether or not this process was
+    running, so freshness is measured on ``CLOCK_BOOTTIME``, and a reading from
+    before a suspend cannot look recent to the code that hands the fans back.
+    """
+    return time.clock_gettime(time.CLOCK_BOOTTIME)
 
 
 class SystemdNotifier:
@@ -331,18 +351,31 @@ class ControlPolicy:
                 return temperature
         return float("inf")
 
+    def missing_activated_sensors(self, snapshot: TemperatureSnapshot) -> set[str]:
+        """Name the sensors that made this Manual cycle necessary and are gone.
+
+        Control must not be handed back to the firmware without a reading from
+        a sensor that caused it to be taken. Optional sources age out in
+        ``observe_activations`` after a bounded outage, so this set empties on
+        its own rather than trapping the daemon in Manual mode.
+        """
+        missing = set()
+        for name, raw_value in snapshot.control_temperatures().items():
+            if raw_value is not None:
+                continue
+            # A confirmed RTD3 suspend means the NVIDIA GPU is powered down,
+            # not that an activated temperature source failed.
+            if name == "gpu" and snapshot.nvidia_runtime_suspended is True:
+                continue
+            if name in self._activated_sensors:
+                missing.add(name)
+        return missing
+
     def cool_enough_for_auto(self, snapshot: TemperatureSnapshot) -> bool:
+        if self.missing_activated_sensors(snapshot):
+            return False
         for name, raw_value in snapshot.control_temperatures().items():
             if raw_value is None:
-                # A confirmed RTD3 suspend means the NVIDIA GPU is powered
-                # down, not that an activated temperature source failed.
-                if name == "gpu" and snapshot.nvidia_runtime_suspended is True:
-                    continue
-                # Do not hand control back to firmware without a cool reading
-                # from a sensor that made this Manual cycle necessary. Optional
-                # sources age out in observe_activations after a bounded outage.
-                if name in self._activated_sensors:
-                    return False
                 continue
             # IR uses much lower curve temperatures than CPU/GPU. Do not
             # let a cool sensor that never activated control prevent a return
@@ -466,6 +499,7 @@ class Controller:
         inactive_event_wait_s: float = 5.0,
         auto_guard_path: Path | None = None,
         clock: Callable[[], float] = time.monotonic,
+        freshness_clock: Callable[[], float] = boottime,
         wait: Callable[[float], object] | None = None,
     ):
         settings.validate()
@@ -482,6 +516,7 @@ class Controller:
         self.inactive_event_wait_s = inactive_event_wait_s
         self.auto_guard_path = auto_guard_path
         self.clock = clock
+        self.freshness_clock = freshness_clock
         self.wait = wait
         self.next_status_log = 0.0
         self.last_status_state = ""
@@ -491,6 +526,8 @@ class Controller:
         self.emergency = False
         self.emergency_since: float | None = None
         self.auto_guard_until: float | None = None
+        self.last_snapshot: TemperatureSnapshot | None = None
+        self.last_snapshot_at: float | None = None
         self.last_sensor_failure: tuple[str, str] | None = None
         self.filters = {
             "cpu": Ewma(settings.ewma_rise_alpha, settings.ewma_fall_alpha),
@@ -612,11 +649,125 @@ class Controller:
         self._clear_auto_guard()
         return False
 
+    def _stop_handoff_to_auto(self) -> bool:
+        """Return the fans to firmware Auto after a requested, cool stop.
+
+        A stop signal is not a crash. Reboot and poweroff arrive as SIGTERM
+        while Manual control or the Auto guard is usually still active, and
+        answering them with maximum fans leaves the machine at full speed for
+        the rest of the shutdown and into the next power-on.
+
+        The handoff is still refused from any state the firmware cannot be
+        trusted with once this process is gone: its fan-stop window after
+        Manual -> Auto lasts up to two minutes with nobody watching, so a hot,
+        stale or unreadable machine, and any machine holding the maximum-fan
+        state, keeps the unconditional fail-safe.
+        """
+        limit = self.settings.stop_handoff_max_temp_c
+        snapshot = self.last_snapshot
+        if not self.stop_requested or limit is None or self.emergency:
+            return False
+        if snapshot is None:
+            return False
+        measured_at = self.last_snapshot_at
+        if (
+            measured_at is None
+            or self.freshness_clock() - measured_at > STOP_HANDOFF_MAX_TEMPERATURE_AGE_S
+        ):
+            LOG.warning(
+                "stop requested with no sample newer than %g seconds; "
+                "keeping the maximum-fan fail-safe",
+                STOP_HANDOFF_MAX_TEMPERATURE_AGE_S,
+            )
+            return False
+        # Freshness is a property of the whole sample, not of its timestamp.
+        # A reading reused after a failed query is not a measurement of the
+        # machine being handed over.
+        if snapshot.has_cached_readings:
+            LOG.warning(
+                "stop requested on reused sensor readings; "
+                "keeping the maximum-fan fail-safe"
+            )
+            return False
+        # A failing source with no cache to reuse reports no reading and no
+        # staleness at all, and another GPU can fill the aggregated value in
+        # its place. Ask the sources about their own health instead.
+        if snapshot.degraded_sources:
+            LOG.warning(
+                "stop requested while %s degraded; keeping the maximum-fan fail-safe",
+                ", ".join(snapshot.degraded_sources),
+            )
+            return False
+        # The normal handoff waits for a sensor that caused this Manual cycle
+        # to come back or age out. A stop must not step around that rule.
+        missing = self.policy.missing_activated_sensors(snapshot)
+        if missing:
+            LOG.warning(
+                "stop requested while activated control sensors %s are missing; "
+                "keeping the maximum-fan fail-safe",
+                ", ".join(sorted(missing)),
+            )
+            return False
+        hottest = snapshot.raw_control_hottest
+        if hottest > limit:
+            return False
+        try:
+            mode, _, _, _ = self.fan.status()
+        except HardwareError as exc:
+            LOG.error("cannot read the fan mode before a stop handoff: %s", exc)
+            return False
+        if mode == MAX_MODE:
+            # Manual control preserves a maximum asserted by the EC or by the
+            # user without entering the emergency state. Returning that machine
+            # to Auto would cancel a decision this controller never made.
+            LOG.info("maximum fan mode is asserted externally; leaving it in place")
+            return False
+        if mode not in (AUTO_MODE, MANUAL_MODE):
+            # Everywhere else an unexpected mode means another owner of the
+            # interface, or a driver this daemon does not understand. Writing
+            # Auto over it would hide that; the fail-safe states it.
+            LOG.error(
+                "unexpected fan mode %s on stop; keeping the maximum-fan fail-safe",
+                mode,
+            )
+            return False
+        if mode == AUTO_MODE:
+            # The firmware already owns the fans and only the guard is left to
+            # retire. Writing Auto again is not free: hp-wmi re-applies the fan
+            # settings on every write, which can restart the firmware fan-stop
+            # window at the moment nothing is left to watch it.
+            LOG.info(
+                "stop requested at %.1f C during firmware Auto; clearing the guard",
+                hottest,
+            )
+        else:
+            LOG.info(
+                "stop requested at %.1f C; returning the fans to firmware Auto",
+                hottest,
+            )
+            try:
+                self.fan.restore_auto()
+            except HardwareError as exc:
+                LOG.critical("failed to restore firmware Auto on stop: %s", exc)
+                return False
+        self.manual_active = False
+        try:
+            self._clear_auto_guard()
+        except HardwareError as exc:
+            # The guard outliving the process would send ExecStopPost straight
+            # back to maximum fans. Select them here instead, where the reason
+            # is logged next to the failure that caused it.
+            LOG.error("cannot clear the Auto guard after a stop handoff: %s", exc)
+            return False
+        return True
+
     def _failsafe_on_stop(self) -> None:
         guard_until = self.auto_guard_until
         guard_present = guard_until is not None
         guard_active = guard_present and self.clock() < guard_until
         if self.apply and (self.manual_active or self.emergency or guard_active):
+            if self._stop_handoff_to_auto():
+                return
             LOG.critical(
                 "controller stopped while software cooling or Auto guard "
                 "was active; selecting maximum fans"
@@ -791,6 +942,19 @@ class Controller:
                     "another controller may be active"
                 )
 
+        if (
+            self.apply
+            and self.settings.stop_handoff_max_temp_c is not None
+            and self.settings.sample_interval_s > STOP_HANDOFF_MAX_TEMPERATURE_AGE_S
+        ):
+            LOG.warning(
+                "sample_interval_s=%g is above the %g-second freshness limit for "
+                "the stop handoff; a stop will select maximum fans unless it "
+                "arrives within that limit of a sample",
+                self.settings.sample_interval_s,
+                STOP_HANDOFF_MAX_TEMPERATURE_AGE_S,
+            )
+
         self.profile_monitor = PlatformProfileMonitor(self.profile_path)
         self.notifier.ready()
 
@@ -825,6 +989,9 @@ class Controller:
                 except HardwareError as exc:
                     for temperature_filter in self.filters.values():
                         temperature_filter.value = None
+                    # A stop decided from an unreadable machine is a blind one.
+                    self.last_snapshot = None
+                    self.last_snapshot_at = None
                     if self.manual_active or self.emergency or auto_guard_active:
                         failure = ("control", str(exc))
                         if (
@@ -864,6 +1031,10 @@ class Controller:
                     self._wait_for_profile_change(self.settings.sample_interval_s)
                     continue
                 self.last_sensor_failure = None
+                self.last_snapshot = snapshot
+                # Timestamped after the read, which may itself have taken
+                # seconds, rather than at the top of the iteration.
+                self.last_snapshot_at = self.freshness_clock()
 
                 filtered = self._filtered(snapshot)
                 hottest = max(

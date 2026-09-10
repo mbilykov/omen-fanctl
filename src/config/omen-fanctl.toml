@@ -21,6 +21,34 @@ release_temp_c = 52.0
 # not delay this decision; the post-Auto guard covers any thermal rebound.
 fan_stop_temp_c = 45.0
 
+# Upper temperature for handing the fans back to firmware Auto when the daemon
+# is asked to stop. A stop signal is not a crash: reboot and poweroff arrive as
+# SIGTERM while software control is usually still active, and answering them
+# with maximum fans keeps the machine at full speed through shutdown and into
+# the next power-on. Below this temperature the fans return to Auto instead.
+# The unconditional maximum-fan fail-safe stays in place above this
+# temperature, when maximum mode is already selected by this daemon or asserted
+# externally, when the fan mode is unreadable or is not one this daemon
+# recognises, and when the last sample is not a trustworthy description of the
+# machine being handed over: temperatures unreadable, more than five seconds
+# old, carrying a reading reused after a failed query, taken while a source
+# this daemon depends on is failing, or missing a sensor that activated the
+# current Manual cycle and has not yet aged out. That last rule
+# is the one the normal Auto handoff applies, so a stop cannot step around it.
+# All of this matters because the firmware fan-stop window below is unattended
+# once the daemon is gone. The freshness limit is measured against the sample
+# itself, so a sample_interval_s above five seconds hands off only when a stop
+# happens to arrive within five seconds of one; the daemon logs one warning
+# when it starts on such a cadence. Freshness is measured on
+# CLOCK_BOOTTIME, so a reading taken before a system suspend never counts as
+# recent. Set false to always select maximum fans on stop. Crashes, hangs and
+# SIGKILL are unaffected: they never reach this decision.
+#
+# Omitting this key entirely also means false, which is what an installation
+# upgraded from a release without it keeps until the key is added by hand or by
+# install.sh --replace-config.
+stop_handoff_max_temp_c = 70.0
+
 # This firmware can stop both fans for roughly 90-120 seconds after Manual ->
 # Auto. After that transition, keep monitoring temperatures for three minutes
 # before sleeping. New heat immediately reactivates userspace fan control. The

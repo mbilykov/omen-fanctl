@@ -22,6 +22,7 @@ DAEMON_KEYS = frozenset(
         "activation_temp_c",
         "release_temp_c",
         "fan_stop_temp_c",
+        "stop_handoff_max_temp_c",
         "critical_temp_c",
         "critical_release_temp_c",
         "emergency_hold_s",
@@ -280,6 +281,7 @@ class Settings:
     include_nvidia_gpu: bool
     curve: Curve
     fan_stop_temp_c: float = 45.0
+    stop_handoff_max_temp_c: float | None = None
     ir_release_hysteresis_c: float = 1.0
     auto_guard_s: float = 180.0
     include_hp_wmi_ir: bool = True
@@ -348,8 +350,18 @@ class Settings:
                 activation_temp_c=float(daemon.get("activation_temp_c", 65.0)),
                 release_temp_c=float(daemon.get("release_temp_c", 55.0)),
                 fan_stop_temp_c=float(daemon.get("fan_stop_temp_c", 45.0)),
+                # Absent means disabled, unlike the 70 C in the packaged
+                # file. Upgrades keep the installed configuration, and a fan
+                # daemon must not quietly answer a stop differently than the
+                # release the operator validated. Adopting the handoff is an
+                # explicit edit, or --replace-config.
+                stop_handoff_max_temp_c=_optional_temperature(
+                    daemon.get("stop_handoff_max_temp_c", False),
+                    "stop_handoff_max_temp_c",
+                ),
                 critical_temp_c=_optional_temperature(
-                    daemon.get("critical_temp_c", 92.0)
+                    daemon.get("critical_temp_c", 92.0),
+                    "critical_temp_c",
                 ),
                 critical_release_temp_c=float(
                     daemon.get("critical_release_temp_c", 82.0)
@@ -463,6 +475,18 @@ class Settings:
                 raise ConfigurationError("critical_temp_c must be finite")
             if not 0 < self.critical_temp_c <= 125:
                 raise ConfigurationError("critical_temp_c must be in (0, 125]")
+        if self.stop_handoff_max_temp_c is not None:
+            if not math.isfinite(self.stop_handoff_max_temp_c):
+                raise ConfigurationError("stop_handoff_max_temp_c must be finite")
+            if not 0 < self.stop_handoff_max_temp_c <= 125:
+                raise ConfigurationError("stop_handoff_max_temp_c must be in (0, 125]")
+            # Above the critical release the controller is either holding, or
+            # about to hold, the maximum-fan state. Handing such a machine to
+            # firmware Auto on stop would contradict that decision.
+            if self.stop_handoff_max_temp_c >= self.critical_release_temp_c:
+                raise ConfigurationError(
+                    "stop_handoff_max_temp_c must be below critical_release_temp_c"
+                )
         if self.release_temp_c >= self.activation_temp_c:
             raise ConfigurationError("release_temp_c must be below activation_temp_c")
         if self.fan_stop_temp_c >= self.activation_temp_c:
@@ -512,18 +536,19 @@ class Settings:
                 raise ConfigurationError(f"{name} must be in (0, 100]")
 
 
-def _optional_temperature(value: object) -> float | None:
+def _optional_temperature(value: object, name: str) -> float | None:
     """Read a threshold that may be switched off with ``false``.
 
     Disabling ``critical_temp_c`` removes only the temperature trigger. Maximum
     fans remain the response to sensor loss and are still adopted from a
     crashed run, so the fail-safe survives without a redundant escalation above
-    a curve that already reaches full speed.
+    a curve that already reaches full speed. Disabling
+    ``stop_handoff_max_temp_c`` restores the unconditional maximum-fan exit.
     """
     if isinstance(value, bool):
         if value:
             raise ConfigurationError(
-                "critical_temp_c must be a temperature or false to disable it"
+                f"{name} must be a temperature or false to disable it"
             )
         return None
     return float(value)
