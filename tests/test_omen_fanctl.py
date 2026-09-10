@@ -47,6 +47,7 @@ from omen_fanctl.config import (  # noqa: E402
     ConfigurationError,
     Curve,
     Settings,
+    extended_performance_curves,
     hp_factory_performance_curves,
     hp_level_percent,
     load_allowed_boards,
@@ -1248,9 +1249,158 @@ class SettingsTests(unittest.TestCase):
         )
         self.assertIsNone(_csv_log_path(parse_args(["--no-log-file"])))
 
+    def test_shipped_configuration_disables_the_temperature_trigger(self):
+        settings = Settings.load(CONFIG_PATH)
+        self.assertIsNone(settings.critical_temp_c)
+        # The release threshold still governs a sensor-failure or adopted maximum.
+        self.assertEqual(settings.critical_release_temp_c, 82.0)
+
+    def test_critical_temp_must_be_a_temperature_or_false(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "omen-fanctl.toml"
+            config.write_text(
+                """
+[daemon]
+allowed_boards = ["8D87"]
+critical_temp_c = true
+
+[curves]
+preset = "performance-extended"
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ConfigurationError,
+                "critical_temp_c must be a temperature or false to disable it",
+            ):
+                Settings.load(config)
+
+    def test_disabled_trigger_drops_the_thresholds_that_depend_on_it(self):
+        extended = extended_performance_curves()
+        settings = replace(
+            fixed_policy_settings(),
+            critical_temp_c=None,
+            activation_temp_c=95.0,
+            release_temp_c=90.0,
+            critical_release_temp_c=99.0,
+            curve=extended["cpu"],
+            curves=tuple(extended.items()),
+        )
+        # Ordering rules against critical_temp_c no longer apply, but the
+        # remaining thresholds are still validated.
+        settings.validate()
+
+        with self.assertRaisesRegex(
+            ConfigurationError, r"critical_release_temp_c must be in \(0, 125]"
+        ):
+            replace(settings, critical_release_temp_c=130.0).validate()
+
+    def test_disabled_trigger_requires_curves_that_reach_full_speed(self):
+        # The factory curve stops at ~78.3%, so with no temperature override
+        # nothing could ever ask for full speed.
+        factory = hp_factory_performance_curves()
+        settings = replace(
+            fixed_policy_settings(),
+            critical_temp_c=None,
+            curve=factory["cpu"],
+            curves=tuple(factory.items()),
+        )
+
+        with self.assertRaisesRegex(
+            ConfigurationError,
+            "the cpu curve must reach 100% when critical_temp_c is disabled",
+        ):
+            settings.validate()
+
+    def test_disabled_trigger_checks_every_active_control_curve(self):
+        curves = dict(extended_performance_curves())
+        curves["gpu"] = hp_factory_performance_curves()["gpu"]
+        settings = replace(
+            fixed_policy_settings(),
+            critical_temp_c=None,
+            curve=curves["cpu"],
+            curves=tuple(curves.items()),
+        )
+
+        with self.assertRaisesRegex(
+            ConfigurationError, "the gpu curve must reach 100%"
+        ):
+            settings.validate()
+
+        # A sensor that cannot drive control is not required to reach full speed.
+        replace(settings, include_amd_gpu=False, include_nvidia_gpu=False).validate()
+
+    def test_factory_preset_still_loads_with_a_temperature_trigger(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "omen-fanctl.toml"
+            config.write_text(
+                """
+[daemon]
+allowed_boards = ["8D87"]
+critical_temp_c = 92.0
+
+[curves]
+preset = "hp-vibrance-stx-n22x9-performance"
+""",
+                encoding="utf-8",
+            )
+            settings = Settings.load(config)
+
+        self.assertEqual(settings.critical_temp_c, 92.0)
+        self.assertAlmostEqual(
+            settings.curve_for("cpu").pwm_percent[-1], hp_level_percent(47)
+        )
+
+    def test_factory_preset_with_the_trigger_disabled_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "omen-fanctl.toml"
+            config.write_text(
+                """
+[daemon]
+allowed_boards = ["8D87"]
+critical_temp_c = false
+
+[curves]
+preset = "hp-vibrance-stx-n22x9-performance"
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ConfigurationError,
+                "the cpu curve must reach 100% when critical_temp_c is disabled",
+            ):
+                Settings.load(config)
+
+    def test_shipped_configuration_selects_the_extended_preset(self):
+        settings = Settings.load(CONFIG_PATH)
+        self.assertEqual(settings.curve_source, "performance-extended")
+        self.assertEqual(
+            set(dict(settings.curves or ())),
+            {"cpu", "gpu", "ir"},
+        )
+        for sensor in ("cpu", "gpu", "ir"):
+            with self.subTest(sensor=sensor):
+                self.assertAlmostEqual(
+                    settings.curve_for(sensor).pwm_percent[-1], hp_level_percent(60)
+                )
+
     def test_loads_factory_preset(self):
-        config = CONFIG_PATH
-        settings = Settings.load(config)
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "omen-fanctl.toml"
+            config.write_text(
+                """
+[daemon]
+allowed_boards = ["8D87"]
+
+[curves]
+preset = "hp-vibrance-stx-n22x9-performance"
+""",
+                encoding="utf-8",
+            )
+            settings = Settings.load(config)
+
         self.assertEqual(settings.curve_source, "hp-vibrance-stx-n22x9-performance")
         self.assertEqual(
             set(dict(settings.curves or ())),
@@ -1259,6 +1409,58 @@ class SettingsTests(unittest.TestCase):
         self.assertAlmostEqual(
             settings.curve_for("gpu").pwm_percent[-1], hp_level_percent(47)
         )
+
+    def test_extended_preset_keeps_every_factory_step_below_its_headroom(self):
+        factory = hp_factory_performance_curves()
+        extended = extended_performance_curves()
+        headroom_start = {"cpu": 86.0, "gpu": 82.0, "ir": 66.0}
+        for sensor, curve in extended.items():
+            with self.subTest(sensor=sensor):
+                base = factory[sensor]
+                self.assertEqual(
+                    curve.temperatures[: len(base.temperatures)], base.temperatures
+                )
+                self.assertEqual(
+                    curve.pwm_percent[: len(base.pwm_percent)], base.pwm_percent
+                )
+                self.assertEqual(len(curve.temperatures), len(base.temperatures) + 3)
+                self.assertEqual(curve.temperatures[-3], headroom_start[sensor])
+                # Below the added steps the two tables must be indistinguishable.
+                probe = headroom_start[sensor] - 0.5
+                self.assertAlmostEqual(
+                    curve.evaluate_percent(probe), base.evaluate_percent(probe)
+                )
+                self.assertAlmostEqual(curve.pwm_percent[-1], hp_level_percent(60))
+
+    def test_extended_cpu_curve_reaches_full_speed_at_ninety(self):
+        cpu = Settings.load(CONFIG_PATH).curve_for("cpu")
+        full_speed_at = min(
+            temperature
+            for temperature, percent in zip(cpu.temperatures, cpu.pwm_percent)
+            if percent >= 100.0
+        )
+        self.assertEqual(full_speed_at, 90.0)
+        self.assertAlmostEqual(cpu.evaluate_percent(89.9), hp_level_percent(55))
+        self.assertAlmostEqual(cpu.evaluate_percent(90.0), 100.0)
+
+    def test_unknown_preset_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "omen-fanctl.toml"
+            config.write_text(
+                """
+[daemon]
+allowed_boards = ["8D87"]
+
+[curves]
+preset = "performance-unleashed"
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ConfigurationError, "unknown curve preset: performance-unleashed"
+            ):
+                Settings.load(config)
 
     def test_rejects_unknown_configuration_keys(self):
         cases = {
@@ -2371,8 +2573,63 @@ class ControllerLoopTests(_ControllerTestCase):
         self.assertFalse(controller.emergency)
         self.assertEqual(fan.actions, [])
 
-    def test_raw_cpu_or_gpu_at_critical_threshold_selects_maximum(self):
+    def test_disabled_trigger_keeps_full_speed_under_manual_control(self):
         settings = Settings.load(CONFIG_PATH)
+        self.assertIsNone(settings.critical_temp_c)
+        sensors = Mock()
+        sensors.read.return_value = TemperatureSnapshot(
+            cpu=95.0, gpu=50.0, acpi=None, ir=None
+        )
+        fan = FakeFan()
+        controller = controller_with_fake_time(
+            settings=settings,
+            fan=fan,
+            sensors=sensors,
+            apply=True,
+            duration_s=2.5,
+            csv_log=CsvLog(None),
+            profile_path=self.profile,
+        )
+
+        controller.run()
+
+        self.assertFalse(controller.emergency)
+        # The curve, not an override, is what asks for full speed.
+        self.assertEqual(fan.actions[0], ("manual", 255))
+        # The single maximum is the shutdown fail-safe once the run ends, which
+        # is unrelated to the temperature trigger.
+        self.assertEqual(fan.actions.count(("maximum", 255)), 1)
+        self.assertEqual(fan.actions[-1], ("maximum", 255))
+
+    def test_sensor_loss_still_selects_maximum_with_the_trigger_disabled(self):
+        settings = Settings.load(CONFIG_PATH)
+        sensors = Mock()
+        sensors.read.side_effect = [
+            TemperatureSnapshot(cpu=80.0, gpu=50.0, acpi=None, ir=None),
+            HardwareError("cpu temperature unreadable"),
+            HardwareError("cpu temperature unreadable"),
+        ]
+        fan = FakeFan()
+        controller = controller_with_fake_time(
+            settings=settings,
+            fan=fan,
+            sensors=sensors,
+            apply=True,
+            duration_s=2.5,
+            csv_log=CsvLog(None),
+            profile_path=self.profile,
+        )
+
+        with self.assertLogs("omen-fanctl", level="ERROR") as logs:
+            controller.run()
+
+        self.assertTrue(controller.emergency)
+        self.assertIn("sensor failure during control", "\n".join(logs.output))
+        self.assertEqual(fan.mode, MAX_MODE)
+
+    def test_raw_cpu_or_gpu_at_critical_threshold_selects_maximum(self):
+        # The shipped configuration disables the trigger, so configure one here.
+        settings = replace(Settings.load(CONFIG_PATH), critical_temp_c=92.0)
 
         for sensor_name in ("cpu", "gpu"):
             with self.subTest(sensor=sensor_name):
@@ -2643,7 +2900,7 @@ class ControllerLoopTests(_ControllerTestCase):
 
     def test_emergency_start_at_zero_is_not_replaced_on_next_sample(self):
         controller = controller_with_fake_time(
-            settings=Settings.load(CONFIG_PATH),
+            settings=settings_with(critical_temp_c=92.0),
             fan=FakeFan(),
             sensors=FakeSensors(92.0),
             apply=True,
@@ -2660,6 +2917,7 @@ class ControllerLoopTests(_ControllerTestCase):
         settings = settings_with(
             emergency_hold_s=2.0,
             ewma_fall_alpha=1.0,
+            critical_temp_c=92.0,
         )
         hot = TemperatureSnapshot(92.0, 50.0, None)
         cool = TemperatureSnapshot(35.0, 35.0, None)

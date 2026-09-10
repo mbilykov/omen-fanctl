@@ -225,6 +225,39 @@ def hp_factory_performance_curves() -> dict[str, Curve]:
     }
 
 
+def extended_performance_curves() -> dict[str, Curve]:
+    """Factory Performance tables continued past HP's level-47 ceiling.
+
+    HP's Performance table stops at fan level 47 of 60 (~78%), which settles
+    this machine around 85 C and leaves the 92 C emergency as the only path to
+    full speed. These tables keep every factory step and add three above it, so
+    the curve itself reaches 100% before the emergency threshold and maximum
+    fans stay reserved for genuine exceptions such as a crashed controller.
+    """
+    extra_levels = tuple(hp_level_percent(value) for value in (51, 55, 60))
+    headroom = {
+        "cpu": ((86.0, 88.0, 90.0), (82.0, 84.0, 86.0)),
+        "gpu": ((82.0, 85.0, 88.0), (78.0, 81.0, 84.0)),
+        "ir": ((66.0, 68.0, 70.0), None),
+    }
+    curves = {}
+    for name, factory in hp_factory_performance_curves().items():
+        rising, falling = headroom[name]
+        curves[name] = Curve(
+            factory.temperatures + rising,
+            factory.pwm_percent + extra_levels,
+            None if falling is None else (factory.fall_temperatures or ()) + falling,
+            stepped=True,
+        )
+    return curves
+
+
+CURVE_PRESETS = {
+    "hp-vibrance-stx-n22x9-performance": hp_factory_performance_curves,
+    "performance-extended": extended_performance_curves,
+}
+
+
 @dataclass(frozen=True)
 class Settings:
     allowed_boards: tuple[str, ...]
@@ -233,7 +266,7 @@ class Settings:
     control_interval_s: float
     activation_temp_c: float
     release_temp_c: float
-    critical_temp_c: float
+    critical_temp_c: float | None
     critical_release_temp_c: float
     emergency_hold_s: float
     decrease_hysteresis_c: float
@@ -278,9 +311,9 @@ class Settings:
         try:
             preset = str(curves_data.get("preset", "")).strip()
             if preset:
-                if preset != "hp-vibrance-stx-n22x9-performance":
+                if preset not in CURVE_PRESETS:
                     raise ConfigurationError(f"unknown curve preset: {preset}")
-                named = hp_factory_performance_curves()
+                named = CURVE_PRESETS[preset]()
                 curve = named["cpu"]
                 curves = tuple(named.items())
                 curve_source = preset
@@ -315,7 +348,9 @@ class Settings:
                 activation_temp_c=float(daemon.get("activation_temp_c", 65.0)),
                 release_temp_c=float(daemon.get("release_temp_c", 55.0)),
                 fan_stop_temp_c=float(daemon.get("fan_stop_temp_c", 45.0)),
-                critical_temp_c=float(daemon.get("critical_temp_c", 92.0)),
+                critical_temp_c=_optional_temperature(
+                    daemon.get("critical_temp_c", 92.0)
+                ),
                 critical_release_temp_c=float(
                     daemon.get("critical_release_temp_c", 82.0)
                 ),
@@ -369,6 +404,15 @@ class Settings:
             bool(data.get("stepped", False)),
         )
 
+    def active_control_sensors(self) -> tuple[str, ...]:
+        """Sensors whose curves can drive fan speed under this configuration."""
+        active = ["cpu"]
+        if self.include_amd_gpu or self.include_nvidia_gpu:
+            active.append("gpu")
+        if self.include_hp_wmi_ir:
+            active.append("ir")
+        return tuple(active)
+
     def curve_for(self, sensor: str) -> Curve:
         if self.curves is None:
             return self.curve
@@ -388,7 +432,6 @@ class Settings:
             ("activation_temp_c", self.activation_temp_c),
             ("release_temp_c", self.release_temp_c),
             ("fan_stop_temp_c", self.fan_stop_temp_c),
-            ("critical_temp_c", self.critical_temp_c),
             ("critical_release_temp_c", self.critical_release_temp_c),
             ("emergency_hold_s", self.emergency_hold_s),
             ("decrease_hysteresis_c", self.decrease_hysteresis_c),
@@ -411,21 +454,39 @@ class Settings:
             ("activation_temp_c", self.activation_temp_c),
             ("release_temp_c", self.release_temp_c),
             ("fan_stop_temp_c", self.fan_stop_temp_c),
-            ("critical_temp_c", self.critical_temp_c),
             ("critical_release_temp_c", self.critical_release_temp_c),
         ):
             if not 0 < value <= 125:
                 raise ConfigurationError(f"{name} must be in (0, 125]")
+        if self.critical_temp_c is not None:
+            if not math.isfinite(self.critical_temp_c):
+                raise ConfigurationError("critical_temp_c must be finite")
+            if not 0 < self.critical_temp_c <= 125:
+                raise ConfigurationError("critical_temp_c must be in (0, 125]")
         if self.release_temp_c >= self.activation_temp_c:
             raise ConfigurationError("release_temp_c must be below activation_temp_c")
         if self.fan_stop_temp_c >= self.activation_temp_c:
             raise ConfigurationError("fan_stop_temp_c must be below activation_temp_c")
-        if self.critical_release_temp_c >= self.critical_temp_c:
-            raise ConfigurationError(
-                "critical_release_temp_c must be below critical_temp_c"
-            )
-        if self.activation_temp_c >= self.critical_temp_c:
-            raise ConfigurationError("activation_temp_c must be below critical_temp_c")
+        if self.critical_temp_c is None:
+            # With the temperature override off, the curves are the only way to
+            # reach full speed. A curve that stops short would cap cooling with
+            # no path past it.
+            for sensor in self.active_control_sensors():
+                if self.curve_for(sensor).pwm_percent[-1] < 100.0 - 1e-9:
+                    raise ConfigurationError(
+                        f"the {sensor} curve must reach 100% when "
+                        "critical_temp_c is disabled; extend the curve or set "
+                        "critical_temp_c to a temperature"
+                    )
+        if self.critical_temp_c is not None:
+            if self.critical_release_temp_c >= self.critical_temp_c:
+                raise ConfigurationError(
+                    "critical_release_temp_c must be below critical_temp_c"
+                )
+            if self.activation_temp_c >= self.critical_temp_c:
+                raise ConfigurationError(
+                    "activation_temp_c must be below critical_temp_c"
+                )
         if self.emergency_hold_s < 0:
             raise ConfigurationError("emergency_hold_s must be non-negative")
         if not 0 <= self.decrease_hysteresis_c <= MAX_DECREASE_HYSTERESIS_C:
@@ -449,6 +510,23 @@ class Settings:
         ):
             if not 0 < value <= 100:
                 raise ConfigurationError(f"{name} must be in (0, 100]")
+
+
+def _optional_temperature(value: object) -> float | None:
+    """Read a threshold that may be switched off with ``false``.
+
+    Disabling ``critical_temp_c`` removes only the temperature trigger. Maximum
+    fans remain the response to sensor loss and are still adopted from a
+    crashed run, so the fail-safe survives without a redundant escalation above
+    a curve that already reaches full speed.
+    """
+    if isinstance(value, bool):
+        if value:
+            raise ConfigurationError(
+                "critical_temp_c must be a temperature or false to disable it"
+            )
+        return None
+    return float(value)
 
 
 def board_list(value: object) -> tuple[str, ...] | None:

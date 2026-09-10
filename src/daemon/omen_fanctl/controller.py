@@ -877,7 +877,11 @@ class Controller:
 
                 # Branch order is the safety priority: critical heat, retained
                 # emergency, stable Auto, cool Manual handoff, normal control.
-                if snapshot.raw_control_hottest >= self.settings.critical_temp_c:
+                critical_temp = self.settings.critical_temp_c
+                if (
+                    critical_temp is not None
+                    and snapshot.raw_control_hottest >= critical_temp
+                ):
                     if not self.emergency:
                         LOG.warning(
                             "critical raw temperature %.1f C; selecting maximum fans",

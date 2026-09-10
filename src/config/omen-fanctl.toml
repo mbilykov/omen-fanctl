@@ -27,10 +27,22 @@ fan_stop_temp_c = 45.0
 # daemon refuses values below the observed 120-second firmware window.
 auto_guard_s = 180.0
 
-# Raw (not smoothed) temperature overrides the curve and requests maximum fans.
-# Maximum remains selected for at least emergency_hold_s and until the smoothed
-# temperature falls below critical_release_temp_c.
-critical_temp_c = 92.0
+# Temperature trigger for maximum mode, disabled with false. The default
+# performance-extended curve already commands 100% at 90 C, so switching the
+# firmware to maximum on top of it changes no fan speed: it only takes control
+# away from the curve and holds full speed until the release threshold. Normal
+# operation therefore stays in Manual mode all the way to full speed.
+#
+# Set a temperature here to restore the override. The factory preset requires
+# one: its curve stops at ~78.3%, so with no override nothing could ever ask
+# for full speed. The daemon refuses to start on that combination, and on any
+# curve of an active control sensor whose top step is below 100%.
+critical_temp_c = false
+
+# Maximum mode is still entered when a sensor is lost during control, and is
+# adopted from a crashed run that left the fans at maximum. Those states are
+# released once the smoothed temperature falls below critical_release_temp_c
+# and maximum has been held for at least emergency_hold_s.
 critical_release_temp_c = 82.0
 emergency_hold_s = 10.0
 
@@ -43,8 +55,9 @@ decrease_hysteresis_c = 3.0
 ir_release_hysteresis_c = 1.0
 
 # PWM rate limits per applied command. Rising commands may be applied on every
-# sample; reductions remain limited to control_interval_s. A critical-temperature
-# transition ignores the rise limit and immediately requests maximum.
+# sample; reductions remain limited to control_interval_s. When critical_temp_c
+# is configured, crossing it ignores the rise limit and immediately requests
+# maximum.
 max_rise_percent_per_update = 20.0
 max_fall_percent_per_update = 8.0
 minimum_manual_percent = 31.6667
@@ -82,9 +95,22 @@ include_amd_gpu = true
 include_nvidia_gpu = true
 
 [curves]
-# Extracted from HP.Omen.Core.Common.dll resource
-# PowerControl.JSON.Vibrance_STX_N22X9.json, version 20250930. CPU, GPU, and
-# IR use independent stepped tables. IR is read from index 0 of the optional
-# /proc/hp_wmi_sensors interface. Normal factory Performance tops out at HP fan
-# level 47/60 (~78.3%); the daemon's 92 C emergency remains 60/60 (100%).
-preset = "hp-vibrance-stx-n22x9-performance"
+# Curve tables. CPU, GPU, and IR use independent stepped tables. IR is read
+# from index 0 of the optional /proc/hp_wmi_sensors interface.
+#
+# Two presets are available:
+#
+#   hp-vibrance-stx-n22x9-performance
+#     The factory table extracted from HP.Omen.Core.Common.dll resource
+#     PowerControl.JSON.Vibrance_STX_N22X9.json, version 20250930. It tops out
+#     at HP fan level 47/60 (~78.3%), which settles this machine near 85 C and
+#     leaves the 92 C emergency as the only path to full speed.
+#
+#   performance-extended (default)
+#     The same table with three steps added above HP's ceiling, reaching 60/60
+#     (100%) at 90 C. Every factory step below 86 C is unchanged, so a normal
+#     sustained workload sounds exactly as before; the added headroom lets the
+#     curve reach full speed on its own instead of relying on the emergency
+#     threshold, keeping maximum fans for exceptions such as a crashed
+#     controller.
+preset = "performance-extended"

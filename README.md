@@ -12,6 +12,7 @@ boards using the same `hp-wmi` interface may work, but require
 - [Tested configuration](#tested-configuration)
 - [Installation](#installation)
 - [Uninstallation](#uninstallation)
+- [Curve presets](#curve-presets)
 - [Custom per-sensor curves](#custom-per-sensor-curves)
 - [Logging](#logging)
 - [Control logic](#control-logic)
@@ -26,7 +27,7 @@ approximately 3,400/3,600 RPM under a sustained Performance-profile workload.
 CPU temperature reached 92-99 C even though the fans support approximately
 6,000 RPM.
 
-The daemon applies the factory CPU, GPU, and optional IR curves through the
+The daemon applies independent CPU, GPU, and optional IR curves through the
 Linux `hp-wmi` hwmon interface. It controls the fans only while the
 `performance` platform profile is selected and software cooling is required.
 
@@ -180,10 +181,31 @@ The uninstaller refuses to stop the service during `auto-guard` or while the
 fan interface is outside firmware Auto mode. Wait for `state=sleeping` before
 retrying. Telemetry under `/var/log/omen-fanctl/` is always preserved.
 
+## Curve presets
+
+`curves.preset` selects a built-in set of tables.
+
+| Preset | Top step | Behaviour |
+|---|---|---|
+| `performance-extended` (default) | 60/60 (100%) at 90 C | The factory table plus three steps above its ceiling |
+| `hp-vibrance-stx-n22x9-performance` | 47/60 (~78.3%) at 85 C | The extracted factory table, unmodified; requires `critical_temp_c` |
+
+HP's Performance table stops at fan level 47 of 60, around 4,700 RPM, which
+settles this machine near 85 C. Because the fans never go higher under that
+table, the only path to full speed was the emergency threshold, which a
+sustained workload reaches. The default preset keeps every factory step below
+86 C unchanged and adds levels 51, 55, and 60 above it, so the curve itself
+reaches full speed at 90 C. A normal workload therefore sounds as it did
+before, and because the curve now covers the whole range, the temperature
+override is disabled by default; see `critical_temp_c` in the configuration.
+
+The extended CPU steps are 86 C -> 85%, 88 C -> 91.7%, and 90 C -> 100%, with
+falling thresholds 82, 84, and 86 C. GPU adds 82, 85, and 88 C; optional IR
+adds 66, 68, and 70 C.
+
 ## Custom per-sensor curves
 
-The supplied configuration selects the extracted factory tables with
-`curves.preset`. To define custom tables, remove `preset` and add a
+To define custom tables, remove `preset` and add a
 `[curves.cpu]` table. CPU is the required base curve; omitted `gpu` and `ir`
 tables fall back to it. An omitted `acpi` table uses the `ir` curve when
 present, otherwise it also falls back to CPU.
@@ -268,15 +290,22 @@ work run only when required.
 2. In Performance, firmware Auto remains active while temperatures are below
    the activation thresholds. CPU and GPU control activate at 60 C by default.
    Optional IR control activates at the first curve step above the minimum
-   Manual PWM, 44 C with the supplied factory curve.
+   Manual PWM, 44 C with the supplied curves.
 3. Raw temperatures permit immediate fan-speed increases. Asymmetric EWMA,
    curve hysteresis, and PWM rate limits prevent rapid decreases or oscillation.
 4. CPU, GPU, and IR are evaluated against independent curves. The highest fan
    request wins. Linux `hp-wmi` converts the standard `0..255` PWM value to the
    firmware fan-level mapping.
-5. Software control uses Manual mode (`pwm1_enable=1`). Any raw monitored
-   temperature reaching 92 C immediately selects maximum mode
-   (`pwm1_enable=0`, PWM 255).
+5. Software control stays in Manual mode (`pwm1_enable=1`) all the way to full
+   speed, because the default curve reaches 100% at 90 C. Maximum mode
+   (`pwm1_enable=0`, PWM 255) is reserved for a sensor lost during control and
+   for a crashed run whose fans were left at maximum. Setting
+   `critical_temp_c` restores the temperature override, which any raw monitored
+   temperature at or above it then triggers; it is off by default because
+   overriding a curve that already commands 100% changes no fan speed. The two
+   settings are coupled: with the override off, every active control curve must
+   reach 100%, otherwise full speed would be unreachable and the daemon refuses
+   to start.
 6. Manual control returns to firmware Auto when raw CPU and GPU temperatures
    are at or below `fan_stop_temp_c` (45 C by default). If IR activated the
    cycle, it must also fall to its release threshold, 43 C by default. A lost
@@ -293,7 +322,7 @@ Controller states:
 |---|---|
 | `bios-auto` | Firmware owns the fans; Performance remains monitored |
 | `manual` | The daemon writes intermediate PWM levels |
-| `emergency` | Maximum fans remain selected until critical release |
+| `emergency` | Maximum fans remain selected until critical release; entered on sensor loss, on adopting a crashed run's maximum, or through `critical_temp_c` when configured |
 | `handoff` | Cooling continues before a safe return to Auto |
 | `auto-guard` | Firmware owns the fans while temperatures remain monitored |
 | `sleeping` | Firmware owns the fans; the daemon waits for a profile event |
