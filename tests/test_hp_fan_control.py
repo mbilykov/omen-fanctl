@@ -4,6 +4,7 @@ import csv
 import inspect
 import os
 import select
+import shutil
 import signal
 import stat
 import subprocess
@@ -27,6 +28,12 @@ import hp_fan_control as hp_fan_control_package  # noqa: E402
 from hp_fan_control.cli import (  # noqa: E402
     AUTO_GUARD_PATH,
     CONFIGURATION_ERROR_EXIT_STATUS,
+    CONFIRMED_BOARD_PATH,
+    clear_confirmed_board,
+    clear_confirmed_board_if_safe,
+    systemd_owns_runtime_directory,
+    record_confirmed_board,
+    recovery_allowed_boards,
     acquire_lock,
     _csv_log_path,
     dry_run_lock_path,
@@ -37,11 +44,13 @@ from hp_fan_control.cli import (  # noqa: E402
     run_actuator_test,
 )
 from hp_fan_control.config import (  # noqa: E402
+    DEFAULT_ALLOWED_BOARDS,
     ConfigurationError,
     Curve,
     Settings,
     hp_factory_performance_curves,
     hp_level_percent,
+    load_allowed_boards,
     percent_to_pwm,
     pwm_to_percent,
 )
@@ -1355,6 +1364,52 @@ pwm_percent = [30, 40]
                 "curves.cpu is required",
             ):
                 Settings.load(config)
+
+    def test_allowed_boards_must_be_a_list(self):
+        cases = {
+            "bare string": 'allowed_boards = "8C99"',
+            "integer": "allowed_boards = 8887",
+            "non-string entries": "allowed_boards = [8887]",
+            "nested list": 'allowed_boards = [["8C99"]]',
+        }
+        for name, line in cases.items():
+            with self.subTest(case=name):
+                with tempfile.TemporaryDirectory() as temporary:
+                    config = Path(temporary) / "fan-control.toml"
+                    config.write_text(
+                        f"""
+[daemon]
+{line}
+
+[curves]
+preset = "hp-vibrance-stx-n22x9-performance"
+""",
+                        encoding="utf-8",
+                    )
+
+                    with self.assertRaisesRegex(
+                        ConfigurationError,
+                        "allowed_boards must be a list of board names",
+                    ):
+                        Settings.load(config)
+
+    def test_allowed_boards_entries_are_trimmed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "fan-control.toml"
+            config.write_text(
+                """
+[daemon]
+allowed_boards = [" 8D87 ", "", "8C99"]
+
+[curves]
+preset = "hp-vibrance-stx-n22x9-performance"
+""",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                Settings.load(config).allowed_boards, ("8D87", "8C99")
+            )
 
     def test_settings_curves_are_immutable_and_hashable(self):
         settings = Settings.load(CONFIG_PATH)
@@ -2882,12 +2937,542 @@ class ControllerShutdownTests(_ControllerTestCase):
             ANY,
         )
 
-class MainStartupTests(unittest.TestCase):
+class RuntimeMarkerIsolation(unittest.TestCase):
+    """Keeps tests away from the runtime marker of a live system service.
+
+    The recovery paths delete the confirmed-board marker once the fans are
+    safe. Running the suite as root while the service is active would otherwise
+    remove the marker that its ExecStopPost depends on.
+    """
+
+    def setUp(self):
+        super().setUp()
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory)
+        self.confirmed_board_path = Path(directory) / "board"
+        patcher = patch(
+            "hp_fan_control.cli.CONFIRMED_BOARD_PATH", self.confirmed_board_path
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
+class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
+    def _safe_fan(self, mode=AUTO_MODE):
+        fan = Mock(spec=HpFanHwmon)
+        fan.path = Path("/sys/class/hwmon/hwmon7")
+        fan.status.return_value = (mode, 0, 3000, 3000)
+        return fan
+
+    def _write_config(self, body):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory)
+        path = Path(directory) / "fan-control.toml"
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    def test_load_allowed_boards_reads_configured_list(self):
+        path = self._write_config(
+            "[daemon]\nallowed_boards = [\"8D87\", \"8C99\"]\n"
+        )
+        self.assertEqual(load_allowed_boards(path), ("8D87", "8C99"))
+
+    def test_load_allowed_boards_falls_back_when_file_is_missing(self):
+        missing = Path(tempfile.mkdtemp()) / "absent.toml"
+        self.assertEqual(load_allowed_boards(missing), DEFAULT_ALLOWED_BOARDS)
+
+    def test_load_allowed_boards_falls_back_on_unrelated_syntax_error(self):
+        path = self._write_config("[daemon\nallowed_boards = [\"8C99\"]\n")
+        self.assertEqual(load_allowed_boards(path), DEFAULT_ALLOWED_BOARDS)
+
+    def test_load_allowed_boards_falls_back_on_empty_list(self):
+        path = self._write_config("[daemon]\nallowed_boards = []\n")
+        self.assertEqual(load_allowed_boards(path), DEFAULT_ALLOWED_BOARDS)
+
+    def test_load_allowed_boards_falls_back_on_a_bare_string(self):
+        # A string is iterable: accepting one would expand "8C99" into its
+        # characters and then reject the board it names.
+        path = self._write_config('[daemon]\nallowed_boards = "8C99"\n')
+        self.assertEqual(load_allowed_boards(path), DEFAULT_ALLOWED_BOARDS)
+
+    def test_load_allowed_boards_falls_back_on_non_string_entries(self):
+        path = self._write_config("[daemon]\nallowed_boards = [8887]\n")
+        self.assertEqual(load_allowed_boards(path), DEFAULT_ALLOWED_BOARDS)
+
+    def test_load_allowed_boards_trims_entries(self):
+        path = self._write_config(
+            '[daemon]\nallowed_boards = [" 8C99 ", ""]\n'
+        )
+        self.assertEqual(load_allowed_boards(path), ("8C99",))
+
+    def test_load_allowed_boards_falls_back_on_invalid_utf8(self):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory)
+        path = Path(directory) / "fan-control.toml"
+        path.write_bytes(b"\xff\xfe[daemon]\nallowed_boards = [\"8C99\"]\n")
+        self.assertEqual(load_allowed_boards(path), DEFAULT_ALLOWED_BOARDS)
+
+    def test_recovery_allowlist_keeps_a_confirmed_board_after_config_damage(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        damaged = directory / "fan-control.toml"
+        damaged.write_bytes(b"\xff\xfe")
+        confirmed = directory / "board"
+        record_confirmed_board("8C99", confirmed)
+
+        self.assertEqual(
+            recovery_allowed_boards(damaged, confirmed), ("8D87", "8C99")
+        )
+
+    def test_recovery_allowlist_does_not_duplicate_a_configured_board(self):
+        path = self._write_config("[daemon]\nallowed_boards = [\"8C99\"]\n")
+        confirmed = path.parent / "board"
+        record_confirmed_board("8C99", confirmed)
+
+        self.assertEqual(recovery_allowed_boards(path, confirmed), ("8C99",))
+
+    def test_recovery_allowlist_ignores_a_missing_or_unreadable_marker(self):
+        path = self._write_config("[daemon]\nallowed_boards = [\"8C99\"]\n")
+        absent = path.parent / "board"
+        self.assertEqual(recovery_allowed_boards(path, absent), ("8C99",))
+
+        absent.write_bytes(b"\xff\xfe")
+        self.assertEqual(recovery_allowed_boards(path, absent), ("8C99",))
+
+    def test_failsafe_accepts_a_confirmed_board_when_the_config_is_damaged(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        damaged = directory / "fan-control.toml"
+        damaged.write_bytes(b"\xff\xfe")
+        confirmed = directory / "board"
+        record_confirmed_board("8C99", confirmed)
+        fan = self._safe_fan()
+        with (
+            patch("hp_fan_control.cli.CONFIRMED_BOARD_PATH", confirmed),
+            patch("hp_fan_control.cli.read_text", return_value="8C99"),
+            patch("hp_fan_control.cli.os.geteuid", return_value=0),
+            patch("hp_fan_control.cli.acquire_lock", return_value=Mock()),
+            patch("hp_fan_control.cli.HpFanHwmon", return_value=fan),
+            patch("hp_fan_control.cli.ensure_failsafe_fan_state") as failsafe,
+        ):
+            result = main(["--config", str(damaged), "--failsafe"])
+
+        self.assertEqual(result, 0)
+        failsafe.assert_called_once_with(fan, AUTO_GUARD_PATH)
+
+    def test_apply_records_the_confirmed_board_before_touching_the_fans(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        confirmed = directory / "board"
+        settings = replace(fixed_policy_settings(), allowed_boards=("8C99",))
+        observed = []
+        with (
+            patch("hp_fan_control.cli.CONFIRMED_BOARD_PATH", confirmed),
+            patch("hp_fan_control.cli.Settings.load", return_value=settings),
+            patch("hp_fan_control.cli.read_text", return_value="8C99"),
+            patch("hp_fan_control.cli.validate_required_profile"),
+            patch("hp_fan_control.cli.os.geteuid", return_value=0),
+            patch("hp_fan_control.cli.acquire_lock", return_value=Mock()),
+            patch("hp_fan_control.cli.wait_for_hp_fan_hwmon") as wait_fan,
+            patch(
+                "hp_fan_control.cli.wait_for_temperature_sensors",
+                return_value=Mock(spec=Sensors),
+            ),
+            patch("hp_fan_control.cli.CsvLog", return_value=Mock(spec=CsvLog)),
+            patch(
+                "hp_fan_control.cli.SystemdNotifier.from_environment",
+                return_value=Mock(spec=SystemdNotifier),
+            ),
+            patch("hp_fan_control.cli.Controller", return_value=Mock(spec=Controller)),
+            patch("hp_fan_control.cli.signal.signal"),
+        ):
+            fan = Mock(spec=HpFanHwmon)
+            fan.path = Path("/sys/class/hwmon/hwmon7")
+
+            def discover_fan():
+                observed.append(confirmed.read_text(encoding="ascii"))
+                return fan
+
+            wait_fan.side_effect = discover_fan
+            with patch.dict(
+                os.environ, {"RUNTIME_DIRECTORY": str(confirmed.parent)}
+            ):
+                result = main(["--apply"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(observed, ["8C99\n"])
+
+    def _apply_run_patches(self, confirmed, settings, extra=()):
+        """Patch a full apply-mode startup down to a Mock controller."""
+        wait_fan = patch("hp_fan_control.cli.wait_for_hp_fan_hwmon")
+        fan = self._safe_fan()
+        started = wait_fan.start()
+        started.return_value = fan
+        self.fan = fan
+        self.addCleanup(wait_fan.stop)
+        for target in (
+            patch("hp_fan_control.cli.CONFIRMED_BOARD_PATH", confirmed),
+            patch("hp_fan_control.cli.Settings.load", return_value=settings),
+            patch("hp_fan_control.cli.read_text", return_value="8C99"),
+            patch("hp_fan_control.cli.validate_required_profile"),
+            patch("hp_fan_control.cli.os.geteuid", return_value=0),
+            patch("hp_fan_control.cli.acquire_lock", return_value=Mock()),
+            patch(
+                "hp_fan_control.cli.wait_for_temperature_sensors",
+                return_value=Mock(spec=Sensors),
+            ),
+            patch("hp_fan_control.cli.CsvLog", return_value=Mock(spec=CsvLog)),
+            patch(
+                "hp_fan_control.cli.SystemdNotifier.from_environment",
+                return_value=Mock(spec=SystemdNotifier),
+            ),
+            patch("hp_fan_control.cli.signal.signal"),
+            *extra,
+        ):
+            target.start()
+            self.addCleanup(target.stop)
+
+    def test_manual_apply_clears_its_marker_when_the_run_ends(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        confirmed = directory / "board"
+        settings = replace(fixed_policy_settings(), allowed_boards=("8C99",))
+        controller = Mock(spec=Controller)
+        recorded = []
+        controller.run.side_effect = lambda: recorded.append(confirmed.exists())
+        self._apply_run_patches(
+            confirmed,
+            settings,
+            extra=(patch("hp_fan_control.cli.Controller", return_value=controller),),
+        )
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("RUNTIME_DIRECTORY", None)
+            result = main(["--apply"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(recorded, [True])
+        self.assertFalse(confirmed.exists())
+
+    def test_manual_apply_clears_its_marker_after_a_failed_run(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        confirmed = directory / "board"
+        settings = replace(fixed_policy_settings(), allowed_boards=("8C99",))
+        controller = Mock(spec=Controller)
+        controller.run.side_effect = HardwareError("sensor lost")
+        self._apply_run_patches(
+            confirmed,
+            settings,
+            extra=(patch("hp_fan_control.cli.Controller", return_value=controller),),
+        )
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("RUNTIME_DIRECTORY", None)
+            result = main(["--apply"])
+
+        self.assertEqual(result, 1)
+        self.assertFalse(confirmed.exists())
+
+    def test_manual_actuator_test_clears_its_marker(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        confirmed = directory / "board"
+        settings = replace(fixed_policy_settings(), allowed_boards=("8C99",))
+        self._apply_run_patches(
+            confirmed,
+            settings,
+            extra=(patch("hp_fan_control.cli.run_actuator_test"),),
+        )
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("RUNTIME_DIRECTORY", None)
+            result = main(["--apply", "--actuator-test", "60"])
+
+        self.assertEqual(result, 0)
+        self.assertFalse(confirmed.exists())
+
+    def test_systemd_managed_apply_leaves_the_marker_for_exec_stop_post(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        confirmed = directory / "board"
+        settings = replace(fixed_policy_settings(), allowed_boards=("8C99",))
+        self._apply_run_patches(
+            confirmed,
+            settings,
+            extra=(
+                patch(
+                    "hp_fan_control.cli.Controller",
+                    return_value=Mock(spec=Controller),
+                ),
+            ),
+        )
+        with patch.dict(
+            os.environ, {"RUNTIME_DIRECTORY": str(confirmed.parent)}
+        ):
+            result = main(["--apply"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(confirmed.read_text(encoding="ascii"), "8C99\n")
+
+    def test_completed_recovery_drops_the_marker(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        damaged = directory / "fan-control.toml"
+        damaged.write_bytes(b"\xff\xfe")
+        confirmed = directory / "board"
+        record_confirmed_board("8C99", confirmed)
+        with (
+            patch("hp_fan_control.cli.CONFIRMED_BOARD_PATH", confirmed),
+            patch("hp_fan_control.cli.read_text", return_value="8C99"),
+            patch("hp_fan_control.cli.os.geteuid", return_value=0),
+            patch("hp_fan_control.cli.acquire_lock", return_value=Mock()),
+            patch("hp_fan_control.cli.HpFanHwmon", return_value=self._safe_fan()),
+            patch("hp_fan_control.cli.ensure_failsafe_fan_state"),
+        ):
+            result = main(["--config", str(damaged), "--failsafe"])
+
+        self.assertEqual(result, 0)
+        self.assertFalse(confirmed.exists())
+
+    def test_rejected_recovery_keeps_the_marker(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        damaged = directory / "fan-control.toml"
+        damaged.write_bytes(b"\xff\xfe")
+        confirmed = directory / "board"
+        record_confirmed_board("8C99", confirmed)
+        with (
+            patch("hp_fan_control.cli.CONFIRMED_BOARD_PATH", confirmed),
+            patch("hp_fan_control.cli.read_text", return_value="8DFF"),
+            patch("hp_fan_control.cli.os.geteuid", return_value=0),
+            patch("hp_fan_control.cli.ensure_failsafe_fan_state") as failsafe,
+            self.assertLogs("hp-fan-control", level="ERROR"),
+        ):
+            result = main(["--config", str(damaged), "--failsafe"])
+
+        self.assertEqual(result, 1)
+        failsafe.assert_not_called()
+        self.assertTrue(confirmed.exists())
+
+    def test_marker_survives_a_run_that_left_software_control_active(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        confirmed = directory / "board"
+        settings = replace(fixed_policy_settings(), allowed_boards=("8C99",))
+        controller = Mock(spec=Controller)
+        self._apply_run_patches(
+            confirmed,
+            settings,
+            extra=(patch("hp_fan_control.cli.Controller", return_value=controller),),
+        )
+        # The controller stop path only logs when it cannot select maximum fans.
+        self.fan.status.return_value = (MANUAL_MODE, 128, 4200, 4400)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("RUNTIME_DIRECTORY", None)
+            with self.assertLogs("hp-fan-control", level="ERROR") as logs:
+                result = main(["--apply"])
+
+        self.assertEqual(result, 0)
+        self.assertTrue(confirmed.exists())
+        self.assertIn("fan mode 1 is not safe", "\n".join(logs.output))
+
+    def test_marker_survives_an_actuator_test_that_did_not_restore_auto(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        confirmed = directory / "board"
+        settings = replace(fixed_policy_settings(), allowed_boards=("8C99",))
+        self._apply_run_patches(
+            confirmed,
+            settings,
+            extra=(
+                patch(
+                    "hp_fan_control.cli.run_actuator_test",
+                    side_effect=HardwareError("failed to verify firmware Auto"),
+                ),
+            ),
+        )
+        self.fan.status.return_value = (MANUAL_MODE, 153, 5000, 5100)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("RUNTIME_DIRECTORY", None)
+            result = main(["--apply", "--actuator-test", "60"])
+
+        self.assertEqual(result, 1)
+        self.assertTrue(confirmed.exists())
+
+    def test_marker_is_dropped_after_a_run_that_ended_in_maximum_fans(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        confirmed = directory / "board"
+        settings = replace(fixed_policy_settings(), allowed_boards=("8C99",))
+        self._apply_run_patches(
+            confirmed,
+            settings,
+            extra=(
+                patch(
+                    "hp_fan_control.cli.Controller",
+                    return_value=Mock(spec=Controller),
+                ),
+            ),
+        )
+        self.fan.status.return_value = (MAX_MODE, 255, 6000, 6100)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("RUNTIME_DIRECTORY", None)
+            result = main(["--apply"])
+
+        self.assertEqual(result, 0)
+        self.assertFalse(confirmed.exists())
+
+    def test_marker_survives_an_unreadable_fan_state(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        confirmed = directory / "board"
+        record_confirmed_board("8C99", confirmed)
+        fan = Mock(spec=HpFanHwmon)
+        fan.status.side_effect = HardwareError("cannot read integer from pwm1_enable")
+        with self.assertLogs("hp-fan-control", level="ERROR") as logs:
+            clear_confirmed_board_if_safe(confirmed, fan)
+
+        self.assertTrue(confirmed.exists())
+        self.assertIn("keeping the confirmed board marker", "\n".join(logs.output))
+
+    def test_cleanup_never_raises_out_of_the_shutdown_path(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        confirmed = directory / "board"
+        record_confirmed_board("8C99", confirmed)
+        fan = Mock(spec=HpFanHwmon)
+        fan.status.side_effect = RuntimeError("unexpected")
+        with self.assertLogs("hp-fan-control", level="ERROR"):
+            clear_confirmed_board_if_safe(confirmed, fan)
+
+        self.assertTrue(confirmed.exists())
+
+    def test_runtime_directory_identifies_only_the_managed_directory(self):
+        marker = Path("/run/hp-fan-control/board")
+        cases = {
+            "": False,
+            "/run/other-unit": False,
+            "/run/hp-fan-control-backup": False,
+            "/run/hp-fan-control": True,
+            "/run/other-unit:/run/hp-fan-control": True,
+        }
+        for value, expected in cases.items():
+            with self.subTest(runtime_directory=value):
+                with patch.dict(os.environ, {"RUNTIME_DIRECTORY": value}):
+                    self.assertEqual(
+                        systemd_owns_runtime_directory(marker), expected
+                    )
+
+    def test_inherited_invocation_id_does_not_claim_ownership(self):
+        marker = Path("/run/hp-fan-control/board")
+        with patch.dict(os.environ, {"INVOCATION_ID": "b3f0"}):
+            os.environ.pop("RUNTIME_DIRECTORY", None)
+            self.assertFalse(systemd_owns_runtime_directory(marker))
+
+    def test_clear_confirmed_board_reports_rather_than_raises(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        clear_confirmed_board(directory / "absent")
+
+        with (
+            patch(
+                "pathlib.Path.unlink", side_effect=OSError("read-only file system")
+            ),
+            self.assertLogs("hp-fan-control", level="ERROR") as logs,
+        ):
+            clear_confirmed_board(directory / "board")
+
+        self.assertIn("cannot clear the confirmed board marker", "\n".join(logs.output))
+
+    def test_dry_run_does_not_record_a_confirmed_board(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        confirmed = directory / "board"
+        settings = replace(fixed_policy_settings(), allowed_boards=("8C99",))
+        with (
+            patch("hp_fan_control.cli.CONFIRMED_BOARD_PATH", confirmed),
+            patch("hp_fan_control.cli.Settings.load", return_value=settings),
+            patch("hp_fan_control.cli.read_text", return_value="8C99"),
+            patch("hp_fan_control.cli.validate_required_profile"),
+            patch("hp_fan_control.cli.acquire_lock", return_value=Mock()),
+            patch("hp_fan_control.cli.wait_for_hp_fan_hwmon") as wait_fan,
+            patch(
+                "hp_fan_control.cli.wait_for_temperature_sensors",
+                return_value=Mock(spec=Sensors),
+            ),
+            patch("hp_fan_control.cli.CsvLog", return_value=Mock(spec=CsvLog)),
+            patch(
+                "hp_fan_control.cli.SystemdNotifier.from_environment",
+                return_value=Mock(spec=SystemdNotifier),
+            ),
+            patch("hp_fan_control.cli.Controller", return_value=Mock(spec=Controller)),
+            patch("hp_fan_control.cli.signal.signal"),
+        ):
+            wait_fan.return_value = Mock(spec=HpFanHwmon)
+            wait_fan.return_value.path = Path("/sys/class/hwmon/hwmon7")
+            result = main([])
+
+        self.assertEqual(result, 0)
+        self.assertFalse(confirmed.exists())
+
+    def test_failsafe_accepts_an_allowlisted_non_default_board(self):
+        path = self._write_config("[daemon]\nallowed_boards = [\"8C99\"]\n")
+        fan = self._safe_fan()
+        with (
+            patch("hp_fan_control.cli.read_text", return_value="8C99"),
+            patch("hp_fan_control.cli.os.geteuid", return_value=0),
+            patch("hp_fan_control.cli.acquire_lock", return_value=Mock()),
+            patch("hp_fan_control.cli.HpFanHwmon", return_value=fan),
+            patch("hp_fan_control.cli.ensure_failsafe_fan_state") as failsafe,
+        ):
+            result = main(["--config", str(path), "--failsafe"])
+
+        self.assertEqual(result, 0)
+        failsafe.assert_called_once_with(fan, AUTO_GUARD_PATH)
+
+    def test_failsafe_rejects_a_board_outside_the_allowlist(self):
+        path = self._write_config("[daemon]\nallowed_boards = [\"8C99\"]\n")
+        with (
+            patch("hp_fan_control.cli.read_text", return_value="8D87"),
+            patch("hp_fan_control.cli.os.geteuid", return_value=0),
+            patch("hp_fan_control.cli.ensure_failsafe_fan_state") as failsafe,
+            self.assertLogs("hp-fan-control", level="ERROR") as logs,
+        ):
+            result = main(["--config", str(path), "--failsafe"])
+
+        self.assertEqual(result, 1)
+        self.assertIn("fan recovery is only allowed", "\n".join(logs.output))
+        failsafe.assert_not_called()
+
+    def test_restore_auto_rejects_a_board_outside_the_allowlist(self):
+        path = self._write_config("[daemon]\nallowed_boards = [\"8C99\"]\n")
+        with (
+            patch("hp_fan_control.cli.read_text", return_value="8D87"),
+            patch("hp_fan_control.cli.os.geteuid", return_value=0),
+            patch("hp_fan_control.cli.restore_firmware_auto") as restore,
+            self.assertLogs("hp-fan-control", level="ERROR") as logs,
+        ):
+            result = main(["--config", str(path), "--restore-auto"])
+
+        self.assertEqual(result, 1)
+        self.assertIn("fan recovery is only allowed", "\n".join(logs.output))
+        restore.assert_not_called()
+
+
+class MainStartupTests(RuntimeMarkerIsolation):
+    def _confirmed_board_path(self):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory)
+        return Path(directory) / "board"
+
+    def _safe_fan(self):
+        fan = Mock(spec=HpFanHwmon)
+        fan.path = Path("/sys/class/hwmon/hwmon7")
+        fan.status.return_value = (AUTO_MODE, 0, 3000, 3000)
+        return fan
+
     def test_main_constructs_and_runs_controller_with_requested_log(self):
         settings = fixed_policy_settings()
         lock = Mock()
-        fan = Mock(spec=HpFanHwmon)
-        fan.path = Path("/sys/class/hwmon/hwmon7")
+        fan = self._safe_fan()
         sensors = Mock(spec=Sensors)
         csv_log = Mock(spec=CsvLog)
         controller = Mock(spec=Controller)
@@ -2899,6 +3484,10 @@ class MainStartupTests(unittest.TestCase):
             patch("hp_fan_control.cli.validate_required_profile"),
             patch("hp_fan_control.cli.os.geteuid", return_value=0),
             patch("hp_fan_control.cli.acquire_lock", return_value=lock),
+            patch(
+                "hp_fan_control.cli.CONFIRMED_BOARD_PATH",
+                self._confirmed_board_path(),
+            ),
             patch("hp_fan_control.cli.wait_for_hp_fan_hwmon", return_value=fan),
             patch(
                 "hp_fan_control.cli.wait_for_temperature_sensors",
@@ -2952,7 +3541,7 @@ class MainStartupTests(unittest.TestCase):
     def test_main_dispatches_actuator_test_without_constructing_controller(self):
         settings = fixed_policy_settings()
         lock = Mock()
-        fan = Mock(spec=HpFanHwmon)
+        fan = self._safe_fan()
         sensors = Mock(spec=Sensors)
         with (
             patch("hp_fan_control.cli.Settings.load", return_value=settings),
@@ -2960,6 +3549,10 @@ class MainStartupTests(unittest.TestCase):
             patch("hp_fan_control.cli.validate_required_profile"),
             patch("hp_fan_control.cli.os.geteuid", return_value=0),
             patch("hp_fan_control.cli.acquire_lock", return_value=lock),
+            patch(
+                "hp_fan_control.cli.CONFIRMED_BOARD_PATH",
+                self._confirmed_board_path(),
+            ),
             patch("hp_fan_control.cli.wait_for_hp_fan_hwmon", return_value=fan),
             patch(
                 "hp_fan_control.cli.wait_for_temperature_sensors",
@@ -3146,8 +3739,9 @@ class MainStartupTests(unittest.TestCase):
         acquire.assert_not_called()
 
 
-class RecoveryCommandTests(unittest.TestCase):
+class RecoveryCommandTests(RuntimeMarkerIsolation):
     def setUp(self):
+        super().setUp()
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)

@@ -61,7 +61,8 @@ Other HP Victus/OMEN-family systems using the same kernel `hp-wmi` fan-control
 implementation may expose compatible interfaces. This does not guarantee that
 their WMI capabilities, fan mapping, curves, or firmware transition behavior
 are identical. A new board must complete the [hardware validation](#hardware-validation)
-procedure before it is added to `allowed_boards` or used with `--apply`.
+procedure before it is used with `--apply` or added to the `allowed_boards`
+list of a system that runs the daemon as a service.
 
 ## Tested configuration
 
@@ -315,7 +316,18 @@ Crash recovery is independent of Python cleanup. The systemd unit uses a
 hangs, or receives `SIGKILL` during Manual, Max, or guarded Auto, the recovery
 command selects maximum fans before systemd restarts the service. A guard
 marker in `/run/hp-fan-control/` makes this decision survive loss of the main
-process. The daemon derives its heartbeat interval from systemd's
+process. The service records its allowlisted board in the same directory once
+it takes fan ownership, so recovery stays available on any validated board even
+if the configuration file is damaged or removed while the fans are owned.
+
+Neither marker outlives fan ownership. systemd discards the runtime directory
+when the service stops, which a run detects through `RUNTIME_DIRECTORY`. A
+manual `--apply` run owns no such directory and removes its own board marker
+when it exits, as does a completed `--restore-auto` or `--failsafe`. That
+removal happens only after the fan interface is confirmed to be in firmware
+Auto or maximum mode: a run that ends with software control still active keeps
+its marker, so the recovery that has to clean up is never locked out. The
+daemon derives its heartbeat interval from systemd's
 `WATCHDOG_USEC`, so long sensor sampling intervals do not starve the watchdog.
 
 The executable `src/daemon/hp_fan_control.py` is a compatibility entry point.
@@ -341,10 +353,39 @@ Fan-control writes can produce inadequate cooling on incompatible hardware.
 Do not use `--apply` until read-only output and the detected interfaces have
 been reviewed. Never run this daemon together with another fan-control tool.
 
-### 1. Verify platform interfaces
+### 1. Allowlist the board for testing
+
+Every mode of the daemon refuses to start on an unlisted board, including
+read-only runs. Read the board identifier:
 
 ```bash
 cat /sys/class/dmi/id/board_name
+```
+
+Add that value to `allowed_boards` in the configuration used for testing. Work
+on the repository copy, `src/config/fan-control.toml`, rather than an installed
+`/etc/hp-fan-control/fan-control.toml`, so a partially validated board cannot
+reach the systemd service:
+
+```toml
+[daemon]
+allowed_boards = ["8D87", "8C99"]
+```
+
+The entry only permits the remaining steps to run. It does not assert that the
+board is supported. Steps 3 to 6 run from the repository and need nothing else;
+step 7 exercises the installed service, so add the board to
+`/etc/hp-fan-control/fan-control.toml` only once those earlier steps have
+passed.
+
+The recovery commands `--restore-auto` and `--failsafe` read the same list,
+extended by the board that the running service recorded at startup. When their
+configuration file cannot be parsed and no service has started, they fall back
+to `8D87` alone.
+
+### 2. Verify platform interfaces
+
+```bash
 cat /sys/firmware/acpi/platform_profile
 grep . /sys/class/hwmon/hwmon*/{name,pwm1,pwm1_enable,fan1_input,fan2_input} 2>/dev/null
 ```
@@ -365,7 +406,7 @@ index name temp_c
 0 IR 39
 ```
 
-### 2. Run read-only mode
+### 3. Run read-only mode
 
 ```bash
 python3 src/daemon/hp_fan_control.py \
@@ -375,9 +416,9 @@ python3 src/daemon/hp_fan_control.py \
 Review sensor selection, temperatures, requested PWM, and warnings. This mode
 does not write fan controls.
 
-### 3. Run the bounded actuator test
+### 4. Run the bounded actuator test
 
-Only on an allowlisted and reviewed board:
+Only after the read-only output of the previous step has been reviewed:
 
 ```bash
 sudo python3 src/daemon/hp_fan_control.py \
@@ -388,7 +429,7 @@ sudo python3 src/daemon/hp_fan_control.py \
 The test requests 60% PWM for 15 seconds and must restore
 `pwm1_enable=2`. Stop testing if the fans do not ramp or Auto is not restored.
 
-### 4. Validate CPU and GPU control
+### 5. Validate CPU and GPU control
 
 Follow the controller in one terminal:
 
@@ -414,7 +455,7 @@ Verify that raw temperature increases raise PWM promptly, the hottest sensor
 wins, RPM follows the requested level, and the critical threshold selects
 maximum fans. Stop the workloads before thermal or power limits are exceeded.
 
-### 5. Validate profile handoff and Auto guard
+### 6. Validate profile handoff and Auto guard
 
 While Manual control is active, stop the workload and select a profile other
 than Performance. Verify this sequence in the journal:
@@ -427,7 +468,7 @@ During `auto-guard`, start a short workload. The daemon must immediately return
 to `manual` or `handoff`. Stop the workload and confirm that a new 180-second
 guard begins after the next return to Auto.
 
-### 6. Validate process-failure recovery
+### 7. Validate process-failure recovery
 
 Perform this test only after normal Manual control, cooldown, and Auto handoff
 have been verified:
@@ -445,8 +486,9 @@ without an intermediate unsafe Auto handoff.
 Results for any additional board should include DMI and BIOS identifiers,
 kernel version, hwmon channels, dry-run logs, actuator behavior, fan mapping,
 CPU/GPU workload telemetry, profile handoff, Auto-guard behavior, and crash
-recovery. Do not add the board to `allowed_boards` based only on a matching
-product family.
+recovery. Do not treat a board as supported, or leave it in the installed
+`/etc/hp-fan-control/fan-control.toml`, until every step above has passed, and
+never add a board based only on a matching product family.
 
 ## License
 

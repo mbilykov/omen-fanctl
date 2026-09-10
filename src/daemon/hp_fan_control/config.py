@@ -10,6 +10,7 @@ from pathlib import Path
 
 PWM_MAX = 255
 HP_FAN_LEVEL_MAX = 60.0
+DEFAULT_ALLOWED_BOARDS = ("8D87",)
 MAX_DECREASE_HYSTERESIS_C = 20.0
 TOP_LEVEL_KEYS = frozenset({"daemon", "ewma", "sensors", "curve", "curves"})
 DAEMON_KEYS = frozenset(
@@ -314,8 +315,14 @@ class Settings:
                     curve = cls._load_curve(curve_data)
                     curves = None
                     curve_source = "legacy-shared"
+            allowed_boards = board_list(daemon["allowed_boards"])
+            if allowed_boards is None:
+                raise ConfigurationError(
+                    "allowed_boards must be a list of board names, "
+                    'for example allowed_boards = ["8D87"]'
+                )
             settings = cls(
-                allowed_boards=tuple(str(v) for v in daemon["allowed_boards"]),
+                allowed_boards=allowed_boards,
                 required_profile=str(daemon.get("required_profile", "performance")),
                 sample_interval_s=float(daemon.get("sample_interval_s", 1.0)),
                 control_interval_s=float(daemon.get("control_interval_s", 5.0)),
@@ -464,3 +471,39 @@ class Settings:
         ):
             if not 0 < value <= 100:
                 raise ConfigurationError(f"{name} must be in (0, 100]")
+
+
+def board_list(value: object) -> tuple[str, ...] | None:
+    """Normalise an ``allowed_boards`` value, or ``None`` if it is not a list.
+
+    A bare ``allowed_boards = "8C99"`` is iterable, so accepting any iterable
+    would silently expand it into its characters and reject the very board it
+    names. Only a list of strings is a board list.
+    """
+    if isinstance(value, str) or not isinstance(value, (list, tuple)):
+        return None
+    if not all(isinstance(item, str) for item in value):
+        return None
+    return tuple(item.strip() for item in value if item.strip())
+
+
+def load_allowed_boards(path: Path) -> tuple[str, ...]:
+    """Read ``allowed_boards`` without validating the rest of the file.
+
+    Recovery commands run from ``ExecStopPost`` and must never be blocked by an
+    unrelated configuration error, so any failure falls back to the built-in
+    board list rather than raising.
+    """
+    try:
+        with path.open("rb") as handle:
+            raw = tomllib.load(handle)
+        boards = board_list(raw["daemon"]["allowed_boards"])
+    except (
+        OSError,
+        UnicodeDecodeError,
+        tomllib.TOMLDecodeError,
+        KeyError,
+        TypeError,
+    ):
+        return DEFAULT_ALLOWED_BOARDS
+    return boards or DEFAULT_ALLOWED_BOARDS

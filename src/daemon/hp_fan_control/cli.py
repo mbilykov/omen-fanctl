@@ -18,6 +18,7 @@ from .config import (
     ConfigurationError,
     Settings,
     hp_level_percent,
+    load_allowed_boards,
     percent_to_pwm,
     pwm_to_percent,
 )
@@ -38,6 +39,7 @@ from .hardware import (
 
 LOG = logging.getLogger("hp-fan-control")
 AUTO_GUARD_PATH = Path("/run/hp-fan-control/auto-guard")
+CONFIRMED_BOARD_PATH = Path("/run/hp-fan-control/board")
 CONFIGURATION_ERROR_EXIT_STATUS = 78
 
 
@@ -100,7 +102,10 @@ def _csv_log_path(args: argparse.Namespace) -> Path | None:
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Experimental standalone automatic fan controller for HP 8D87"
+        description=(
+            "Experimental standalone automatic fan controller for HP hp-wmi "
+            "boards listed in allowed_boards"
+        )
     )
     parser.add_argument(
         "--config",
@@ -278,6 +283,98 @@ def ensure_failsafe_fan_state(
     LOG.info("%s verified; fans=%d/%d", state, fan1, fan2)
 
 
+def record_confirmed_board(board: str, path: Path) -> None:
+    """Persist the board this process validated against a readable config.
+
+    Recovery must not depend on the configuration still being parsable. A file
+    damaged while the service owns the fans would otherwise narrow the
+    allowlist back to the built-in board and reject the ExecStopPost
+    fail-safe.
+
+    The marker must not outlive fan ownership. Under systemd that is handled by
+    the managed runtime directory; a manual run owns no such directory and
+    clears the marker itself through ``clear_confirmed_board``.
+    """
+    try:
+        path.write_text(f"{board}\n", encoding="ascii")
+    except OSError as exc:
+        raise HardwareError(f"cannot persist the confirmed board: {exc}") from exc
+
+
+def clear_confirmed_board(path: Path) -> None:
+    """Drop the marker written by a run that systemd does not clean up after.
+
+    This runs while the controller lock is still held, and reports rather than
+    raises so it cannot mask the error that ended the run.
+    """
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        LOG.error("cannot clear the confirmed board marker %s: %s", path, exc)
+
+
+def clear_confirmed_board_if_safe(path: Path, fan: HpFanHwmon | None) -> None:
+    """Drop the marker only once the fans are back in a safe firmware state.
+
+    Software control can survive a failed shutdown: an actuator test may fail
+    to restore Auto, and the controller's stop path only logs when it cannot
+    select maximum fans. Retaining the marker is the safe failure direction,
+    because dropping it would block the very recovery that has to clean up.
+    """
+    try:
+        if fan is None:
+            fan = HpFanHwmon()
+        mode, _, _, _ = fan.status()
+    except Exception as exc:
+        # Best-effort cleanup runs while an earlier failure is being handled and
+        # must never replace it. Any unreadable state keeps the marker.
+        LOG.error("keeping the confirmed board marker %s: %s", path, exc)
+        return
+    if mode not in (AUTO_MODE, MAX_MODE):
+        LOG.error(
+            "keeping the confirmed board marker %s: fan mode %s is not safe",
+            path,
+            mode,
+        )
+        return
+    clear_confirmed_board(path)
+
+
+def systemd_owns_runtime_directory(path: Path) -> bool:
+    """True when systemd created and will remove the directory holding *path*.
+
+    ``INVOCATION_ID`` is unusable here: it is set for every unit and is
+    inherited by anything started from one, including an interactive shell.
+    ``RUNTIME_DIRECTORY`` is set only by ``RuntimeDirectory=`` and names the
+    exact directories systemd will remove when the unit stops.
+    """
+    directories = os.environ.get("RUNTIME_DIRECTORY", "")
+    return any(
+        directory and Path(directory) == path.parent
+        for directory in directories.split(":")
+    )
+
+
+def recovery_allowed_boards(
+    config_path: Path,
+    confirmed_path: Path,
+) -> tuple[str, ...]:
+    """Boards the recovery commands may act on.
+
+    The configured list is extended by the board a running service confirmed at
+    startup. Only root can write the runtime marker, and it is present only
+    while a process may still own the fans.
+    """
+    boards = load_allowed_boards(config_path)
+    try:
+        confirmed = confirmed_path.read_text(encoding="ascii").strip()
+    except (OSError, UnicodeDecodeError, ValueError):
+        return boards
+    if not confirmed or confirmed in boards:
+        return boards
+    return boards + (confirmed,)
+
+
 def main(argv: Iterable[str] | None = None) -> int:
     try:
         args = parse_args(argv)
@@ -293,12 +390,16 @@ def main(argv: Iterable[str] | None = None) -> int:
         datefmt="%H:%M:%S",
     )
     lock_handle: TextIOWrapper | None = None
+    owned_board_marker: Path | None = None
+    fan: HpFanHwmon | None = None
     try:
         if args.restore_auto or args.failsafe:
             board = read_text(Path("/sys/class/dmi/id/board_name"))
-            if board != "8D87":
+            allowed = recovery_allowed_boards(args.config, CONFIRMED_BOARD_PATH)
+            if board not in allowed:
                 raise HardwareError(
-                    f"fan recovery is only allowed on board 8D87, found {board!r}"
+                    f"fan recovery is only allowed on boards {allowed}, "
+                    f"found {board!r}"
                 )
             if os.geteuid() != 0:
                 raise HardwareError("fan-control writes must be run as root (use sudo)")
@@ -310,6 +411,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                 ensure_failsafe_fan_state(fan, AUTO_GUARD_PATH)
             else:
                 restore_firmware_auto(fan)
+            # The controller lock is held, so no process can still own the fans:
+            # the marker has done its job and a restarted service rewrites it.
+            clear_confirmed_board_if_safe(CONFIRMED_BOARD_PATH, fan)
             return 0
 
         settings = Settings.load(args.config)
@@ -344,6 +448,13 @@ def main(argv: Iterable[str] | None = None) -> int:
         # Keep the file object alive for the lifetime of main; closing it releases
         # the advisory lock.
         lock_handle = acquire_lock(lock_path)
+        if args.apply:
+            record_confirmed_board(board, CONFIRMED_BOARD_PATH)
+            # systemd discards RuntimeDirectory when the service stops. A manual
+            # run has no such owner, so it must take the marker back down itself
+            # rather than leave the recovery allowlist widened until reboot.
+            if not systemd_owns_runtime_directory(CONFIRMED_BOARD_PATH):
+                owned_board_marker = CONFIRMED_BOARD_PATH
 
         fan = wait_for_hp_fan_hwmon()
         sensors = wait_for_temperature_sensors(settings)
@@ -395,6 +506,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         LOG.error("%s", exc)
         return 1
     finally:
+        if owned_board_marker is not None:
+            clear_confirmed_board_if_safe(owned_board_marker, fan)
         if lock_handle is not None:
             try:
                 lock_handle.close()
