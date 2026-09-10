@@ -9,6 +9,10 @@ TMPFILES_PATH=/etc/tmpfiles.d/omen-fanctl.conf
 LOGROTATE_PATH=/etc/logrotate.d/omen-fanctl
 PURGE_CONFIG=false
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=src/install/config.sh
+source "$SCRIPT_DIR/src/install/config.sh"
+
 log() {
     printf '==> %s\n' "$*"
 }
@@ -118,8 +122,7 @@ rmdir --ignore-fail-on-non-empty \
     "$INSTALL_DIR/omen_fanctl" "$INSTALL_DIR" "$DOC_DIR" 2>/dev/null || true
 
 if [[ "$PURGE_CONFIG" == true ]]; then
-    remove_file "$CONFIG_DIR/omen-fanctl.toml"
-    rmdir --ignore-fail-on-non-empty "$CONFIG_DIR" 2>/dev/null || true
+    purge_configuration "$CONFIG_DIR"
 elif [[ -e "$CONFIG_DIR/omen-fanctl.toml" ]]; then
     log "Preserving configuration: $CONFIG_DIR/omen-fanctl.toml"
 else

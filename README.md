@@ -133,7 +133,18 @@ sudo ./install.sh --enable-now
 ```
 
 The configuration is installed at `/etc/omen-fanctl/omen-fanctl.toml`.
-Existing configuration is preserved during upgrades.
+Existing configuration is preserved during upgrades, so a release that changes
+the packaged defaults does not alter a working installation. To adopt the new
+defaults:
+
+```bash
+sudo ./install.sh --replace-config
+sudo systemctl restart omen-fanctl.service
+```
+
+The replaced file is kept beside it as `omen-fanctl.toml.bak.<timestamp>`, and
+those backups survive `./uninstall.sh --purge-config`. Replacing again when the
+installed file already matches the packaged defaults writes no backup.
 
 Invalid configuration exits with status 78 and leaves the systemd unit in the
 failed state instead of retrying forever. Runtime hardware failures continue

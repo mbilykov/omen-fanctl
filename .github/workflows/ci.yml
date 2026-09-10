@@ -61,4 +61,6 @@ jobs:
         run: pipx run ruff==0.16.6 format --check src tests
 
       - name: Check shell script syntax
-        run: bash -n install.sh uninstall.sh utils/dump_hp_wmi_2f.sh
+        run: >
+          bash -n install.sh uninstall.sh src/install/config.sh
+          utils/dump_hp_wmi_2f.sh

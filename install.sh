@@ -11,6 +11,12 @@ TMPFILES_PATH=/etc/tmpfiles.d/omen-fanctl.conf
 LOGROTATE_PATH=/etc/logrotate.d/omen-fanctl
 START_NOW=false
 ENABLE_NOW=false
+REPLACE_CONFIG=false
+CONFIG_PATH=$CONFIG_DIR/omen-fanctl.toml
+PACKAGED_CONFIG=$SCRIPT_DIR/src/config/omen-fanctl.toml
+
+# shellcheck source=src/install/config.sh
+source "$SCRIPT_DIR/src/install/config.sh"
 
 log() {
     printf '==> %s\n' "$*"
@@ -28,40 +34,46 @@ install_file() {
 
 usage() {
     cat <<'EOF'
-Usage: sudo ./install.sh [--start-now | --enable-now]
+Usage: sudo ./install.sh [--start-now | --enable-now] [--replace-config]
 
 Installs the daemon, default configuration, documentation, and systemd unit.
 The optional WMI IR procfs provider is not installed. Existing configuration
-is kept.
+is kept unless --replace-config is explicitly supplied.
 
 Requirements: Python 3.11 or newer, systemd, and logrotate.
 On Arch Linux: sudo pacman -S --needed logrotate
 
 Options:
-  --start-now   Start the service after installation without enabling it
-  --enable-now  Enable the service at boot and start it after installation
-  -h, --help    Show this help and exit
+  --start-now       Start the service after installation without enabling it
+  --enable-now      Enable the service at boot and start it after installation
+  --replace-config  Replace an existing configuration with the packaged
+                    defaults, keeping the previous file as a timestamped
+                    .bak copy beside it
+  -h, --help        Show this help and exit
 EOF
 }
 
-if (( $# > 1 )); then
-    usage >&2
+while (( $# > 0 )); do
+    case "$1" in
+        --start-now) START_NOW=true ;;
+        --enable-now) ENABLE_NOW=true ;;
+        --replace-config) REPLACE_CONFIG=true ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
+
+if [[ "$START_NOW" == true && "$ENABLE_NOW" == true ]]; then
+    echo "ERROR: --start-now and --enable-now are mutually exclusive" >&2
     exit 2
 fi
-
-case "${1:-}" in
-    "") ;;
-    --start-now) START_NOW=true ;;
-    --enable-now) ENABLE_NOW=true ;;
-    -h|--help)
-        usage
-        exit 0
-        ;;
-    *)
-        usage >&2
-        exit 2
-        ;;
-esac
 
 if (( EUID != 0 )); then
     echo "ERROR: run this script with sudo" >&2
@@ -157,12 +169,7 @@ install_file 0644 "$SCRIPT_DIR/src/tmpfiles/omen-fanctl.conf" \
 log "Creating telemetry directory and applying retention policy"
 systemd-tmpfiles --create "$TMPFILES_PATH"
 
-if [[ -e "$CONFIG_DIR/omen-fanctl.toml" ]]; then
-    log "Preserving existing configuration: $CONFIG_DIR/omen-fanctl.toml"
-else
-    install_file 0644 "$SCRIPT_DIR/src/config/omen-fanctl.toml" \
-        "$CONFIG_DIR/omen-fanctl.toml"
-fi
+install_configuration "$PACKAGED_CONFIG" "$CONFIG_PATH" "$REPLACE_CONFIG"
 
 log "Reloading systemd units"
 systemctl daemon-reload
