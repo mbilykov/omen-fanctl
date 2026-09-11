@@ -4413,6 +4413,7 @@ class MainStartupTests(RuntimeMarkerIsolation):
 
         with (
             patch("omen_fanctl.cli.read_text", side_effect=fake_read_text),
+            patch("omen_fanctl.cli.validate_required_profile"),
             patch("omen_fanctl.cli.acquire_lock", return_value=lock),
             patch(
                 "omen_fanctl.cli.wait_for_hp_fan_hwmon",
