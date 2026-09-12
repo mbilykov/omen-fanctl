@@ -148,6 +148,8 @@ include_nvidia_gpu = true
 #   performance-extended
 #     The same table with three CPU steps added above HP's ceiling, reaching CPU
 #     level 60 (100%) and mapped GPU level 58 at 90 C. It requires the
-#     dual-channel pwm1/pwm2 ABI. On Linux 7.1, startup rejects this preset
-#     because the fixed GPU offset would turn Manual CPU level 60 into GPU 62.
+#     dual-channel pwm1/pwm2 ABI on 8D87, the board from which the CPU/GPU
+#     mapping was captured. Other boards require their own registered mapping.
+#     On Linux 7.1, startup rejects this preset because the fixed GPU offset
+#     would turn Manual CPU level 60 into GPU 62.
 preset = "performance-single-channel"

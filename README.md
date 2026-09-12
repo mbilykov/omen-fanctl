@@ -200,7 +200,7 @@ retrying. Telemetry under `/var/log/omen-fanctl/` is always preserved.
 |---|---:|---:|---|
 | `performance-single-channel` (default) | level 56 (~93.3%) at 90 C | 56/58 | Factory steps plus firmware-observed-safe CPU levels 51, 55, and 56 |
 | `hp-vibrance-stx-n22x9-performance` | level 47 (~78.3%) at 85 C | 47/49 | The extracted factory table; firmware Max takes over at `critical_temp_c` |
-| `performance-extended` | level 60 (100%) at 90 C | 60/58 | Available only with the dual-channel `pwm1`/`pwm2` ABI |
+| `performance-extended` | level 60 (100%) at 90 C | 60/58 | Available on 8D87 with the dual-channel `pwm1`/`pwm2` ABI |
 
 HP's Performance table stops at fan level 47 of 60, around 4,700 RPM, which
 settles this machine near 85 C. Full cooling is therefore reached through the
@@ -219,7 +219,10 @@ heat. The
 [accepted upstream patch][hp-wmi-dual-pwm] exposes independent `pwm1` and
 `pwm2` channels and is listed in the [platform-drivers-x86 pull request][pdx-7.3]
 for Linux 7.3. The daemon detects `pwm2` and writes separately mapped CPU/GPU
-targets using the captured `0x2f` table. On a single-channel interface it
+targets using the captured `0x2f` table. That mapping is registered only for
+the 8D87 board it was captured from; a dual-channel interface on any other
+allowlisted board is rejected until its own mapping is added. On a
+single-channel interface it
 refuses to start if an active curve or the Manual floor maps above CPU level 56,
 so neither fan exceeds the maximum level observed for it in firmware-generated
 pairs.

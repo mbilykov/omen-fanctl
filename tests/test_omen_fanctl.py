@@ -48,6 +48,7 @@ from omen_fanctl.cli import (  # noqa: E402
 from omen_fanctl.config import (  # noqa: E402
     CURVE_PRESETS,
     DEFAULT_ALLOWED_BOARDS,
+    HP_8D87_CPU_GPU_LEVEL_TABLE,
     PWM_MAX,
     ConfigurationError,
     Curve,
@@ -250,7 +251,7 @@ def initialized_fan(test):
         ("fan2_input", "2600\n"),
     ):
         (hp / name).write_text(value)
-    return HpFanHwmon(root)
+    return HpFanHwmon(root, board_name="8D87")
 
 
 class CurveTests(unittest.TestCase):
@@ -1550,7 +1551,10 @@ preset = "hp-vibrance-stx-n22x9-performance"
         for cpu_level, gpu_level in expected.items():
             with self.subTest(cpu_level=cpu_level):
                 self.assertEqual(
-                    hp_gpu_level_for_cpu_level(cpu_level),
+                    hp_gpu_level_for_cpu_level(
+                        cpu_level,
+                        HP_8D87_CPU_GPU_LEVEL_TABLE,
+                    ),
                     gpu_level,
                 )
 
@@ -4037,7 +4041,8 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
             fan = Mock(spec=HpFanHwmon)
             fan.path = Path("/sys/class/hwmon/hwmon7")
 
-            def discover_fan():
+            def discover_fan(board_name):
+                self.assertEqual(board_name, "8C99")
                 observed.append(confirmed.read_text(encoding="ascii"))
                 return fan
 
@@ -4276,6 +4281,20 @@ class AllowedBoardRecoveryTests(RuntimeMarkerIsolation):
 
         self.assertTrue(confirmed.exists())
         self.assertIn("keeping the confirmed board marker", "\n".join(logs.output))
+
+    def test_marker_cleanup_can_discover_the_fan_for_a_mode_read(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        confirmed = directory / "board"
+        record_confirmed_board("8C99", confirmed)
+        fan = Mock(spec=HpFanHwmon)
+        fan.status.return_value = (AUTO_MODE, 100, 2400, 2600)
+
+        with patch("omen_fanctl.cli.HpFanHwmon", return_value=fan) as fan_type:
+            clear_confirmed_board_if_safe(confirmed, None)
+
+        fan_type.assert_called_once_with()
+        self.assertFalse(confirmed.exists())
 
     def test_cleanup_never_raises_out_of_the_shutdown_path(self):
         directory = Path(tempfile.mkdtemp())
@@ -5045,7 +5064,7 @@ class FakeHwmonTests(unittest.TestCase):
             (hp / "fan1_input").write_text("3400\n")
             (hp / "fan2_input").write_text("3600\n")
 
-            fan = HpFanHwmon(root)
+            fan = HpFanHwmon(root, board_name="8D87")
             fan.set_manual(178)
             self.assertEqual(int((hp / "pwm1").read_text()), 178)
             self.assertEqual(int((hp / "pwm1_enable").read_text()), MANUAL_MODE)
@@ -5067,7 +5086,7 @@ class FakeHwmonTests(unittest.TestCase):
             ):
                 (hp / name).write_text(value)
 
-            fan = HpFanHwmon(root)
+            fan = HpFanHwmon(root, board_name="8D87")
             self.assertTrue(fan.supports_independent_pwm)
             self.assertEqual(fan.pwm_abi, "dual")
             self.assertEqual(fan.manual_max_level, 60)
@@ -5078,6 +5097,27 @@ class FakeHwmonTests(unittest.TestCase):
             fan.update_manual(hp_level_to_pwm(60))
             self.assertEqual(int((hp / "pwm1").read_text()), hp_level_to_pwm(60))
             self.assertEqual(int((hp / "pwm2").read_text()), hp_level_to_pwm(58))
+
+    def test_dual_channel_rejects_board_without_a_captured_mapping(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            hp = root / "hwmon8"
+            hp.mkdir()
+            for name, value in (
+                ("name", "hp\n"),
+                ("pwm1", "100\n"),
+                ("pwm2", "100\n"),
+                ("pwm1_enable", f"{AUTO_MODE}\n"),
+                ("fan1_input", "3400\n"),
+                ("fan2_input", "3600\n"),
+            ):
+                (hp / name).write_text(value)
+
+            with self.assertRaisesRegex(
+                HardwareError,
+                "no captured CPU/GPU mapping for board '8C99'",
+            ):
+                wait_for_hp_fan_hwmon("8C99", root=root)
 
     def test_single_channel_rejects_pwm_above_firmware_observed_cpu_maximum(self):
         fan = initialized_fan(self)
@@ -5352,7 +5392,7 @@ class HwmonStartupTests(unittest.TestCase):
                 ) as sleep,
                 patch("omen_fanctl.hardware.LOG.info") as log_info,
             ):
-                fan = wait_for_hp_fan_hwmon(root=root)
+                fan = wait_for_hp_fan_hwmon("8D87", root=root)
 
             self.assertEqual(fan.path, hp)
             self.assertEqual(sleep.call_args_list, [call(1.0), call(1.0)])
@@ -5385,7 +5425,7 @@ class HwmonStartupTests(unittest.TestCase):
                     side_effect=publish_pwm2,
                 ) as sleep,
             ):
-                fan = wait_for_hp_fan_hwmon(root=root)
+                fan = wait_for_hp_fan_hwmon("8D87", root=root)
 
             self.assertTrue(fan.supports_independent_pwm)
             sleep.assert_called_once_with(1.0)
@@ -5400,7 +5440,7 @@ class HwmonStartupTests(unittest.TestCase):
             patch("omen_fanctl.hardware.time.monotonic", side_effect=[100.0, 100.0]),
             patch("omen_fanctl.hardware.time.sleep") as sleep,
         ):
-            self.assertIs(wait_for_hp_fan_hwmon(), fan)
+            self.assertIs(wait_for_hp_fan_hwmon("8D87"), fan)
 
         self.assertEqual(constructor.call_count, 2)
         sleep.assert_called_once_with(1.0)
@@ -5418,7 +5458,7 @@ class HwmonStartupTests(unittest.TestCase):
                 "did not become ready within 20 seconds",
             ),
         ):
-            wait_for_hp_fan_hwmon()
+            wait_for_hp_fan_hwmon("8D87")
 
         sleep.assert_not_called()
 
@@ -5431,7 +5471,7 @@ class HwmonStartupTests(unittest.TestCase):
             patch("omen_fanctl.hardware.time.sleep") as sleep,
             self.assertRaisesRegex(HardwareError, "multiple hp devices"),
         ):
-            wait_for_hp_fan_hwmon()
+            wait_for_hp_fan_hwmon("8D87")
 
         sleep.assert_not_called()
 

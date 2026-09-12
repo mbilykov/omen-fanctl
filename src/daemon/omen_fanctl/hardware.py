@@ -12,6 +12,7 @@ import subprocess
 import time
 
 from .config import (
+    HP_CPU_GPU_LEVEL_TABLES,
     HP_FAN_LEVEL_MAX,
     HP_SINGLE_PWM_MAX_LEVEL,
     PWM_MAX,
@@ -693,7 +694,12 @@ def wait_for_temperature_sensors(
 class HpFanHwmon:
     """Validated access to the hp-wmi fan-control hwmon attributes."""
 
-    def __init__(self, root: Path = Path("/sys/class/hwmon")):
+    def __init__(
+        self,
+        root: Path = Path("/sys/class/hwmon"),
+        *,
+        board_name: str | None = None,
+    ):
         matches = find_hwmon("hp", root)
         if not matches:
             raise HardwareNotReadyError("hp hwmon device was not found")
@@ -714,6 +720,8 @@ class HpFanHwmon:
                 )
         pwm2 = self.path / "pwm2"
         self.pwm2 = pwm2 if pwm2.exists() else None
+        self.board_name = board_name
+        self.cpu_gpu_level_table = HP_CPU_GPU_LEVEL_TABLES.get(board_name)
 
     @property
     def supports_independent_pwm(self) -> bool:
@@ -733,11 +741,20 @@ class HpFanHwmon:
     def manual_pwm_max(self) -> int:
         return hp_level_to_pwm(self.manual_max_level)
 
+    def validate_manual_mapping(self) -> None:
+        if self.supports_independent_pwm and self.cpu_gpu_level_table is None:
+            raise HardwareError(
+                "dual-channel Manual control has no captured CPU/GPU mapping "
+                f"for board {self.board_name!r}"
+            )
+
     def _pwm_targets(self, cpu_pwm: int) -> tuple[tuple[Path, int], ...]:
         if self.pwm2 is None:
             return ((self.pwm, cpu_pwm),)
+        self.validate_manual_mapping()
+        assert self.cpu_gpu_level_table is not None
         cpu_level = pwm_to_hp_level(cpu_pwm)
-        gpu_level = hp_gpu_level_for_cpu_level(cpu_level)
+        gpu_level = hp_gpu_level_for_cpu_level(cpu_level, self.cpu_gpu_level_table)
         return (
             (self.pwm, cpu_pwm),
             (self.pwm2, hp_level_to_pwm(gpu_level)),
@@ -821,6 +838,7 @@ class HpFanHwmon:
 
 
 def wait_for_hp_fan_hwmon(
+    board_name: str,
     root: Path = Path("/sys/class/hwmon"),
     timeout_s: float = HP_HWMON_STARTUP_TIMEOUT_S,
     retry_s: float = HP_HWMON_STARTUP_RETRY_S,
@@ -832,7 +850,8 @@ def wait_for_hp_fan_hwmon(
     while True:
         confirming_single = False
         try:
-            fan = HpFanHwmon(root=root)
+            fan = HpFanHwmon(root=root, board_name=board_name)
+            fan.validate_manual_mapping()
             if fan.supports_independent_pwm or fan.path == unconfirmed_single_path:
                 if waiting_logged:
                     LOG.info("hp hwmon interface became ready")

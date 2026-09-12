@@ -11,7 +11,7 @@ from pathlib import Path
 PWM_MAX = 255
 HP_FAN_LEVEL_MAX = 60.0
 HP_SINGLE_PWM_MAX_LEVEL = 56
-HP_CPU_GPU_LEVEL_TABLE = (
+HP_8D87_CPU_GPU_LEVEL_TABLE = (
     (19, 21),
     (20, 22),
     (22, 23),
@@ -28,6 +28,7 @@ HP_CPU_GPU_LEVEL_TABLE = (
     (56, 58),
     (60, 58),
 )
+HP_CPU_GPU_LEVEL_TABLES = {"8D87": HP_8D87_CPU_GPU_LEVEL_TABLE}
 DEFAULT_ALLOWED_BOARDS = ("8D87",)
 MAX_DECREASE_HYSTERESIS_C = 20.0
 TOP_LEVEL_KEYS = frozenset({"daemon", "ewma", "sensors", "curve", "curves"})
@@ -119,16 +120,19 @@ def hp_level_to_pwm(level: int) -> int:
     return percent_to_pwm(hp_level_percent(level))
 
 
-def hp_gpu_level_for_cpu_level(cpu_level: int) -> int:
-    """Interpolate the GPU level from the captured 8D87 firmware table."""
-    if cpu_level <= HP_CPU_GPU_LEVEL_TABLE[0][0]:
-        return HP_CPU_GPU_LEVEL_TABLE[0][1]
-    if cpu_level >= HP_CPU_GPU_LEVEL_TABLE[-1][0]:
-        return HP_CPU_GPU_LEVEL_TABLE[-1][1]
+def hp_gpu_level_for_cpu_level(
+    cpu_level: int,
+    table: tuple[tuple[int, int], ...],
+) -> int:
+    """Interpolate a GPU level from an explicitly selected firmware table."""
+    if cpu_level <= table[0][0]:
+        return table[0][1]
+    if cpu_level >= table[-1][0]:
+        return table[-1][1]
 
     for (cpu0, gpu0), (cpu1, gpu1) in zip(
-        HP_CPU_GPU_LEVEL_TABLE,
-        HP_CPU_GPU_LEVEL_TABLE[1:],
+        table,
+        table[1:],
     ):
         if cpu0 <= cpu_level <= cpu1:
             ratio = (cpu_level - cpu0) / (cpu1 - cpu0)

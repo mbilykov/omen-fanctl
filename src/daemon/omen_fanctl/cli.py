@@ -407,7 +407,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             lock_handle = acquire_lock(Path("/run/omen-fanctl/control.lock"))
             # Recovery commands deliberately do not wait for hwmon: --failsafe
             # runs from ExecStopPost and must never delay service shutdown.
-            fan = HpFanHwmon()
+            fan = HpFanHwmon(board_name=board)
             if args.failsafe:
                 ensure_failsafe_fan_state(fan, AUTO_GUARD_PATH)
             else:
@@ -457,7 +457,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             if not systemd_owns_runtime_directory(CONFIRMED_BOARD_PATH):
                 owned_board_marker = CONFIRMED_BOARD_PATH
 
-        fan = wait_for_hp_fan_hwmon()
+        fan = wait_for_hp_fan_hwmon(board)
         settings.validate_fan_interface(
             independent_pwm_channels=fan.supports_independent_pwm
         )
