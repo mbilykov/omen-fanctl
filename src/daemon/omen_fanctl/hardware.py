@@ -742,20 +742,25 @@ class HpFanHwmon:
     def manual_pwm_max(self) -> int:
         return hp_level_to_pwm(self.manual_max_level)
 
-    def validate_manual_mapping(self) -> None:
-        if self.supports_independent_pwm and self.cpu_gpu_level_table is None:
+    def _require_manual_mapping(self) -> tuple[tuple[int, int], ...]:
+        table = self.cpu_gpu_level_table
+        if table is None:
             raise ConfigurationError(
                 "dual-channel Manual control has no captured CPU/GPU mapping "
                 f"for board {self.board_name!r}"
             )
+        return table
+
+    def validate_manual_mapping(self) -> None:
+        if self.supports_independent_pwm:
+            self._require_manual_mapping()
 
     def _pwm_targets(self, cpu_pwm: int) -> tuple[tuple[Path, int], ...]:
         if self.pwm2 is None:
             return ((self.pwm, cpu_pwm),)
-        self.validate_manual_mapping()
-        assert self.cpu_gpu_level_table is not None
+        table = self._require_manual_mapping()
         cpu_level = pwm_to_hp_level(cpu_pwm)
-        gpu_level = hp_gpu_level_for_cpu_level(cpu_level, self.cpu_gpu_level_table)
+        gpu_level = hp_gpu_level_for_cpu_level(cpu_level, table)
         return (
             (self.pwm, cpu_pwm),
             (self.pwm2, hp_level_to_pwm(gpu_level)),

@@ -609,7 +609,7 @@ class Controller:
             if current_pwm > self.fan.manual_pwm_max:
                 LOG.warning(
                     "entering Manual lowers firmware PWM from %d to safe maximum "
-                    "%d (mode=%d pwm=%s level=%d)",
+                    "%d (mode=%d abi=%s level=%d)",
                     current_pwm,
                     self.fan.manual_pwm_max,
                     current_mode,

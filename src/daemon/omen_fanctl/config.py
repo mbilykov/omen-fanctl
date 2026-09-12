@@ -394,6 +394,10 @@ class Settings:
                     "curves.preset and explicit curves.<sensor> sections are "
                     "mutually exclusive"
                 )
+            if "curves" in raw and not preset and not named_curve_data:
+                raise ConfigurationError(
+                    "curves must define either preset or curves.cpu"
+                )
             if preset:
                 if preset not in CURVE_PRESETS:
                     raise ConfigurationError(f"unknown curve preset: {preset}")

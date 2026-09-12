@@ -1728,6 +1728,25 @@ pwm_percent = [30, 40]
             ):
                 Settings.load(config)
 
+    def test_rejects_empty_curves_section_with_its_own_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "omen-fanctl.toml"
+            config.write_text(
+                """
+[daemon]
+allowed_boards = ["8D87"]
+
+[curves]
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ConfigurationError,
+                "curves must define either preset or curves.cpu",
+            ):
+                Settings.load(config)
+
     def test_rejects_unknown_configuration_keys(self):
         cases = {
             "top-level": (
@@ -2828,7 +2847,7 @@ class ControllerLoopTests(_ControllerTestCase):
         self.assertEqual(controller.policy.commanded_pwm, fan.manual_pwm_max)
         self.assertIn(
             "entering Manual lowers firmware PWM from 255 to safe maximum 238 "
-            "(mode=0 pwm=single level=56)",
+            "(mode=0 abi=single level=56)",
             "\n".join(logs.output),
         )
 
@@ -2855,7 +2874,7 @@ class ControllerLoopTests(_ControllerTestCase):
         self.assertEqual(fan.actions, [("manual", fan.manual_pwm_max)])
         self.assertIn(
             "entering Manual lowers firmware PWM from 250 to safe maximum 238 "
-            "(mode=2 pwm=single level=56)",
+            "(mode=2 abi=single level=56)",
             "\n".join(logs.output),
         )
 
