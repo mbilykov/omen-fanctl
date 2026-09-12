@@ -478,10 +478,13 @@ def main(argv: Iterable[str] | None = None) -> int:
         csv_log = CsvLog(log_path)
 
         LOG.warning(
-            "%s mode; board=%s curves=%s hp_hwmon=%s log=%s",
+            "%s mode; board=%s curves=%s pwm=%s manual_max=level%s "
+            "hp_hwmon=%s log=%s",
             "APPLY" if args.apply else "DRY-RUN",
             board,
             settings.curve_source,
+            fan.pwm_abi,
+            fan.manual_max_level,
             fan.path,
             log_path or "disabled",
         )

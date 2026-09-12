@@ -12,6 +12,7 @@ import subprocess
 import time
 
 from .config import (
+    HP_FAN_LEVEL_MAX,
     HP_SINGLE_PWM_MAX_LEVEL,
     PWM_MAX,
     Settings,
@@ -718,10 +719,18 @@ class HpFanHwmon:
         return self.pwm2 is not None
 
     @property
-    def manual_pwm_max(self) -> int:
+    def pwm_abi(self) -> str:
+        return "dual" if self.supports_independent_pwm else "single"
+
+    @property
+    def manual_max_level(self) -> int:
         if self.supports_independent_pwm:
-            return PWM_MAX
-        return hp_level_to_pwm(HP_SINGLE_PWM_MAX_LEVEL)
+            return int(HP_FAN_LEVEL_MAX)
+        return HP_SINGLE_PWM_MAX_LEVEL
+
+    @property
+    def manual_pwm_max(self) -> int:
+        return hp_level_to_pwm(self.manual_max_level)
 
     def _pwm_targets(self, cpu_pwm: int) -> tuple[tuple[Path, int], ...]:
         if self.pwm2 is None:
@@ -737,7 +746,7 @@ class HpFanHwmon:
         if pwm > self.manual_pwm_max:
             raise HardwareError(
                 f"Manual PWM {pwm} exceeds the single-channel safe maximum "
-                f"{self.manual_pwm_max} (HP fan level {HP_SINGLE_PWM_MAX_LEVEL})"
+                f"{self.manual_pwm_max} (HP fan level {self.manual_max_level})"
             )
 
     def status(self) -> tuple[int, int, int, int]:

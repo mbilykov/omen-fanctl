@@ -675,6 +675,8 @@ class ControllerTelemetryTests(_ControllerTestCase):
         )
         self.assertEqual(row["nvidia_metrics_stale"], "true")
         self.assertEqual(row["amd_gpu_temperature_stale"], "true")
+        self.assertEqual(row["pwm_abi"], "single")
+        self.assertEqual(row["manual_max_level"], 56)
 
         csv_log.reset_mock()
         controller.log_sample(
@@ -2707,7 +2709,10 @@ class FakeFan:
     def __init__(self):
         self.mode = AUTO_MODE
         self.pwm = 100
-        self.manual_pwm_max = PWM_MAX
+        self.supports_independent_pwm = False
+        self.pwm_abi = "single"
+        self.manual_max_level = 56
+        self.manual_pwm_max = hp_level_to_pwm(self.manual_max_level)
         self.actions = []
 
     def status(self):
@@ -4401,6 +4406,10 @@ class MainStartupTests(RuntimeMarkerIsolation):
     def _safe_fan(self):
         fan = Mock(spec=HpFanHwmon)
         fan.path = Path("/sys/class/hwmon/hwmon7")
+        fan.supports_independent_pwm = False
+        fan.pwm_abi = "single"
+        fan.manual_max_level = 56
+        fan.manual_pwm_max = hp_level_to_pwm(fan.manual_max_level)
         fan.status.return_value = (AUTO_MODE, 0, 3000, 3000)
         return fan
 
@@ -4429,6 +4438,7 @@ class MainStartupTests(RuntimeMarkerIsolation):
                 return_value=sensors,
             ),
             patch("omen_fanctl.cli.CsvLog", return_value=csv_log) as csv_type,
+            patch("omen_fanctl.cli.LOG.warning") as startup_log,
             patch(
                 "omen_fanctl.cli.SystemdNotifier.from_environment",
                 return_value=notifier,
@@ -4452,6 +4462,17 @@ class MainStartupTests(RuntimeMarkerIsolation):
 
         self.assertEqual(result, 0)
         csv_type.assert_called_once_with(log_path)
+        startup_log.assert_called_once_with(
+            "%s mode; board=%s curves=%s pwm=%s manual_max=level%s "
+            "hp_hwmon=%s log=%s",
+            "APPLY",
+            "8D87",
+            settings.curve_source,
+            "single",
+            56,
+            fan.path,
+            log_path,
+        )
         factory.assert_called_once_with(
             settings=settings,
             fan=fan,
@@ -5048,6 +5069,8 @@ class FakeHwmonTests(unittest.TestCase):
 
             fan = HpFanHwmon(root)
             self.assertTrue(fan.supports_independent_pwm)
+            self.assertEqual(fan.pwm_abi, "dual")
+            self.assertEqual(fan.manual_max_level, 60)
             fan.set_manual(hp_level_to_pwm(47))
             self.assertEqual(int((hp / "pwm1").read_text()), hp_level_to_pwm(47))
             self.assertEqual(int((hp / "pwm2").read_text()), hp_level_to_pwm(49))
@@ -5058,6 +5081,8 @@ class FakeHwmonTests(unittest.TestCase):
 
     def test_single_channel_rejects_pwm_above_firmware_observed_cpu_maximum(self):
         fan = initialized_fan(self)
+        self.assertEqual(fan.pwm_abi, "single")
+        self.assertEqual(fan.manual_max_level, 56)
 
         with self.assertRaisesRegex(HardwareError, "safe maximum"):
             fan.set_manual(PWM_MAX)

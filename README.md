@@ -306,6 +306,8 @@ Full-resolution telemetry is appended once per second to
 - raw and EWMA-filtered CPU, GPU, IR, and optional ACPI temperatures, including
   a stale-data marker when a transient AMD read uses its cached temperature;
 - NVIDIA power draw and power limit when available, plus a stale-data marker;
+- the detected single- or dual-channel PWM ABI and its maximum Manual fan
+  level;
 - the target from each sensor curve and the winning sensor;
 - requested PWM, actual fan mode, and both fan RPM values.
 
