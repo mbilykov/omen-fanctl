@@ -1,3 +1,5 @@
+# shellcheck shell=bash
+
 # Configuration lifecycle shared by install.sh, uninstall.sh, and their tests.
 # This file is sourced, never executed, and installs nothing on its own.
 

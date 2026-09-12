@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
 readonly TRACE_PROGRAM="$SCRIPT_DIR/trace_hp_wmi_2f.bt"
 readonly BOARD_PATH=/sys/class/dmi/id/board_name
 readonly PROFILE_PATH=/sys/firmware/acpi/platform_profile

@@ -12,7 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import ANY, Mock, call, patch
@@ -1271,15 +1271,22 @@ preset = "performance-single-channel"
             defaults = Settings.load(config)
 
         packaged = Settings.load(CONFIG_PATH)
-        for field in (
-            "activation_temp_c",
-            "release_temp_c",
-            "ewma_rise_alpha",
-            "ewma_fall_alpha",
-            "include_acpi",
-        ):
-            with self.subTest(field=field):
-                self.assertEqual(getattr(defaults, field), getattr(packaged, field))
+        intentionally_different = {
+            # An omitted handoff threshold must remain disabled so an upgrade
+            # cannot silently adopt newly packaged shutdown behavior.
+            "stop_handoff_max_temp_c",
+            # The exact factory fraction and its rounded TOML spelling both
+            # map to PWM 81 / HP fan level 19.
+            "minimum_manual_percent",
+        }
+        for field in fields(Settings):
+            if field.name in intentionally_different:
+                continue
+            with self.subTest(field=field.name):
+                self.assertEqual(
+                    getattr(defaults, field.name),
+                    getattr(packaged, field.name),
+                )
 
     def test_rejects_conflicting_operation_and_log_arguments(self):
         cases = (
