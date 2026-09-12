@@ -374,6 +374,10 @@ class Settings:
         curves_data = configuration_table(
             raw.get("curves", {}), "curves", NAMED_CURVE_KEYS
         )
+        if "curve" in raw and "curves" in raw:
+            raise ConfigurationError(
+                "configuration sections curve and curves are mutually exclusive"
+            )
         named_curve_data = {
             name: configuration_table(curves_data[name], f"curves.{name}", CURVE_KEYS)
             for name in ("cpu", "gpu", "ir", "acpi")
@@ -381,6 +385,11 @@ class Settings:
         }
         try:
             preset = str(curves_data.get("preset", "")).strip()
+            if preset and named_curve_data:
+                raise ConfigurationError(
+                    "curves.preset and explicit curves.<sensor> sections are "
+                    "mutually exclusive"
+                )
             if preset:
                 if preset not in CURVE_PRESETS:
                     raise ConfigurationError(f"unknown curve preset: {preset}")

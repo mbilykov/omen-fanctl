@@ -250,6 +250,11 @@ To define custom tables, remove `preset` and add a
 tables fall back to it. An omitted `acpi` table uses the `ir` curve when
 present, otherwise it also falls back to CPU.
 
+Curve selection is intentionally unambiguous: `curves.preset` cannot be
+combined with any explicit `[curves.<sensor>]` table, and the shared `[curve]`
+form cannot be combined with `[curves]`. The daemon rejects either combination
+instead of silently ignoring one of the definitions.
+
 ```toml
 [curves.cpu]
 high_temperature_c = [60, 70, 80]

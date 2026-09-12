@@ -1667,6 +1667,56 @@ preset = "performance-unleashed"
             ):
                 Settings.load(config)
 
+    def test_rejects_preset_with_explicit_sensor_curve(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "omen-fanctl.toml"
+            config.write_text(
+                """
+[daemon]
+allowed_boards = ["8D87"]
+
+[curves]
+preset = "performance-extended"
+
+[curves.cpu]
+temperature_c = [10, 5]
+pwm_percent = [500, "oops"]
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ConfigurationError,
+                r"curves\.preset and explicit curves\.<sensor> sections are "
+                "mutually exclusive",
+            ):
+                Settings.load(config)
+
+    def test_rejects_legacy_curve_with_per_sensor_curves(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "omen-fanctl.toml"
+            config.write_text(
+                """
+[daemon]
+allowed_boards = ["8D87"]
+
+[curve]
+temperature_c = [50, 60]
+pwm_percent = [30, 40]
+
+[curves.cpu]
+temperature_c = [50, 60]
+pwm_percent = [30, 40]
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ConfigurationError,
+                "configuration sections curve and curves are mutually exclusive",
+            ):
+                Settings.load(config)
+
     def test_rejects_unknown_configuration_keys(self):
         cases = {
             "top-level": (
