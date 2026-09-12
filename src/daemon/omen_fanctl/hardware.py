@@ -810,9 +810,7 @@ class HpFanHwmon:
         # switching Auto -> Manual, producing a smooth and non-zero transition.
         # pwm1 rejects writes outside Manual mode, so mode must be changed first.
         write_int(self.enable, MANUAL_MODE)
-        self._write_pwm_targets_or_restore_auto(
-            targets, "initial manual PWM write"
-        )
+        self._write_pwm_targets_or_restore_auto(targets, "initial manual PWM write")
         self._manual_recovery_pending = False
 
     def update_manual(self, pwm: int, *, write_pwm: bool = True) -> None:

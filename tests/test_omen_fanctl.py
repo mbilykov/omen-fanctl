@@ -1558,9 +1558,7 @@ preset = "hp-vibrance-stx-n22x9-performance"
                     self.assertEqual(
                         len(curve.temperatures), len(base.temperatures) + 3
                     )
-                    self.assertEqual(
-                        curve.temperatures[-3], headroom_start[sensor]
-                    )
+                    self.assertEqual(curve.temperatures[-3], headroom_start[sensor])
                     # Below the added steps the tables must be indistinguishable.
                     probe = headroom_start[sensor] - 0.5
                     self.assertAlmostEqual(
@@ -1625,22 +1623,16 @@ preset = "hp-vibrance-stx-n22x9-performance"
                     curve_source=preset,
                 )
                 top_levels = {
-                    percent_to_hp_level(
-                        settings.curve_for(sensor).pwm_percent[-1]
-                    )
+                    percent_to_hp_level(settings.curve_for(sensor).pwm_percent[-1])
                     for sensor in settings.active_control_sensors()
                 }
                 if compatibility[preset]:
                     self.assertLessEqual(max(top_levels), 56)
-                    settings.validate_fan_interface(
-                        independent_pwm_channels=False
-                    )
+                    settings.validate_fan_interface(independent_pwm_channels=False)
                 else:
                     self.assertGreater(max(top_levels), 56)
                     with self.assertRaises(ConfigurationError):
-                        settings.validate_fan_interface(
-                            independent_pwm_channels=False
-                        )
+                        settings.validate_fan_interface(independent_pwm_channels=False)
 
     def test_extended_cpu_curve_reaches_full_speed_at_ninety(self):
         cpu = extended_performance_curves()["cpu"]
@@ -2905,9 +2897,7 @@ class ControllerLoopTests(_ControllerTestCase):
         )
 
         with self.assertLogs("omen-fanctl", level="WARNING") as logs:
-            applied = controller._apply_manual(
-                percent_to_pwm(hp_level_percent(47))
-            )
+            applied = controller._apply_manual(percent_to_pwm(hp_level_percent(47)))
 
         self.assertEqual(applied, fan.manual_pwm_max)
         self.assertEqual(fan.actions, [("manual", fan.manual_pwm_max)])
@@ -2933,9 +2923,7 @@ class ControllerLoopTests(_ControllerTestCase):
         )
 
         with self.assertLogs("omen-fanctl", level="WARNING") as logs:
-            applied = controller._apply_manual(
-                percent_to_pwm(hp_level_percent(47))
-            )
+            applied = controller._apply_manual(percent_to_pwm(hp_level_percent(47)))
 
         self.assertEqual(applied, fan.manual_pwm_max)
         self.assertEqual(fan.actions, [("manual", fan.manual_pwm_max)])
@@ -4608,8 +4596,7 @@ class MainStartupTests(RuntimeMarkerIsolation):
         self.assertEqual(result, 0)
         csv_type.assert_called_once_with(log_path)
         startup_log.assert_called_once_with(
-            "%s mode; board=%s curves=%s pwm=%s manual_max=level%s "
-            "hp_hwmon=%s log=%s",
+            "%s mode; board=%s curves=%s pwm=%s manual_max=level%s hp_hwmon=%s log=%s",
             "APPLY",
             "8D87",
             settings.curve_source,
