@@ -181,6 +181,12 @@ def run_actuator_test(
         raise ConfigurationError(
             f"--actuator-test must be between {minimum_percent:g} and 100 percent"
         )
+    requested_pwm = percent_to_pwm(percent)
+    if requested_pwm > fan.manual_pwm_max:
+        raise ConfigurationError(
+            f"--actuator-test maps above this hp-wmi interface's safe Manual "
+            f"maximum of {pwm_to_percent(fan.manual_pwm_max):.1f} percent"
+        )
     if not 1.0 <= duration_s <= 60.0:
         raise ConfigurationError(
             "actuator-test duration must be between 1 and 60 seconds"
@@ -190,10 +196,14 @@ def run_actuator_test(
         raise HardwareError(
             f"actuator test requires firmware Auto (pwm1_enable=2), found {mode}"
         )
+    if current_pwm > fan.manual_pwm_max:
+        raise HardwareError(
+            f"firmware Auto PWM {current_pwm} is above this interface's safe "
+            f"Manual maximum {fan.manual_pwm_max}; refusing to reduce airflow"
+        )
 
-    target = percent_to_pwm(percent)
     # Do not reduce airflow when entering the test.
-    target = max(target, current_pwm)
+    target = max(requested_pwm, current_pwm)
     stop = False
 
     def request_stop(signum: int, _frame: object) -> None:
@@ -448,6 +458,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                 owned_board_marker = CONFIRMED_BOARD_PATH
 
         fan = wait_for_hp_fan_hwmon()
+        settings.validate_fan_interface(
+            independent_pwm_channels=fan.supports_independent_pwm
+        )
         sensors = wait_for_temperature_sensors(settings)
         if args.actuator_test is not None:
             if not args.apply:

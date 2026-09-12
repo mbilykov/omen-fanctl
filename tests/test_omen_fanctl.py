@@ -46,16 +46,22 @@ from omen_fanctl.cli import (  # noqa: E402
     run_actuator_test,
 )
 from omen_fanctl.config import (  # noqa: E402
+    CURVE_PRESETS,
     DEFAULT_ALLOWED_BOARDS,
+    PWM_MAX,
     ConfigurationError,
     Curve,
     Settings,
     extended_performance_curves,
     hp_factory_performance_curves,
+    hp_gpu_level_for_cpu_level,
+    hp_level_to_pwm,
     hp_level_percent,
     load_allowed_boards,
+    percent_to_hp_level,
     percent_to_pwm,
     pwm_to_percent,
+    single_channel_performance_curves,
 )
 from omen_fanctl.controller import (  # noqa: E402
     ControlPolicy,
@@ -939,6 +945,7 @@ class ControlDecisionTests(unittest.TestCase):
     def test_rechecks_manual_mode_when_pwm_is_unchanged(self):
         settings = fixed_policy_settings()
         fan = Mock()
+        fan.manual_pwm_max = PWM_MAX
         controller = Controller(
             settings=settings,
             fan=fan,
@@ -1271,10 +1278,9 @@ class SettingsTests(unittest.TestCase):
         )
         self.assertIsNone(_csv_log_path(parse_args(["--no-log-file"])))
 
-    def test_shipped_configuration_disables_the_temperature_trigger(self):
+    def test_shipped_configuration_enables_the_temperature_trigger(self):
         settings = Settings.load(CONFIG_PATH)
-        self.assertIsNone(settings.critical_temp_c)
-        # The release threshold still governs a sensor-failure or adopted maximum.
+        self.assertEqual(settings.critical_temp_c, 92.0)
         self.assertEqual(settings.critical_release_temp_c, 82.0)
 
     def test_shipped_configuration_hands_cool_fans_back_on_stop(self):
@@ -1452,9 +1458,9 @@ preset = "hp-vibrance-stx-n22x9-performance"
             ):
                 Settings.load(config)
 
-    def test_shipped_configuration_selects_the_extended_preset(self):
+    def test_shipped_configuration_selects_the_single_channel_preset(self):
         settings = Settings.load(CONFIG_PATH)
-        self.assertEqual(settings.curve_source, "performance-extended")
+        self.assertEqual(settings.curve_source, "performance-single-channel")
         self.assertEqual(
             set(dict(settings.curves or ())),
             {"cpu", "gpu", "ir"},
@@ -1462,7 +1468,7 @@ preset = "hp-vibrance-stx-n22x9-performance"
         for sensor in ("cpu", "gpu", "ir"):
             with self.subTest(sensor=sensor):
                 self.assertAlmostEqual(
-                    settings.curve_for(sensor).pwm_percent[-1], hp_level_percent(60)
+                    settings.curve_for(sensor).pwm_percent[-1], hp_level_percent(56)
                 )
 
     def test_loads_factory_preset(self):
@@ -1491,28 +1497,108 @@ preset = "hp-vibrance-stx-n22x9-performance"
 
     def test_extended_preset_keeps_every_factory_step_below_its_headroom(self):
         factory = hp_factory_performance_curves()
-        extended = extended_performance_curves()
+        presets = {
+            "single-channel": single_channel_performance_curves(),
+            "dual-channel": extended_performance_curves(),
+        }
         headroom_start = {"cpu": 86.0, "gpu": 82.0, "ir": 66.0}
-        for sensor, curve in extended.items():
-            with self.subTest(sensor=sensor):
-                base = factory[sensor]
+        expected_top = {"single-channel": 56, "dual-channel": 60}
+        for preset, curves in presets.items():
+            for sensor, curve in curves.items():
+                with self.subTest(preset=preset, sensor=sensor):
+                    base = factory[sensor]
+                    self.assertEqual(
+                        curve.temperatures[: len(base.temperatures)], base.temperatures
+                    )
+                    self.assertEqual(
+                        curve.pwm_percent[: len(base.pwm_percent)], base.pwm_percent
+                    )
+                    self.assertEqual(
+                        len(curve.temperatures), len(base.temperatures) + 3
+                    )
+                    self.assertEqual(
+                        curve.temperatures[-3], headroom_start[sensor]
+                    )
+                    # Below the added steps the tables must be indistinguishable.
+                    probe = headroom_start[sensor] - 0.5
+                    self.assertAlmostEqual(
+                        curve.evaluate_percent(probe), base.evaluate_percent(probe)
+                    )
+                    self.assertAlmostEqual(
+                        curve.pwm_percent[-1], hp_level_percent(expected_top[preset])
+                    )
+
+    def test_single_channel_curve_uses_the_firmware_observed_cpu_ceiling(self):
+        cpu = single_channel_performance_curves()["cpu"]
+        self.assertAlmostEqual(cpu.evaluate_percent(89.9), hp_level_percent(55))
+        self.assertAlmostEqual(cpu.evaluate_percent(90.0), hp_level_percent(56))
+
+    def test_gpu_levels_follow_the_captured_firmware_table(self):
+        expected = {
+            19: 21,
+            22: 23,
+            31: 33,
+            47: 49,
+            51: 53,
+            55: 57,
+            56: 58,
+            58: 58,
+            60: 58,
+        }
+        for cpu_level, gpu_level in expected.items():
+            with self.subTest(cpu_level=cpu_level):
                 self.assertEqual(
-                    curve.temperatures[: len(base.temperatures)], base.temperatures
+                    hp_gpu_level_for_cpu_level(cpu_level),
+                    gpu_level,
                 )
-                self.assertEqual(
-                    curve.pwm_percent[: len(base.pwm_percent)], base.pwm_percent
+
+    def test_single_channel_preset_is_safe_with_one_pwm_channel(self):
+        curves = single_channel_performance_curves()
+        settings = replace(
+            fixed_policy_settings(),
+            curve=curves["cpu"],
+            curves=tuple(curves.items()),
+            curve_source="performance-single-channel",
+        )
+        settings.validate_fan_interface(independent_pwm_channels=False)
+
+    def test_every_registered_preset_has_explicit_single_channel_compatibility(self):
+        compatibility = {
+            "hp-vibrance-stx-n22x9-performance": True,
+            "performance-single-channel": True,
+            "performance-extended": False,
+        }
+        self.assertEqual(set(CURVE_PRESETS), set(compatibility))
+
+        for preset, curve_factory in CURVE_PRESETS.items():
+            with self.subTest(preset=preset):
+                curves = curve_factory()
+                settings = replace(
+                    fixed_policy_settings(),
+                    curve=curves["cpu"],
+                    curves=tuple(curves.items()),
+                    curve_source=preset,
                 )
-                self.assertEqual(len(curve.temperatures), len(base.temperatures) + 3)
-                self.assertEqual(curve.temperatures[-3], headroom_start[sensor])
-                # Below the added steps the two tables must be indistinguishable.
-                probe = headroom_start[sensor] - 0.5
-                self.assertAlmostEqual(
-                    curve.evaluate_percent(probe), base.evaluate_percent(probe)
-                )
-                self.assertAlmostEqual(curve.pwm_percent[-1], hp_level_percent(60))
+                top_levels = {
+                    percent_to_hp_level(
+                        settings.curve_for(sensor).pwm_percent[-1]
+                    )
+                    for sensor in settings.active_control_sensors()
+                }
+                if compatibility[preset]:
+                    self.assertLessEqual(max(top_levels), 56)
+                    settings.validate_fan_interface(
+                        independent_pwm_channels=False
+                    )
+                else:
+                    self.assertGreater(max(top_levels), 56)
+                    with self.assertRaises(ConfigurationError):
+                        settings.validate_fan_interface(
+                            independent_pwm_channels=False
+                        )
 
     def test_extended_cpu_curve_reaches_full_speed_at_ninety(self):
-        cpu = Settings.load(CONFIG_PATH).curve_for("cpu")
+        cpu = extended_performance_curves()["cpu"]
         full_speed_at = min(
             temperature
             for temperature, percent in zip(cpu.temperatures, cpu.pwm_percent)
@@ -1521,6 +1607,46 @@ preset = "hp-vibrance-stx-n22x9-performance"
         self.assertEqual(full_speed_at, 90.0)
         self.assertAlmostEqual(cpu.evaluate_percent(89.9), hp_level_percent(55))
         self.assertAlmostEqual(cpu.evaluate_percent(90.0), 100.0)
+
+    def test_extended_preset_requires_independent_pwm_channels(self):
+        curves = extended_performance_curves()
+        settings = replace(
+            fixed_policy_settings(),
+            curve=curves["cpu"],
+            curves=tuple(curves.items()),
+            curve_source="performance-extended",
+        )
+
+        with self.assertRaisesRegex(
+            ConfigurationError,
+            r"cpu curve maps to HP fan level 60.*only pwm1.*pwm2 is required",
+        ):
+            settings.validate_fan_interface(independent_pwm_channels=False)
+
+        settings.validate_fan_interface(independent_pwm_channels=True)
+
+    def test_factory_preset_is_safe_with_a_single_pwm_channel(self):
+        settings = Settings.load(CONFIG_PATH)
+        curves = hp_factory_performance_curves()
+        settings = replace(
+            settings,
+            curve=curves["cpu"],
+            curves=tuple(curves.items()),
+            curve_source="hp-vibrance-stx-n22x9-performance",
+        )
+        settings.validate_fan_interface(independent_pwm_channels=False)
+
+    def test_single_pwm_channel_rejects_an_unsafe_manual_floor(self):
+        settings = replace(
+            fixed_policy_settings(),
+            minimum_manual_percent=hp_level_percent(57),
+        )
+
+        with self.assertRaisesRegex(
+            ConfigurationError,
+            r"minimum_manual_percent maps to HP fan level 57.*only pwm1",
+        ):
+            settings.validate_fan_interface(independent_pwm_channels=False)
 
     def test_unknown_preset_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -2531,6 +2657,7 @@ class FakeFan:
     def __init__(self):
         self.mode = AUTO_MODE
         self.pwm = 100
+        self.manual_pwm_max = PWM_MAX
         self.actions = []
 
     def status(self):
@@ -2612,6 +2739,27 @@ class SequenceSensors:
 
 
 class ControllerLoopTests(_ControllerTestCase):
+    def test_single_channel_manual_transition_cannot_carry_level_sixty(self):
+        fan = FakeFan()
+        fan.mode = MAX_MODE
+        fan.pwm = PWM_MAX
+        fan.manual_pwm_max = percent_to_pwm(hp_level_percent(56))
+        controller = controller_with_fake_time(
+            settings=Settings.load(CONFIG_PATH),
+            fan=fan,
+            sensors=FakeSensors(70),
+            apply=True,
+            duration_s=1.0,
+            csv_log=CsvLog(None),
+            profile_path=self.profile,
+        )
+
+        applied = controller._apply_manual(percent_to_pwm(hp_level_percent(47)))
+
+        self.assertEqual(applied, fan.manual_pwm_max)
+        self.assertEqual(fan.actions, [("manual", fan.manual_pwm_max)])
+        self.assertEqual(controller.policy.commanded_pwm, fan.manual_pwm_max)
+
     def test_ir_manual_floor_bucket_stays_in_firmware_auto(self):
         settings = Settings.load(CONFIG_PATH)
         sensors = Mock()
@@ -2660,9 +2808,8 @@ class ControllerLoopTests(_ControllerTestCase):
         self.assertFalse(controller.emergency)
         self.assertEqual(fan.actions, [])
 
-    def test_disabled_trigger_keeps_full_speed_under_manual_control(self):
+    def test_shipped_trigger_selects_maximum_above_the_factory_curve(self):
         settings = Settings.load(CONFIG_PATH)
-        self.assertIsNone(settings.critical_temp_c)
         sensors = Mock()
         sensors.read.return_value = TemperatureSnapshot(
             cpu=95.0, gpu=50.0, acpi=None, ir=None
@@ -2680,15 +2827,11 @@ class ControllerLoopTests(_ControllerTestCase):
 
         controller.run()
 
-        self.assertFalse(controller.emergency)
-        # The curve, not an override, is what asks for full speed.
-        self.assertEqual(fan.actions[0], ("manual", 255))
-        # The single maximum is the shutdown fail-safe once the run ends, which
-        # is unrelated to the temperature trigger.
-        self.assertEqual(fan.actions.count(("maximum", 255)), 1)
-        self.assertEqual(fan.actions[-1], ("maximum", 255))
+        self.assertTrue(controller.emergency)
+        self.assertNotIn("manual", [action for action, _ in fan.actions])
+        self.assertEqual(fan.actions[0], ("maximum", 255))
 
-    def test_sensor_loss_still_selects_maximum_with_the_trigger_disabled(self):
+    def test_sensor_loss_still_selects_maximum_with_the_shipped_trigger(self):
         settings = Settings.load(CONFIG_PATH)
         sensors = Mock()
         sensors.read.side_effect = [
@@ -2715,8 +2858,7 @@ class ControllerLoopTests(_ControllerTestCase):
         self.assertEqual(fan.mode, MAX_MODE)
 
     def test_raw_cpu_or_gpu_at_critical_threshold_selects_maximum(self):
-        # The shipped configuration disables the trigger, so configure one here.
-        settings = replace(Settings.load(CONFIG_PATH), critical_temp_c=92.0)
+        settings = Settings.load(CONFIG_PATH)
 
         for sensor_name in ("cpu", "gpu"):
             with self.subTest(sensor=sensor_name):
@@ -4281,6 +4423,37 @@ class MainStartupTests(RuntimeMarkerIsolation):
         csv_log.close.assert_called_once_with()
         lock.close.assert_called_once_with()
 
+    def test_main_rejects_extended_curve_on_single_channel_hwmon(self):
+        curves = extended_performance_curves()
+        settings = replace(
+            fixed_policy_settings(),
+            curve=curves["cpu"],
+            curves=tuple(curves.items()),
+            curve_source="performance-extended",
+        )
+        fan = self._safe_fan()
+        fan.supports_independent_pwm = False
+        wait_for_sensors = Mock()
+        lock = Mock()
+        with (
+            patch("omen_fanctl.cli.Settings.load", return_value=settings),
+            patch("omen_fanctl.cli.read_text", return_value="8D87"),
+            patch("omen_fanctl.cli.validate_required_profile"),
+            patch("omen_fanctl.cli.acquire_lock", return_value=lock),
+            patch("omen_fanctl.cli.wait_for_hp_fan_hwmon", return_value=fan),
+            patch(
+                "omen_fanctl.cli.wait_for_temperature_sensors",
+                wait_for_sensors,
+            ),
+            patch("omen_fanctl.cli.LOG.error") as log_error,
+        ):
+            result = main(["--no-log-file"])
+
+        self.assertEqual(result, CONFIGURATION_ERROR_EXIT_STATUS)
+        self.assertIn("only pwm1", str(log_error.call_args.args[1]))
+        wait_for_sensors.assert_not_called()
+        lock.close.assert_called_once_with()
+
     def test_main_dispatches_actuator_test_without_constructing_controller(self):
         settings = fixed_policy_settings()
         lock = Mock()
@@ -4504,6 +4677,30 @@ class RecoveryCommandTests(RuntimeMarkerIsolation):
             "must be between 40 and 100 percent",
         ):
             run_actuator_test(FakeFan(), FakeSensors(50), 39.9, 1, 40.0)
+
+    def test_actuator_test_respects_single_channel_manual_maximum(self):
+        fan = FakeFan()
+        fan.manual_pwm_max = percent_to_pwm(hp_level_percent(56))
+
+        with self.assertRaisesRegex(
+            ConfigurationError,
+            "safe Manual maximum",
+        ):
+            run_actuator_test(fan, FakeSensors(50), 100.0, 1)
+
+        self.assertEqual(fan.mode, AUTO_MODE)
+        self.assertEqual(fan.actions, [])
+
+    def test_actuator_test_does_not_reduce_high_firmware_auto_pwm(self):
+        fan = FakeFan()
+        fan.pwm = PWM_MAX
+        fan.manual_pwm_max = percent_to_pwm(hp_level_percent(56))
+
+        with self.assertRaisesRegex(HardwareError, "refusing to reduce airflow"):
+            run_actuator_test(fan, FakeSensors(50), 60.0, 1)
+
+        self.assertEqual(fan.mode, AUTO_MODE)
+        self.assertEqual(fan.actions, [])
 
     def test_actuator_test_rejects_invalid_ranges_and_non_auto_mode(self):
         cases = (
@@ -4784,6 +4981,39 @@ class FakeHwmonTests(unittest.TestCase):
             fan.restore_auto()
             self.assertEqual(int((hp / "pwm1_enable").read_text()), AUTO_MODE)
 
+    def test_dual_channel_manual_writes_both_pwm_targets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            hp = root / "hwmon8"
+            hp.mkdir()
+            for name, value in (
+                ("name", "hp\n"),
+                ("pwm1", "100\n"),
+                ("pwm2", "100\n"),
+                ("pwm1_enable", f"{AUTO_MODE}\n"),
+                ("fan1_input", "3400\n"),
+                ("fan2_input", "3600\n"),
+            ):
+                (hp / name).write_text(value)
+
+            fan = HpFanHwmon(root)
+            self.assertTrue(fan.supports_independent_pwm)
+            fan.set_manual(hp_level_to_pwm(47))
+            self.assertEqual(int((hp / "pwm1").read_text()), hp_level_to_pwm(47))
+            self.assertEqual(int((hp / "pwm2").read_text()), hp_level_to_pwm(49))
+
+            fan.update_manual(hp_level_to_pwm(60))
+            self.assertEqual(int((hp / "pwm1").read_text()), hp_level_to_pwm(60))
+            self.assertEqual(int((hp / "pwm2").read_text()), hp_level_to_pwm(58))
+
+    def test_single_channel_rejects_pwm_above_firmware_observed_cpu_maximum(self):
+        fan = initialized_fan(self)
+
+        with self.assertRaisesRegex(HardwareError, "safe maximum"):
+            fan.set_manual(PWM_MAX)
+
+        self.assertEqual(int(fan.enable.read_text()), AUTO_MODE)
+
     def test_failed_initial_pwm_write_rolls_manual_mode_back_to_auto(self):
         fan = initialized_fan(self)
         failure = HardwareError("PWM write failed")
@@ -4798,6 +5028,27 @@ class FakeHwmonTests(unittest.TestCase):
             [
                 call(fan.enable, MANUAL_MODE),
                 call(fan.pwm, 100),
+                call(fan.enable, AUTO_MODE),
+            ],
+        )
+
+    def test_failed_second_pwm_write_rolls_dual_channel_back_to_auto(self):
+        fan = initialized_fan(self)
+        fan.pwm2 = fan.path / "pwm2"
+        failure = HardwareError("pwm2 write failed")
+        with patch(
+            "omen_fanctl.hardware.write_int",
+            side_effect=[None, None, failure, None],
+        ) as write:
+            with self.assertRaisesRegex(HardwareError, "pwm2 write failed"):
+                fan.set_manual(hp_level_to_pwm(47))
+
+        self.assertEqual(
+            write.call_args_list,
+            [
+                call(fan.enable, MANUAL_MODE),
+                call(fan.pwm, hp_level_to_pwm(47)),
+                call(fan.pwm2, hp_level_to_pwm(49)),
                 call(fan.enable, AUTO_MODE),
             ],
         )

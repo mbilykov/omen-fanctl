@@ -10,6 +10,24 @@ from pathlib import Path
 
 PWM_MAX = 255
 HP_FAN_LEVEL_MAX = 60.0
+HP_SINGLE_PWM_MAX_LEVEL = 56
+HP_CPU_GPU_LEVEL_TABLE = (
+    (19, 21),
+    (20, 22),
+    (22, 23),
+    (24, 26),
+    (28, 30),
+    (30, 32),
+    (34, 36),
+    (36, 38),
+    (37, 39),
+    (43, 45),
+    (47, 49),
+    (50, 52),
+    (53, 55),
+    (56, 58),
+    (60, 58),
+)
 DEFAULT_ALLOWED_BOARDS = ("8D87",)
 MAX_DECREASE_HYSTERESIS_C = 20.0
 TOP_LEVEL_KEYS = frozenset({"daemon", "ewma", "sensors", "curve", "curves"})
@@ -86,6 +104,36 @@ def percent_to_pwm(percent: float) -> int:
 
 def pwm_to_percent(pwm: int) -> float:
     return pwm * 100.0 / PWM_MAX
+
+
+def percent_to_hp_level(percent: float) -> int:
+    """Map a configured percentage through the PWM ABI to an HP fan level."""
+    return pwm_to_hp_level(percent_to_pwm(percent))
+
+
+def pwm_to_hp_level(pwm: int) -> int:
+    return int(clamp(pwm, 0, PWM_MAX) * HP_FAN_LEVEL_MAX / PWM_MAX + 0.5)
+
+
+def hp_level_to_pwm(level: int) -> int:
+    return percent_to_pwm(hp_level_percent(level))
+
+
+def hp_gpu_level_for_cpu_level(cpu_level: int) -> int:
+    """Interpolate the GPU level from the captured 8D87 firmware table."""
+    if cpu_level <= HP_CPU_GPU_LEVEL_TABLE[0][0]:
+        return HP_CPU_GPU_LEVEL_TABLE[0][1]
+    if cpu_level >= HP_CPU_GPU_LEVEL_TABLE[-1][0]:
+        return HP_CPU_GPU_LEVEL_TABLE[-1][1]
+
+    for (cpu0, gpu0), (cpu1, gpu1) in zip(
+        HP_CPU_GPU_LEVEL_TABLE,
+        HP_CPU_GPU_LEVEL_TABLE[1:],
+    ):
+        if cpu0 <= cpu_level <= cpu1:
+            ratio = (cpu_level - cpu0) / (cpu1 - cpu0)
+            return int(gpu0 + ratio * (gpu1 - gpu0) + 0.5)
+    raise AssertionError("unreachable CPU/GPU fan-table interval")
 
 
 @dataclass(frozen=True)
@@ -226,24 +274,20 @@ def hp_factory_performance_curves() -> dict[str, Curve]:
     }
 
 
-def extended_performance_curves() -> dict[str, Curve]:
-    """Factory Performance tables continued past HP's level-47 ceiling.
+PERFORMANCE_HEADROOM = {
+    "cpu": ((86.0, 88.0, 90.0), (82.0, 84.0, 86.0)),
+    "gpu": ((82.0, 85.0, 88.0), (78.0, 81.0, 84.0)),
+    "ir": ((66.0, 68.0, 70.0), None),
+}
 
-    HP's Performance table stops at fan level 47 of 60 (~78%), which settles
-    this machine around 85 C and leaves the 92 C emergency as the only path to
-    full speed. These tables keep every factory step and add three above it, so
-    the curve itself reaches 100% before the emergency threshold and maximum
-    fans stay reserved for genuine exceptions such as a crashed controller.
-    """
-    extra_levels = tuple(hp_level_percent(value) for value in (51, 55, 60))
-    headroom = {
-        "cpu": ((86.0, 88.0, 90.0), (82.0, 84.0, 86.0)),
-        "gpu": ((82.0, 85.0, 88.0), (78.0, 81.0, 84.0)),
-        "ir": ((66.0, 68.0, 70.0), None),
-    }
+
+def _performance_curves_with_headroom(
+    levels: tuple[int, int, int],
+) -> dict[str, Curve]:
+    extra_levels = tuple(hp_level_percent(value) for value in levels)
     curves = {}
     for name, factory in hp_factory_performance_curves().items():
-        rising, falling = headroom[name]
+        rising, falling = PERFORMANCE_HEADROOM[name]
         curves[name] = Curve(
             factory.temperatures + rising,
             factory.pwm_percent + extra_levels,
@@ -253,8 +297,33 @@ def extended_performance_curves() -> dict[str, Curve]:
     return curves
 
 
+def single_channel_performance_curves() -> dict[str, Curve]:
+    """Factory tables extended to the safe ceiling of single-channel hp-wmi.
+
+    The legacy driver adds two fan levels to the GPU request. Levels 51, 55,
+    and 56 therefore stay at or below the firmware-observed per-fan ceilings,
+    producing the CPU/GPU pairs 51/53, 55/57, and 56/58.
+    """
+    return _performance_curves_with_headroom((51, 55, 56))
+
+
+def extended_performance_curves() -> dict[str, Curve]:
+    """Factory Performance tables extended for the dual-channel hp-wmi ABI.
+
+    HP's Performance table stops at fan level 47 of 60 (~78%), which settles
+    this machine around 85 C and leaves the 92 C emergency as the only path to
+    full speed. These tables keep every factory step and add levels 51, 55,
+    and 60. Linux 7.1 must not use the level-60 endpoint: its single PWM
+    channel adds a fixed GPU offset and commands level 62. Runtime validation
+    therefore enables this preset only when hp-wmi exposes independent
+    pwm1/pwm2 targets.
+    """
+    return _performance_curves_with_headroom((51, 55, 60))
+
+
 CURVE_PRESETS = {
     "hp-vibrance-stx-n22x9-performance": hp_factory_performance_curves,
+    "performance-single-channel": single_channel_performance_curves,
     "performance-extended": extended_performance_curves,
 }
 
@@ -435,6 +504,27 @@ class Settings:
             return curves.get("acpi", curves.get("ir", self.curve))
         return curves.get(sensor, self.curve)
 
+    def validate_fan_interface(self, *, independent_pwm_channels: bool) -> None:
+        """Reject Manual targets unsafe for the detected hp-wmi ABI."""
+        if independent_pwm_channels:
+            return
+
+        manual_limits = [("minimum_manual_percent", self.minimum_manual_percent)]
+        manual_limits.extend(
+            (f"{sensor} curve", self.curve_for(sensor).pwm_percent[-1])
+            for sensor in self.active_control_sensors()
+        )
+        for source, percent in manual_limits:
+            level = percent_to_hp_level(percent)
+            if level > HP_SINGLE_PWM_MAX_LEVEL:
+                raise ConfigurationError(
+                    f"{source} maps to HP fan level {level}, but the detected "
+                    "hp-wmi interface has only pwm1; single-channel Manual "
+                    f"control is limited to CPU level {HP_SINGLE_PWM_MAX_LEVEL} "
+                    "so the driver's GPU +2 offset stays within the "
+                    "firmware-observed GPU ceiling of 58; pwm2 is required"
+                )
+
     def validate(self) -> None:
         if not self.allowed_boards:
             raise ConfigurationError("allowed_boards must not be empty")
@@ -539,11 +629,12 @@ class Settings:
 def _optional_temperature(value: object, name: str) -> float | None:
     """Read a threshold that may be switched off with ``false``.
 
-    Disabling ``critical_temp_c`` removes only the temperature trigger. Maximum
-    fans remain the response to sensor loss and are still adopted from a
-    crashed run, so the fail-safe survives without a redundant escalation above
-    a curve that already reaches full speed. Disabling
-    ``stop_handoff_max_temp_c`` restores the unconditional maximum-fan exit.
+    Disabling ``critical_temp_c`` removes only the raw-temperature transition
+    to firmware Max. Configuration validation permits that only when every
+    active curve reaches full speed; runtime validation separately enforces the
+    detected hp-wmi interface's Manual ceiling. Sensor loss and adoption of a
+    crashed run still select Max. Disabling ``stop_handoff_max_temp_c`` restores
+    the unconditional maximum-fan exit.
     """
     if isinstance(value, bool):
         if value:

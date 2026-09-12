@@ -55,17 +55,17 @@ stop_handoff_max_temp_c = 70.0
 # daemon refuses values below the observed 120-second firmware window.
 auto_guard_s = 180.0
 
-# Temperature trigger for maximum mode, disabled with false. The default
-# performance-extended curve already commands 100% at 90 C, so switching the
-# firmware to maximum on top of it changes no fan speed: it only takes control
-# away from the curve and holds full speed until the release threshold. Normal
-# operation therefore stays in Manual mode all the way to full speed.
-#
-# Set a temperature here to restore the override. The factory preset requires
-# one: its curve stops at ~78.3%, so with no override nothing could ever ask
-# for full speed. The daemon refuses to start on that combination, and on any
-# curve of an active control sensor whose top step is below 100%.
-critical_temp_c = false
+# Raw temperature at or above this threshold leaves Manual control and selects
+# firmware Max. This is a deliberate Linux 7.1 compatibility compromise: its
+# single pwm1 channel turns Manual level 60 into CPU/GPU levels 60/62, exceeding
+# the level-60 range. Upstream Linux has replaced that offset with independent
+# pwm1/pwm2 channels. The daemon detects that ABI and maps separate CPU/GPU
+# targets through the captured firmware table; on the single-channel
+# interface it refuses any active curve or Manual floor whose upper request maps
+# above CPU level 56. That is the highest CPU level whose legacy +2 GPU request
+# stays within the firmware-observed GPU ceiling of 58. Emergency provides the
+# remaining full-cooling path.
+critical_temp_c = 92.0
 
 # Maximum mode is still entered when a sensor is lost during control, and is
 # adopted from a crashed run that left the fans at maximum. Those states are
@@ -73,6 +73,12 @@ critical_temp_c = false
 # and maximum has been held for at least emergency_hold_s.
 critical_release_temp_c = 82.0
 emergency_hold_s = 10.0
+
+# Behavioural cost of this compromise: a sustained load that crosses 92 C at
+# the 56/58 Manual pair enters firmware Max immediately, stays there for at
+# least 10 seconds and until the smoothed temperature falls to 82 C, then may
+# heat back to 92 C and repeat. The capped curve makes the mode change smaller
+# than the factory curve's 47 -> Max jump, but cannot eliminate this cycling.
 
 # Extra temperature applied only when considering a PWM decrease.
 decrease_hysteresis_c = 3.0
@@ -134,11 +140,14 @@ include_nvidia_gpu = true
 #     at HP fan level 47/60 (~78.3%), which settles this machine near 85 C and
 #     leaves the 92 C emergency as the only path to full speed.
 #
-#   performance-extended (default)
-#     The same table with three steps added above HP's ceiling, reaching 60/60
-#     (100%) at 90 C. Every factory step below 86 C is unchanged, so a normal
-#     sustained workload sounds exactly as before; the added headroom lets the
-#     curve reach full speed on its own instead of relying on the emergency
-#     threshold, keeping maximum fans for exceptions such as a crashed
-#     controller.
-preset = "performance-extended"
+#   performance-single-channel (default)
+#     The factory table plus levels 51, 55, and 56. Linux 7.1 applies its fixed
+#     GPU +2 offset, producing pairs 51/53, 55/57, and 56/58. These stay within
+#     the maximum CPU/GPU levels observed in the firmware table.
+#
+#   performance-extended
+#     The same table with three CPU steps added above HP's ceiling, reaching CPU
+#     level 60 (100%) and mapped GPU level 58 at 90 C. It requires the
+#     dual-channel pwm1/pwm2 ABI. On Linux 7.1, startup rejects this preset
+#     because the fixed GPU offset would turn Manual CPU level 60 into GPU 62.
+preset = "performance-single-channel"

@@ -411,6 +411,34 @@ maximum fans after an unsafe exit or `SIGKILL`, a 15-second service watchdog
 turns a stuck loop into that same recovery path, and only the firmware timeout
 is relied upon when the kernel itself can no longer execute its keep-alive work.
 
+Linux 7.1 also exposes only one Manual PWM channel and derives the GPU request
+with the fixed delta from the first fan-table row. On `8D87`, Manual level 60
+therefore becomes the out-of-table pair `60/62` (about 6,000/6,200 RPM). A
+candidate CPU ceiling of 58 would produce `58/60`, which is numerically in
+range but still exceeds the GPU maximum observed in the firmware table. The
+shipped preset therefore uses the stricter CPU ceiling of 56 and pair `56/58`,
+then uses its 92 C firmware-Max emergency for the remaining full-cooling path.
+This is a compatibility compromise, not the desired final policy. The
+[accepted upstream patch](https://lore.kernel.org/platform-driver-x86/20260707203740.55369-1-hello@kursatabayli.dev/)
+replaces the fixed delta with independent `pwm1` and `pwm2` channels and is
+listed in the
+[platform-drivers-x86 pull request for Linux 7.3](https://lkml.iu.edu/2608.3/00899.html).
+The daemon detects the added `pwm2`, writes the CPU target to `pwm1`, and maps
+the GPU target through the captured `0x2f` CPU/GPU table before writing
+`pwm2`. With a single-channel interface, startup rejects any active curve or
+Manual floor above CPU level 56, keeping both derived targets within the
+per-fan maxima observed in that table.
+
+This leaves a mode-level hysteresis cost. A raw control temperature at 92 C
+switches immediately from the capped `56/58` Manual endpoint to firmware Max,
+bypassing the normal PWM rate limits. Max is then held for at least 10 seconds
+and until the hottest smoothed control temperature reaches 82 C or below. A
+steady load that heats the machine back across 92 C after release can repeat
+that cycle, producing long Max intervals and audible mode changes. The capped
+preset makes the jump substantially smaller than the factory curve's
+`47 -> Max`, but only independent PWM channels remove the reason for this
+compromise.
+
 ## Remaining questions
 
 - What `0x2f` variants exist on other supported generations?

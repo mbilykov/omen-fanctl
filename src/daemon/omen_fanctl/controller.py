@@ -586,6 +586,12 @@ class Controller:
         return result
 
     def _apply_manual(self, pwm: int) -> int:
+        # Firmware Max reports pwm1=255. On the legacy single-channel ABI,
+        # carrying that value into Manual would make hp-wmi apply its +2 GPU
+        # offset and request out-of-table level 62. The hardware adapter keeps
+        # this ceiling as a final invariant; clamp here as well so policy state
+        # and telemetry reflect the value that is actually written.
+        pwm = min(pwm, self.fan.manual_pwm_max)
         if not self.apply:
             self.manual_active = True
             self.policy.set_commanded_pwm(pwm)
@@ -596,6 +602,7 @@ class Controller:
             # pwm1 read reflects the current CPU fan level even in Auto mode.
             _, current_pwm, _, _ = self.fan.status()
             pwm = max(pwm, current_pwm)
+            pwm = min(pwm, self.fan.manual_pwm_max)
             self.fan.set_manual(pwm)
             self.manual_active = True
             self._clear_auto_guard()

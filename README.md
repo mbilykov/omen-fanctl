@@ -196,23 +196,52 @@ retrying. Telemetry under `/var/log/omen-fanctl/` is always preserved.
 
 `curves.preset` selects a built-in set of tables.
 
-| Preset | Top step | Behaviour |
-|---|---|---|
-| `performance-extended` (default) | 60/60 (100%) at 90 C | The factory table plus three steps above its ceiling |
-| `hp-vibrance-stx-n22x9-performance` | 47/60 (~78.3%) at 85 C | The extracted factory table, unmodified; requires `critical_temp_c` |
+| Preset | CPU top | Mapped CPU/GPU pair | Behaviour |
+|---|---:|---:|---|
+| `performance-single-channel` (default) | level 56 (~93.3%) at 90 C | 56/58 | Factory steps plus firmware-observed-safe CPU levels 51, 55, and 56 |
+| `hp-vibrance-stx-n22x9-performance` | level 47 (~78.3%) at 85 C | 47/49 | The extracted factory table; firmware Max takes over at `critical_temp_c` |
+| `performance-extended` | level 60 (100%) at 90 C | 60/58 | Available only with the dual-channel `pwm1`/`pwm2` ABI |
 
 HP's Performance table stops at fan level 47 of 60, around 4,700 RPM, which
-settles this machine near 85 C. Because the fans never go higher under that
-table, the only path to full speed was the emergency threshold, which a
-sustained workload reaches. The default preset keeps every factory step below
-86 C unchanged and adds levels 51, 55, and 60 above it, so the curve itself
-reaches full speed at 90 C. A normal workload therefore sounds as it did
-before, and because the curve now covers the whole range, the temperature
-override is disabled by default; see `critical_temp_c` in the configuration.
+settles this machine near 85 C. Full cooling is therefore reached through the
+92 C emergency threshold, which selects firmware Max.
 
-The extended CPU steps are 86 C -> 85%, 88 C -> 91.7%, and 90 C -> 100%, with
-falling thresholds 82, 84, and 86 C. GPU adds 82, 85, and 88 C; optional IR
-adds 66, 68, and 70 C.
+This is a compatibility compromise for Linux 7.1. Its single `pwm1` control
+derives the GPU fan from the CPU request using a fixed `+2` fan-level offset,
+so Manual level 60 becomes the out-of-table pair `60/62` (about
+6,000/6,200 RPM). Merely capping CPU at level 58 would keep the derived GPU
+request within the numeric `0..60` range, but the captured firmware table never
+requests GPU above level 58. The shipped preset therefore uses the stricter
+firmware-observed criterion and extends the factory table with CPU levels 51,
+55, and 56. Linux 7.1 derives the CPU/GPU pairs `51/53`, `55/57`, and `56/58`,
+retaining most of the extended curve while reserving firmware Max for critical
+heat. The
+[accepted upstream patch][hp-wmi-dual-pwm] exposes independent `pwm1` and
+`pwm2` channels and is listed in the [platform-drivers-x86 pull request][pdx-7.3]
+for Linux 7.3. The daemon detects `pwm2` and writes separately mapped CPU/GPU
+targets using the captured `0x2f` table. On a single-channel interface it
+refuses to start if an active curve or the Manual floor maps above CPU level 56,
+so neither fan exceeds the maximum level observed for it in firmware-generated
+pairs.
+
+[hp-wmi-dual-pwm]: https://lore.kernel.org/platform-driver-x86/20260707203740.55369-1-hello@kursatabayli.dev/
+[pdx-7.3]: https://lkml.iu.edu/2608.3/00899.html
+
+The added CPU steps are at 86, 88, and 90 C, with falling thresholds 82, 84,
+and 86 C. GPU adds steps at 82, 85, and 88 C; optional IR adds them at 66, 68,
+and 70 C. Their levels are 51, 55, and 56 in the default single-channel preset;
+the dual-channel preset replaces only the last level with 60.
+
+The remaining behavioural cost is at the emergency boundary. If a sustained
+load still crosses the raw 92 C trigger while Manual is at `56/58`, the daemon
+switches immediately to firmware Max. It cannot leave that state until Max has
+been held for at least 10 seconds and the hottest smoothed control temperature
+has fallen to 82 C or below. If the unchanged load then heats the machine back
+to 92 C, the cycle repeats. The 10 C trigger/release gap can therefore produce
+long Max bursts and audible mode switching under a borderline steady load.
+The capped preset reduces this transition from the former `47 -> Max` jump to
+`56/58 -> Max`, but does not eliminate the oscillation; this is the principal
+behavioural price of the single-channel compromise.
 
 ## Custom per-sensor curves
 
@@ -307,16 +336,14 @@ work run only when required.
 4. CPU, GPU, and IR are evaluated against independent curves. The highest fan
    request wins. Linux `hp-wmi` converts the standard `0..255` PWM value to the
    firmware fan-level mapping.
-5. Software control stays in Manual mode (`pwm1_enable=1`) all the way to full
-   speed, because the default curve reaches 100% at 90 C. Maximum mode
-   (`pwm1_enable=0`, PWM 255) is reserved for a sensor lost during control and
-   for a crashed run whose fans were left at maximum. Setting
-   `critical_temp_c` restores the temperature override, which any raw monitored
-   temperature at or above it then triggers; it is off by default because
-   overriding a curve that already commands 100% changes no fan speed. The two
-   settings are coupled: with the override off, every active control curve must
-   reach 100%, otherwise full speed would be unreachable and the daemon refuses
-   to start.
+5. Software control uses Manual mode (`pwm1_enable=1`) through the safe
+   single-channel CPU level-56 ceiling. Any raw temperature reaching 92 C
+   selects firmware Max (`pwm1_enable=0`) instead of asking Linux 7.1's
+   single-channel Manual interface for the unsafe level-60 endpoint. Sensor
+   loss during control and a crashed run whose fans were left at maximum use
+   the same fail-safe state. Emergency entry bypasses the normal PWM rate
+   limits, and its 82 C release threshold can produce the cycling described in
+   the preset section under a sustained load near the 92 C boundary.
 6. Manual control returns to firmware Auto when raw CPU and GPU temperatures
    are at or below `fan_stop_temp_c` (45 C by default). If IR activated the
    cycle, it must also fall to its release threshold, 43 C by default. A lost

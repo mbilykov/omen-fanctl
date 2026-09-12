@@ -11,7 +11,15 @@ import shutil
 import subprocess
 import time
 
-from .config import PWM_MAX, Settings, clamp
+from .config import (
+    HP_SINGLE_PWM_MAX_LEVEL,
+    PWM_MAX,
+    Settings,
+    clamp,
+    hp_gpu_level_for_cpu_level,
+    hp_level_to_pwm,
+    pwm_to_hp_level,
+)
 
 
 LOG = logging.getLogger("omen-fanctl")
@@ -694,6 +702,7 @@ class HpFanHwmon:
             )
         self.path = matches[0]
         self.pwm = self.path / "pwm1"
+        self.pwm2 = self.path / "pwm2" if (self.path / "pwm2").exists() else None
         self.enable = self.path / "pwm1_enable"
         self.fan1 = self.path / "fan1_input"
         self.fan2 = self.path / "fan2_input"
@@ -703,6 +712,33 @@ class HpFanHwmon:
                 raise HardwareNotReadyError(
                     f"required hp-wmi attribute is missing: {required}"
                 )
+
+    @property
+    def supports_independent_pwm(self) -> bool:
+        return self.pwm2 is not None
+
+    @property
+    def manual_pwm_max(self) -> int:
+        if self.supports_independent_pwm:
+            return PWM_MAX
+        return hp_level_to_pwm(HP_SINGLE_PWM_MAX_LEVEL)
+
+    def _pwm_targets(self, cpu_pwm: int) -> tuple[tuple[Path, int], ...]:
+        if self.pwm2 is None:
+            return ((self.pwm, cpu_pwm),)
+        cpu_level = pwm_to_hp_level(cpu_pwm)
+        gpu_level = hp_gpu_level_for_cpu_level(cpu_level)
+        return (
+            (self.pwm, cpu_pwm),
+            (self.pwm2, hp_level_to_pwm(gpu_level)),
+        )
+
+    def _validate_manual_pwm(self, pwm: int) -> None:
+        if pwm > self.manual_pwm_max:
+            raise HardwareError(
+                f"Manual PWM {pwm} exceeds the single-channel safe maximum "
+                f"{self.manual_pwm_max} (HP fan level {HP_SINGLE_PWM_MAX_LEVEL})"
+            )
 
     def status(self) -> tuple[int, int, int, int]:
         return (
@@ -714,16 +750,18 @@ class HpFanHwmon:
 
     def set_manual(self, pwm: int) -> None:
         pwm = int(clamp(pwm, 1, PWM_MAX))
+        self._validate_manual_pwm(pwm)
         # Linux 7.1 hp-wmi deliberately captures the current physical RPM when
         # switching Auto -> Manual, producing a smooth and non-zero transition.
         # pwm1 rejects writes outside Manual mode, so mode must be changed first.
         write_int(self.enable, MANUAL_MODE)
         try:
-            write_int(self.pwm, pwm)
+            for channel, target in self._pwm_targets(pwm):
+                write_int(channel, target)
         except HardwareError:
-            # The mode write may have succeeded even if the first PWM write
-            # failed. Roll back immediately instead of leaving an unowned
-            # Manual mode behind.
+            # The mode write may have succeeded even if a PWM write failed.
+            # Roll back immediately instead of leaving an unowned Manual mode
+            # or a partially updated pair of channels behind.
             try:
                 self.restore_auto()
             except HardwareError as restore_error:
@@ -736,6 +774,7 @@ class HpFanHwmon:
 
     def update_manual(self, pwm: int, *, write_pwm: bool = True) -> None:
         pwm = int(clamp(pwm, 1, PWM_MAX))
+        self._validate_manual_pwm(pwm)
         mode = read_int(self.enable)
         if mode == MAX_MODE:
             # Max may have been asserted by the EC or by the user. Never
@@ -759,7 +798,8 @@ class HpFanHwmon:
             raise HardwareError(f"unexpected fan mode during manual control: {mode}")
         self._manual_recovery_pending = False
         if write_pwm:
-            write_int(self.pwm, pwm)
+            for channel, target in self._pwm_targets(pwm):
+                write_int(channel, target)
 
     def set_maximum(self) -> None:
         write_int(self.enable, MAX_MODE)
