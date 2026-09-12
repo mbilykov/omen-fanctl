@@ -5344,7 +5344,7 @@ class HwmonStartupTests(unittest.TestCase):
             with (
                 patch(
                     "omen_fanctl.hardware.time.monotonic",
-                    side_effect=[100.0, 100.0],
+                    side_effect=[100.0, 100.0, 101.0],
                 ),
                 patch(
                     "omen_fanctl.hardware.time.sleep",
@@ -5355,8 +5355,40 @@ class HwmonStartupTests(unittest.TestCase):
                 fan = wait_for_hp_fan_hwmon(root=root)
 
             self.assertEqual(fan.path, hp)
-            sleep.assert_called_once_with(1.0)
+            self.assertEqual(sleep.call_args_list, [call(1.0), call(1.0)])
             log_info.assert_called_once_with("hp hwmon interface became ready")
+
+    def test_wait_detects_pwm2_published_after_required_attributes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            hp = root / "hwmon7"
+            hp.mkdir()
+            for name, value in (
+                ("name", "hp\n"),
+                ("pwm1", "0\n"),
+                ("pwm1_enable", f"{AUTO_MODE}\n"),
+                ("fan1_input", "0\n"),
+                ("fan2_input", "0\n"),
+            ):
+                (hp / name).write_text(value)
+
+            def publish_pwm2(_delay):
+                (hp / "pwm2").write_text("0\n")
+
+            with (
+                patch(
+                    "omen_fanctl.hardware.time.monotonic",
+                    side_effect=[100.0, 100.0],
+                ),
+                patch(
+                    "omen_fanctl.hardware.time.sleep",
+                    side_effect=publish_pwm2,
+                ) as sleep,
+            ):
+                fan = wait_for_hp_fan_hwmon(root=root)
+
+            self.assertTrue(fan.supports_independent_pwm)
+            sleep.assert_called_once_with(1.0)
 
     def test_retries_transient_hp_hwmon_absence(self):
         fan = Mock(spec=HpFanHwmon)

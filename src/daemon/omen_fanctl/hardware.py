@@ -700,10 +700,9 @@ class HpFanHwmon:
         if len(matches) > 1:
             raise HardwareError(
                 f"expected exactly one hp hwmon device, found {len(matches)}"
-            )
+        )
         self.path = matches[0]
         self.pwm = self.path / "pwm1"
-        self.pwm2 = self.path / "pwm2" if (self.path / "pwm2").exists() else None
         self.enable = self.path / "pwm1_enable"
         self.fan1 = self.path / "fan1_input"
         self.fan2 = self.path / "fan2_input"
@@ -713,6 +712,8 @@ class HpFanHwmon:
                 raise HardwareNotReadyError(
                     f"required hp-wmi attribute is missing: {required}"
                 )
+        pwm2 = self.path / "pwm2"
+        self.pwm2 = pwm2 if pwm2.exists() else None
 
     @property
     def supports_independent_pwm(self) -> bool:
@@ -827,23 +828,35 @@ def wait_for_hp_fan_hwmon(
     """Wait briefly for hp-wmi to finish publishing its hwmon interface."""
     deadline = time.monotonic() + timeout_s
     waiting_logged = False
+    unconfirmed_single_path: Path | None = None
     while True:
+        confirming_single = False
         try:
             fan = HpFanHwmon(root=root)
-            if waiting_logged:
-                LOG.info("hp hwmon interface became ready")
-            return fan
+            if fan.supports_independent_pwm or fan.path == unconfirmed_single_path:
+                if waiting_logged:
+                    LOG.info("hp hwmon interface became ready")
+                return fan
+            unconfirmed_single_path = fan.path
+            confirming_single = True
+            not_ready = HardwareNotReadyError(
+                "waiting to confirm that the optional pwm2 attribute is absent"
+            )
         except HardwareNotReadyError as exc:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise HardwareError(
-                    f"hp hwmon did not become ready within {timeout_s:g} seconds: {exc}"
-                ) from exc
+            unconfirmed_single_path = None
+            not_ready = exc
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise HardwareError(
+                f"hp hwmon did not become ready within {timeout_s:g} seconds: "
+                f"{not_ready}"
+            ) from not_ready
+        if not confirming_single:
             if not waiting_logged:
                 LOG.warning(
                     "hp hwmon is not ready; waiting up to %g seconds: %s",
                     timeout_s,
-                    exc,
+                    not_ready,
                 )
                 waiting_logged = True
-            time.sleep(min(retry_s, remaining))
+        time.sleep(min(retry_s, remaining))
