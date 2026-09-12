@@ -1395,11 +1395,16 @@ preset = "performance-extended"
             curves=tuple(factory.items()),
         )
 
-        with self.assertRaisesRegex(
-            ConfigurationError,
-            "the cpu curve must reach 100% when critical_temp_c is disabled",
-        ):
+        with self.assertRaises(ConfigurationError) as caught:
             settings.validate()
+
+        self.assertEqual(
+            str(caught.exception),
+            "the cpu curve must reach 100% when critical_temp_c is disabled; "
+            "select a 100% curve only when the detected fan interface safely "
+            "supports full-speed Manual, otherwise set critical_temp_c to a "
+            "temperature",
+        )
 
     def test_disabled_trigger_checks_every_active_control_curve(self):
         curves = dict(extended_performance_curves())

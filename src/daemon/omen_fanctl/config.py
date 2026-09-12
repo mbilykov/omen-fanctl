@@ -602,8 +602,10 @@ class Settings:
                 if self.curve_for(sensor).pwm_percent[-1] < 100.0 - 1e-9:
                     raise ConfigurationError(
                         f"the {sensor} curve must reach 100% when "
-                        "critical_temp_c is disabled; extend the curve or set "
-                        "critical_temp_c to a temperature"
+                        "critical_temp_c is disabled; select a 100% curve only "
+                        "when the detected fan interface safely supports "
+                        "full-speed Manual, otherwise set critical_temp_c to "
+                        "a temperature"
                     )
         if self.critical_temp_c is not None:
             if self.critical_release_temp_c >= self.critical_temp_c:

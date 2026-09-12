@@ -64,7 +64,9 @@ auto_guard_s = 180.0
 # interface it refuses any active curve or Manual floor whose upper request maps
 # above CPU level 56. That is the highest CPU level whose legacy +2 GPU request
 # stays within the firmware-observed GPU ceiling of 58. Emergency provides the
-# remaining full-cooling path.
+# remaining full-cooling path. Consequently, false is not valid with the
+# shipped curves on this single-channel Linux 7.1 interface: keep a temperature
+# threshold until the independent pwm1/pwm2 ABI is available.
 critical_temp_c = 92.0
 
 # Maximum mode is still entered when a sensor is lost during control, and is
