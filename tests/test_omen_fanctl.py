@@ -2798,7 +2798,7 @@ class SequenceSensors:
 
 
 class ControllerLoopTests(_ControllerTestCase):
-    def test_single_channel_manual_transition_cannot_carry_level_sixty(self):
+    def test_single_channel_max_to_manual_logs_the_required_reduction(self):
         fan = FakeFan()
         fan.mode = MAX_MODE
         fan.pwm = PWM_MAX
@@ -2813,11 +2813,46 @@ class ControllerLoopTests(_ControllerTestCase):
             profile_path=self.profile,
         )
 
-        applied = controller._apply_manual(percent_to_pwm(hp_level_percent(47)))
+        with self.assertLogs("omen-fanctl", level="WARNING") as logs:
+            applied = controller._apply_manual(
+                percent_to_pwm(hp_level_percent(47))
+            )
 
         self.assertEqual(applied, fan.manual_pwm_max)
         self.assertEqual(fan.actions, [("manual", fan.manual_pwm_max)])
         self.assertEqual(controller.policy.commanded_pwm, fan.manual_pwm_max)
+        self.assertIn(
+            "entering Manual lowers firmware PWM from 255 to safe maximum 238 "
+            "(mode=0 pwm=single level=56)",
+            "\n".join(logs.output),
+        )
+
+    def test_single_channel_auto_to_manual_logs_the_required_reduction(self):
+        fan = FakeFan()
+        fan.mode = AUTO_MODE
+        fan.pwm = 250
+        controller = controller_with_fake_time(
+            settings=Settings.load(CONFIG_PATH),
+            fan=fan,
+            sensors=FakeSensors(70),
+            apply=True,
+            duration_s=1.0,
+            csv_log=CsvLog(None),
+            profile_path=self.profile,
+        )
+
+        with self.assertLogs("omen-fanctl", level="WARNING") as logs:
+            applied = controller._apply_manual(
+                percent_to_pwm(hp_level_percent(47))
+            )
+
+        self.assertEqual(applied, fan.manual_pwm_max)
+        self.assertEqual(fan.actions, [("manual", fan.manual_pwm_max)])
+        self.assertIn(
+            "entering Manual lowers firmware PWM from 250 to safe maximum 238 "
+            "(mode=2 pwm=single level=56)",
+            "\n".join(logs.output),
+        )
 
     def test_ir_manual_floor_bucket_stays_in_firmware_auto(self):
         settings = Settings.load(CONFIG_PATH)

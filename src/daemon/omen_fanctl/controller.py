@@ -600,10 +600,22 @@ class Controller:
             self._clear_auto_guard()
             return pwm
         if not self.manual_active:
-            # Never reduce airflow at the Auto -> Manual boundary. hp-wmi's
-            # pwm1 read reflects the current CPU fan level even in Auto mode.
-            _, current_pwm, _, _ = self.fan.status()
+            # Preserve the firmware request across the transition unless the
+            # detected interface cannot safely represent it in Manual mode.
+            # hp-wmi's pwm1 read reflects the current CPU fan level in Auto and
+            # firmware Max.
+            current_mode, current_pwm, _, _ = self.fan.status()
             pwm = max(pwm, current_pwm)
+            if current_pwm > self.fan.manual_pwm_max:
+                LOG.warning(
+                    "entering Manual lowers firmware PWM from %d to safe maximum "
+                    "%d (mode=%d pwm=%s level=%d)",
+                    current_pwm,
+                    self.fan.manual_pwm_max,
+                    current_mode,
+                    self.fan.pwm_abi,
+                    self.fan.manual_max_level,
+                )
             pwm = min(pwm, self.fan.manual_pwm_max)
             self.fan.set_manual(pwm)
             self.manual_active = True
