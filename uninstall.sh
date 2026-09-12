@@ -108,6 +108,8 @@ fi
 remove_file "$UNIT_PATH"
 remove_file "$TMPFILES_PATH"
 remove_file "$LOGROTATE_PATH"
+remove_file "$INSTALL_DIR/omen-fanctl"
+# Also clean up the entry point installed by versions before the rename.
 remove_file "$INSTALL_DIR/omen_fanctl.py"
 shopt -s nullglob
 installed_modules=("$INSTALL_DIR/omen_fanctl/"*.py)

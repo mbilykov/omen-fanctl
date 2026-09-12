@@ -82,7 +82,7 @@ fi
 
 log "Verifying source files"
 for required in \
-    "$SCRIPT_DIR/src/daemon/omen_fanctl.py" \
+    "$SCRIPT_DIR/src/daemon/omen-fanctl" \
     "$SCRIPT_DIR/src/config/omen-fanctl.toml" \
     "$SCRIPT_DIR/README.md" \
     "$SCRIPT_DIR/src/systemd/omen-fanctl.service" \
@@ -158,8 +158,12 @@ for source in "${DAEMON_SOURCES[@]}"; do
     install_file 0644 "$source" \
         "$INSTALL_DIR/omen_fanctl/${source##*/}"
 done
-install_file 0755 "$SCRIPT_DIR/src/daemon/omen_fanctl.py" \
-    "$INSTALL_DIR/omen_fanctl.py"
+install_file 0755 "$SCRIPT_DIR/src/daemon/omen-fanctl" \
+    "$INSTALL_DIR/omen-fanctl"
+if [[ -e "$INSTALL_DIR/omen_fanctl.py" ]]; then
+    log "Removing obsolete $INSTALL_DIR/omen_fanctl.py"
+    rm -f -- "$INSTALL_DIR/omen_fanctl.py"
+fi
 install_file 0644 "$SCRIPT_DIR/README.md" "$DOC_DIR/README.md"
 install_file 0644 "$SCRIPT_DIR/src/systemd/omen-fanctl.service" "$UNIT_PATH"
 install_file 0644 "$SCRIPT_DIR/src/logrotate/omen-fanctl" "$LOGROTATE_PATH"

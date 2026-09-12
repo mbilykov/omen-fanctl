@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compatibility entry point for the packaged fan-control daemon."""
+"""Executable entry point for the packaged fan-control daemon."""
 
 import sys
 

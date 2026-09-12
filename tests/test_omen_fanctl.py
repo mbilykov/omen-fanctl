@@ -23,7 +23,7 @@ SERVICE_PATH = PROJECT_ROOT / "src" / "systemd" / "omen-fanctl.service"
 INSTALL_SCRIPT = PROJECT_ROOT / "install.sh"
 CONFIG_STEP = PROJECT_ROOT / "src" / "install" / "config.sh"
 LOGROTATE_PATH = PROJECT_ROOT / "src" / "logrotate" / "omen-fanctl"
-ENTRY_POINT_PATH = PROJECT_ROOT / "src" / "daemon" / "omen_fanctl.py"
+ENTRY_POINT_PATH = PROJECT_ROOT / "src" / "daemon" / "omen-fanctl"
 DAEMON_PATH = PROJECT_ROOT / "src" / "daemon"
 sys.path.insert(0, str(PROJECT_ROOT / "src" / "daemon"))
 

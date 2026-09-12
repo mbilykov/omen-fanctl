@@ -402,7 +402,7 @@ its marker, so the recovery that has to clean up is never locked out. The
 daemon derives its heartbeat interval from systemd's
 `WATCHDOG_USEC`, so long sensor sampling intervals do not starve the watchdog.
 
-The executable `src/daemon/omen_fanctl.py` is a compatibility entry point.
+The executable `src/daemon/omen-fanctl` is the command-line entry point.
 Implementation is split by responsibility under `src/daemon/omen_fanctl/`:
 configuration and curves, hardware adapters, the control state machine, and
 the command-line lifecycle. The installer preserves the same executable path
@@ -481,7 +481,7 @@ index name temp_c
 ### 3. Run read-only mode
 
 ```bash
-python3 src/daemon/omen_fanctl.py \
+src/daemon/omen-fanctl \
   --config src/config/omen-fanctl.toml --duration 60
 ```
 
@@ -493,7 +493,7 @@ does not write fan controls.
 Only after the read-only output of the previous step has been reviewed:
 
 ```bash
-sudo python3 src/daemon/omen_fanctl.py \
+sudo src/daemon/omen-fanctl \
   --config src/config/omen-fanctl.toml \
   --apply --actuator-test 60 --duration 15
 ```

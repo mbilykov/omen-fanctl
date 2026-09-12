@@ -8,8 +8,8 @@ StartLimitBurst=10
 [Service]
 Type=notify
 NotifyAccess=main
-ExecStart=/usr/local/lib/omen-fanctl/omen_fanctl.py --apply --config /etc/omen-fanctl/omen-fanctl.toml --status-interval 30
-ExecStopPost=/usr/local/lib/omen-fanctl/omen_fanctl.py --failsafe
+ExecStart=/usr/local/lib/omen-fanctl/omen-fanctl --apply --config /etc/omen-fanctl/omen-fanctl.toml --status-interval 30
+ExecStopPost=/usr/local/lib/omen-fanctl/omen-fanctl --failsafe
 Restart=always
 RestartPreventExitStatus=78
 RestartSec=10
