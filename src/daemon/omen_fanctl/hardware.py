@@ -775,6 +775,23 @@ class HpFanHwmon:
             read_int(self.fan2),
         )
 
+    def _write_pwm_targets_or_restore_auto(self, pwm: int, context: str) -> None:
+        try:
+            for channel, target in self._pwm_targets(pwm):
+                write_int(channel, target)
+        except HardwareError:
+            # A channel write may have succeeded before a later one failed.
+            # Leave neither an unowned Manual mode nor a partially updated pair.
+            try:
+                self.restore_auto()
+            except HardwareError as restore_error:
+                LOG.critical(
+                    "%s failed and Auto rollback also failed: %s",
+                    context,
+                    restore_error,
+                )
+            raise
+
     def set_manual(self, pwm: int) -> None:
         pwm = int(clamp(pwm, 1, PWM_MAX))
         self._validate_manual_pwm(pwm)
@@ -782,21 +799,7 @@ class HpFanHwmon:
         # switching Auto -> Manual, producing a smooth and non-zero transition.
         # pwm1 rejects writes outside Manual mode, so mode must be changed first.
         write_int(self.enable, MANUAL_MODE)
-        try:
-            for channel, target in self._pwm_targets(pwm):
-                write_int(channel, target)
-        except HardwareError:
-            # The mode write may have succeeded even if a PWM write failed.
-            # Roll back immediately instead of leaving an unowned Manual mode
-            # or a partially updated pair of channels behind.
-            try:
-                self.restore_auto()
-            except HardwareError as restore_error:
-                LOG.critical(
-                    "initial manual PWM write failed and Auto rollback also failed: %s",
-                    restore_error,
-                )
-            raise
+        self._write_pwm_targets_or_restore_auto(pwm, "initial manual PWM write")
         self._manual_recovery_pending = False
 
     def update_manual(self, pwm: int, *, write_pwm: bool = True) -> None:
@@ -825,8 +828,7 @@ class HpFanHwmon:
             raise HardwareError(f"unexpected fan mode during manual control: {mode}")
         self._manual_recovery_pending = False
         if write_pwm:
-            for channel, target in self._pwm_targets(pwm):
-                write_int(channel, target)
+            self._write_pwm_targets_or_restore_auto(pwm, "manual PWM update")
 
     def set_maximum(self) -> None:
         write_int(self.enable, MAX_MODE)

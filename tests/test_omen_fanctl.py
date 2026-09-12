@@ -5191,7 +5191,53 @@ class FakeHwmonTests(unittest.TestCase):
             ],
         )
         critical.assert_called_once_with(
-            "initial manual PWM write failed and Auto rollback also failed: %s",
+            "%s failed and Auto rollback also failed: %s",
+            "initial manual PWM write",
+            rollback_failure,
+        )
+
+    def test_failed_second_update_write_rolls_dual_channel_back_to_auto(self):
+        fan = initialized_fan(self)
+        fan.pwm2 = fan.path / "pwm2"
+        failure = HardwareError("pwm2 update failed")
+        with (
+            patch("omen_fanctl.hardware.read_int", return_value=MANUAL_MODE),
+            patch(
+                "omen_fanctl.hardware.write_int",
+                side_effect=[None, failure, None],
+            ) as write,
+            self.assertRaisesRegex(HardwareError, "pwm2 update failed"),
+        ):
+            fan.update_manual(hp_level_to_pwm(47))
+
+        self.assertEqual(
+            write.call_args_list,
+            [
+                call(fan.pwm, hp_level_to_pwm(47)),
+                call(fan.pwm2, hp_level_to_pwm(49)),
+                call(fan.enable, AUTO_MODE),
+            ],
+        )
+
+    def test_failed_update_reports_failed_auto_rollback(self):
+        fan = initialized_fan(self)
+        fan.pwm2 = fan.path / "pwm2"
+        pwm_failure = HardwareError("pwm2 update failed")
+        rollback_failure = HardwareError("Auto rollback failed")
+        with (
+            patch("omen_fanctl.hardware.read_int", return_value=MANUAL_MODE),
+            patch(
+                "omen_fanctl.hardware.write_int",
+                side_effect=[None, pwm_failure, rollback_failure],
+            ),
+            patch("omen_fanctl.hardware.LOG.critical") as critical,
+            self.assertRaisesRegex(HardwareError, "pwm2 update failed"),
+        ):
+            fan.update_manual(hp_level_to_pwm(47))
+
+        critical.assert_called_once_with(
+            "%s failed and Auto rollback also failed: %s",
+            "manual PWM update",
             rollback_failure,
         )
 
