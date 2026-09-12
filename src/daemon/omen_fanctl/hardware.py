@@ -783,9 +783,11 @@ class HpFanHwmon:
             read_int(self.fan2),
         )
 
-    def _write_pwm_targets_or_restore_auto(self, pwm: int, context: str) -> None:
+    def _write_pwm_targets_or_restore_auto(
+        self, targets: tuple[tuple[Path, int], ...], context: str
+    ) -> None:
         try:
-            for channel, target in self._pwm_targets(pwm):
+            for channel, target in targets:
                 write_int(channel, target)
         except HardwareError:
             # A channel write may have succeeded before a later one failed.
@@ -803,11 +805,14 @@ class HpFanHwmon:
     def set_manual(self, pwm: int) -> None:
         pwm = int(clamp(pwm, 1, PWM_MAX))
         self._validate_manual_pwm(pwm)
+        targets = self._pwm_targets(pwm)
         # Linux 7.1 hp-wmi deliberately captures the current physical RPM when
         # switching Auto -> Manual, producing a smooth and non-zero transition.
         # pwm1 rejects writes outside Manual mode, so mode must be changed first.
         write_int(self.enable, MANUAL_MODE)
-        self._write_pwm_targets_or_restore_auto(pwm, "initial manual PWM write")
+        self._write_pwm_targets_or_restore_auto(
+            targets, "initial manual PWM write"
+        )
         self._manual_recovery_pending = False
 
     def update_manual(self, pwm: int, *, write_pwm: bool = True) -> None:
@@ -836,7 +841,8 @@ class HpFanHwmon:
             raise HardwareError(f"unexpected fan mode during manual control: {mode}")
         self._manual_recovery_pending = False
         if write_pwm:
-            self._write_pwm_targets_or_restore_auto(pwm, "manual PWM update")
+            targets = self._pwm_targets(pwm)
+            self._write_pwm_targets_or_restore_auto(targets, "manual PWM update")
 
     def set_maximum(self) -> None:
         write_int(self.enable, MAX_MODE)

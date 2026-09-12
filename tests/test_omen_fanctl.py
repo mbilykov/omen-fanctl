@@ -5268,6 +5268,23 @@ class FakeHwmonTests(unittest.TestCase):
             ):
                 wait_for_hp_fan_hwmon("8C99", root=root)
 
+    def test_unmapped_dual_channel_is_rejected_before_entering_manual_mode(self):
+        fan = initialized_fan(self)
+        (fan.path / "pwm2").write_text("100\n")
+        fan = HpFanHwmon(fan.path.parent, board_name="8C99")
+
+        with (
+            patch("omen_fanctl.hardware.write_int") as write,
+            self.assertRaisesRegex(
+                ConfigurationError,
+                "no captured CPU/GPU mapping for board '8C99'",
+            ),
+        ):
+            fan.set_manual(100)
+
+        write.assert_not_called()
+        self.assertEqual(int(fan.enable.read_text()), AUTO_MODE)
+
     def test_single_channel_rejects_pwm_above_firmware_observed_cpu_maximum(self):
         fan = initialized_fan(self)
         self.assertEqual(fan.pwm_abi, "single")
