@@ -46,6 +46,12 @@ Configuration is preserved unless --purge-config is explicitly supplied.
 EOF
 }
 
+if (( $# > 1 )); then
+    echo "ERROR: unexpected extra arguments" >&2
+    usage >&2
+    exit 2
+fi
+
 case "${1:-}" in
     "") ;;
     --purge-config) PURGE_CONFIG=true ;;

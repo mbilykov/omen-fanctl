@@ -424,6 +424,8 @@ class Sensors:
         if not values:
             reason = "no valid k10temp temperature was found during rediscovery"
             self.cpu_health.unavailable(reason)
+            # CPU is mandatory at this call site even if its health policy is
+            # accidentally relaxed; never continue into max(values) empty.
             raise HardwareError(f"CPU temperature source unavailable: {reason}")
         self.cpu_health.available()
         return max(values)
@@ -819,7 +821,7 @@ class HpFanHwmon:
             LOG.warning("maximum fan mode asserted externally; preserving it")
             return
         if mode == AUTO_MODE:
-            if getattr(self, "_manual_recovery_pending", False):
+            if self._manual_recovery_pending:
                 raise HardwareError(
                     "manual fan mode was lost again immediately after recovery"
                 )

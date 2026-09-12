@@ -21,6 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = PROJECT_ROOT / "src" / "config" / "omen-fanctl.toml"
 SERVICE_PATH = PROJECT_ROOT / "src" / "systemd" / "omen-fanctl.service"
 INSTALL_SCRIPT = PROJECT_ROOT / "install.sh"
+UNINSTALL_SCRIPT = PROJECT_ROOT / "uninstall.sh"
 CONFIG_STEP = PROJECT_ROOT / "src" / "install" / "config.sh"
 LOGROTATE_PATH = PROJECT_ROOT / "src" / "logrotate" / "omen-fanctl"
 ENTRY_POINT_PATH = PROJECT_ROOT / "src" / "daemon" / "omen-fanctl"
@@ -1254,6 +1255,32 @@ class SettingsTests(unittest.TestCase):
             hp_level_percent(19),
         )
 
+    def test_omitted_behavior_defaults_match_the_packaged_configuration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "omen-fanctl.toml"
+            config.write_text(
+                """
+[daemon]
+allowed_boards = ["8D87"]
+
+[curves]
+preset = "performance-single-channel"
+""",
+                encoding="utf-8",
+            )
+            defaults = Settings.load(config)
+
+        packaged = Settings.load(CONFIG_PATH)
+        for field in (
+            "activation_temp_c",
+            "release_temp_c",
+            "ewma_rise_alpha",
+            "ewma_fall_alpha",
+            "include_acpi",
+        ):
+            with self.subTest(field=field):
+                self.assertEqual(getattr(defaults, field), getattr(packaged, field))
+
     def test_rejects_conflicting_operation_and_log_arguments(self):
         cases = (
             ["--failsafe", "--actuator-test", "50"],
@@ -1746,6 +1773,39 @@ allowed_boards = ["8D87"]
                 "curves must define either preset or curves.cpu",
             ):
                 Settings.load(config)
+
+    def test_rejects_both_names_for_a_curve_temperature_axis(self):
+        cases = {
+            "curve": """
+[curve]
+temperature_c = [50, 60]
+high_temperature_c = [50, 60]
+pwm_percent = [30, 40]
+""",
+            "curves.cpu": """
+[curves.cpu]
+temperature_c = [50, 60]
+high_temperature_c = [50, 60]
+pwm_percent = [30, 40]
+""",
+        }
+        for path, curve in cases.items():
+            with self.subTest(path=path), tempfile.TemporaryDirectory() as temporary:
+                config = Path(temporary) / "omen-fanctl.toml"
+                config.write_text(
+                    f"""
+[daemon]
+allowed_boards = ["8D87"]
+{curve}
+""",
+                    encoding="utf-8",
+                )
+
+                with self.assertRaisesRegex(
+                    ConfigurationError,
+                    f"{path} cannot define both high_temperature_c and temperature_c",
+                ):
+                    Settings.load(config)
 
     def test_rejects_unknown_configuration_keys(self):
         cases = {
@@ -5866,6 +5926,21 @@ class InstallerArgumentTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 2)
         self.assertIn("Usage:", result.stderr)
+
+
+class UninstallerArgumentTests(unittest.TestCase):
+    """Uninstaller arguments are rejected before its root and hardware checks."""
+
+    def test_extra_argument_is_rejected(self):
+        result = subprocess.run(
+            [str(UNINSTALL_SCRIPT), "--purge-config", "unexpected"],
+            capture_output=True,
+            text=True,
+            cwd=PROJECT_ROOT,
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("unexpected extra arguments", result.stderr)
 
 
 class SystemdUnitTests(unittest.TestCase):

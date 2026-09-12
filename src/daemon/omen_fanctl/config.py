@@ -407,7 +407,7 @@ class Settings:
                 curve_source = preset
             else:
                 named = {
-                    name: cls._load_curve(data)
+                    name: cls._load_curve(data, f"curves.{name}")
                     for name, data in named_curve_data.items()
                 }
                 if named:
@@ -419,7 +419,7 @@ class Settings:
                     curves = tuple(named.items())
                     curve_source = "custom-per-sensor"
                 else:
-                    curve = cls._load_curve(curve_data)
+                    curve = cls._load_curve(curve_data, "curve")
                     curves = None
                     curve_source = "legacy-shared"
             allowed_boards = board_list(daemon["allowed_boards"])
@@ -433,8 +433,8 @@ class Settings:
                 required_profile=str(daemon.get("required_profile", "performance")),
                 sample_interval_s=float(daemon.get("sample_interval_s", 1.0)),
                 control_interval_s=float(daemon.get("control_interval_s", 5.0)),
-                activation_temp_c=float(daemon.get("activation_temp_c", 65.0)),
-                release_temp_c=float(daemon.get("release_temp_c", 55.0)),
+                activation_temp_c=float(daemon.get("activation_temp_c", 60.0)),
+                release_temp_c=float(daemon.get("release_temp_c", 52.0)),
                 fan_stop_temp_c=float(daemon.get("fan_stop_temp_c", 45.0)),
                 # Absent means disabled, unlike the 70 C in the packaged
                 # file. Upgrades keep the installed configuration, and a fan
@@ -463,9 +463,9 @@ class Settings:
                 minimum_manual_percent=float(
                     daemon.get("minimum_manual_percent", hp_level_percent(19))
                 ),
-                ewma_rise_alpha=float(ewma.get("rise_alpha", 0.25)),
-                ewma_fall_alpha=float(ewma.get("fall_alpha", 0.10)),
-                include_acpi=bool(sensors.get("include_acpi", True)),
+                ewma_rise_alpha=float(ewma.get("rise_alpha", 0.10)),
+                ewma_fall_alpha=float(ewma.get("fall_alpha", 0.05)),
+                include_acpi=bool(sensors.get("include_acpi", False)),
                 include_amd_gpu=bool(sensors.get("include_amd_gpu", True)),
                 include_nvidia_gpu=bool(sensors.get("include_nvidia_gpu", True)),
                 curve=curve,
@@ -486,14 +486,21 @@ class Settings:
         return settings
 
     @staticmethod
-    def _load_curve(data: dict[str, object]) -> Curve:
+    def _load_curve(data: dict[str, object], path: str) -> Curve:
+        if "high_temperature_c" in data and "temperature_c" in data:
+            raise ConfigurationError(
+                f"{path} cannot define both high_temperature_c and temperature_c"
+            )
         temperatures = data.get("high_temperature_c", data.get("temperature_c"))
         pwm_values = data.get("pwm_percent")
         levels = data.get("fan_level")
         if pwm_values is None and levels is not None:
             pwm_values = [hp_level_percent(int(v)) for v in levels]
         if temperatures is None or pwm_values is None:
-            raise ConfigurationError("curve needs temperature_c and pwm_percent")
+            raise ConfigurationError(
+                f"{path} needs temperature_c or high_temperature_c, plus "
+                "pwm_percent or fan_level"
+            )
         low = data.get("low_temperature_c")
         return Curve(
             tuple(float(v) for v in temperatures),
