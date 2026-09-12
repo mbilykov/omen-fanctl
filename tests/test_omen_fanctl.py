@@ -4584,6 +4584,36 @@ class MainStartupTests(RuntimeMarkerIsolation):
         wait_for_sensors.assert_not_called()
         lock.close.assert_called_once_with()
 
+    def test_main_does_not_restart_an_unmapped_dual_channel_board(self):
+        settings = replace(fixed_policy_settings(), allowed_boards=("8C99",))
+        failure = ConfigurationError(
+            "dual-channel Manual control has no captured CPU/GPU mapping "
+            "for board '8C99'"
+        )
+        wait_for_sensors = Mock()
+        lock = Mock()
+        with (
+            patch("omen_fanctl.cli.Settings.load", return_value=settings),
+            patch("omen_fanctl.cli.read_text", return_value="8C99"),
+            patch("omen_fanctl.cli.validate_required_profile"),
+            patch("omen_fanctl.cli.acquire_lock", return_value=lock),
+            patch(
+                "omen_fanctl.cli.wait_for_hp_fan_hwmon",
+                side_effect=failure,
+            ),
+            patch(
+                "omen_fanctl.cli.wait_for_temperature_sensors",
+                wait_for_sensors,
+            ),
+            patch("omen_fanctl.cli.LOG.error") as log_error,
+        ):
+            result = main(["--no-log-file"])
+
+        self.assertEqual(result, CONFIGURATION_ERROR_EXIT_STATUS)
+        self.assertEqual(log_error.call_args.args[1], failure)
+        wait_for_sensors.assert_not_called()
+        lock.close.assert_called_once_with()
+
     def test_main_dispatches_actuator_test_without_constructing_controller(self):
         settings = fixed_policy_settings()
         lock = Mock()
@@ -5154,7 +5184,7 @@ class FakeHwmonTests(unittest.TestCase):
                 (hp / name).write_text(value)
 
             with self.assertRaisesRegex(
-                HardwareError,
+                ConfigurationError,
                 "no captured CPU/GPU mapping for board '8C99'",
             ):
                 wait_for_hp_fan_hwmon("8C99", root=root)

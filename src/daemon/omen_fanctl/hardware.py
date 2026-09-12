@@ -12,6 +12,7 @@ import subprocess
 import time
 
 from .config import (
+    ConfigurationError,
     HP_CPU_GPU_LEVEL_TABLES,
     HP_FAN_LEVEL_MAX,
     HP_SINGLE_PWM_MAX_LEVEL,
@@ -743,7 +744,7 @@ class HpFanHwmon:
 
     def validate_manual_mapping(self) -> None:
         if self.supports_independent_pwm and self.cpu_gpu_level_table is None:
-            raise HardwareError(
+            raise ConfigurationError(
                 "dual-channel Manual control has no captured CPU/GPU mapping "
                 f"for board {self.board_name!r}"
             )

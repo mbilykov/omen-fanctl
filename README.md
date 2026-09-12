@@ -88,7 +88,9 @@ CPU/GPU level pairs, add a clearly board-named table beside
 `HP_CPU_GPU_LEVEL_TABLES`. A board proven to use the exact 8D87 table may point
 to that same constant, but the registry entry must still be explicit. Without
 an entry, startup fails closed instead of applying the 8D87 mapping or writing
-the same target to both fans.
+the same target to both fans. It exits with configuration status 78, which
+`RestartPreventExitStatus` keeps from becoming a service restart loop; firmware
+Auto remains in control while the mapping is added.
 
 Support is complete only after tests cover the board lookup, single-channel
 ceiling where applicable, representative interpolation points, per-fan
