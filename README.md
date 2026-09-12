@@ -9,6 +9,7 @@ boards using the same `hp-wmi` interface may work, but require
 
 - [Problem](#problem)
 - [Requirements and compatibility](#requirements-and-compatibility)
+  - [Adding support for another board](#adding-support-for-another-board)
 - [Tested configuration](#tested-configuration)
 - [Installation](#installation)
 - [Uninstallation](#uninstallation)
@@ -66,6 +67,34 @@ their WMI capabilities, fan mapping, curves, or firmware transition behavior
 are identical. A new board must complete the [hardware validation](#hardware-validation)
 procedure before it is used with `--apply` or added to the `allowed_boards`
 list of a system that runs the daemon as a service.
+
+### Adding support for another board
+
+`allowed_boards` is an operator allowlist, not a hardware-support registry.
+Adding an identifier there only permits validation runs; it does not make the
+8D87 fan policy valid for that board.
+
+For a single-channel `pwm1` interface, verify the kernel's CPU-to-GPU fan-level
+offset and both firmware-observed maxima. The current CPU level-56 ceiling and
+derived GPU level 58 are 8D87 results. If another board behaves differently,
+move those limits into a board-specific hardware profile before enabling
+Manual control. If it behaves identically, record the evidence and add a test
+that explicitly associates the board with those limits rather than relying on
+the global 8D87 values by coincidence.
+
+For a dual-channel `pwm1`/`pwm2` interface, capture the board's firmware
+CPU/GPU level pairs, add a clearly board-named table beside
+`HP_8D87_CPU_GPU_LEVEL_TABLE`, and register it in
+`HP_CPU_GPU_LEVEL_TABLES`. A board proven to use the exact 8D87 table may point
+to that same constant, but the registry entry must still be explicit. Without
+an entry, startup fails closed instead of applying the 8D87 mapping or writing
+the same target to both fans.
+
+Support is complete only after tests cover the board lookup, single-channel
+ceiling where applicable, representative interpolation points, per-fan
+endpoints, rejection of an unmapped dual-channel board, and safe Auto/Max
+recovery. Run the full [hardware validation](#hardware-validation) procedure
+before adding the board to the configuration used by the installed service.
 
 ## Tested configuration
 
@@ -482,10 +511,11 @@ allowed_boards = ["8D87", "8C99"]
 ```
 
 The entry only permits the remaining steps to run. It does not assert that the
-board is supported. Steps 3 to 6 run from the repository and need nothing else;
+board is supported. A dual-channel board also needs the mapping described in
+[Adding support for another board](#adding-support-for-another-board), or the
+daemon will fail closed during discovery. Steps 3 to 6 run from the repository;
 step 7 exercises the installed service, so add the board to
-`/etc/omen-fanctl/omen-fanctl.toml` only once those earlier steps have
-passed.
+`/etc/omen-fanctl/omen-fanctl.toml` only once those earlier steps have passed.
 
 The recovery commands `--restore-auto` and `--failsafe` read the same list,
 extended by the board that the running service recorded at startup. When their
