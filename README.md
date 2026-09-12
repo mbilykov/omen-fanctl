@@ -487,7 +487,13 @@ used by the systemd unit.
 Run the complete test suite from the repository root:
 
 ```bash
-python3 -m unittest discover -s tests -v
+python3 -m unittest discover -s tests -t . -v
+```
+
+Run one test module through the package namespace, for example:
+
+```bash
+python3 -m tests.test_hardware -v
 ```
 
 The tests use temporary files and fake fan devices; they do not write to the
