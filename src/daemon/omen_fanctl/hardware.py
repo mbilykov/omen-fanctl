@@ -706,7 +706,7 @@ class HpFanHwmon:
         if len(matches) > 1:
             raise HardwareError(
                 f"expected exactly one hp hwmon device, found {len(matches)}"
-        )
+            )
         self.path = matches[0]
         self.pwm = self.path / "pwm1"
         self.enable = self.path / "pwm1_enable"
