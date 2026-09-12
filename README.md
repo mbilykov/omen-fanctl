@@ -231,6 +231,12 @@ retrying. Telemetry under `/var/log/omen-fanctl/` is always preserved.
 | `hp-vibrance-stx-n22x9-performance` | level 47 (~78.3%) at 85 C | 47/49 | The extracted factory table; firmware Max takes over at `critical_temp_c` |
 | `performance-extended` | level 60 (100%) at 90 C | 60/58 | Available on 8D87 with the dual-channel `pwm1`/`pwm2` ABI |
 
+Before booting a kernel that does not expose `pwm2`, switch from
+`performance-extended` to `performance-single-channel`. After a rollback, the
+extended preset fails startup with exit status 78, and systemd deliberately
+does not restart it because the unit lists that status in
+`RestartPreventExitStatus`.
+
 HP's Performance table stops at fan level 47 of 60, around 4,700 RPM, which
 settles this machine near 85 C. Full cooling is therefore reached through the
 92 C emergency threshold, which selects firmware Max.

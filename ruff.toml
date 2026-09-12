@@ -3,6 +3,7 @@
 # change is consistent with its surroundings rather than reformatted to taste.
 line-length = 88
 target-version = "py311"
+extend-include = ["src/daemon/omen-fanctl"]
 
 [lint]
 # E/W: pycodestyle. F: pyflakes, which catches unused imports and undefined

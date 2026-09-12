@@ -14,7 +14,7 @@ import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import ANY, Mock, call, patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -5563,13 +5563,16 @@ class HwmonStartupTests(unittest.TestCase):
 
 
 class EntryPointTests(unittest.TestCase):
-    def test_package_exports_every_name_declared_in_all(self):
+    def test_package_all_matches_every_public_binding(self):
         exports = omen_fanctl_package.__all__
+        public_bindings = {
+            name
+            for name, value in vars(omen_fanctl_package).items()
+            if not name.startswith("_") and not isinstance(value, ModuleType)
+        }
 
         self.assertEqual(len(exports), len(set(exports)))
-        for name in exports:
-            with self.subTest(name=name):
-                self.assertTrue(hasattr(omen_fanctl_package, name))
+        self.assertEqual(set(exports), public_bindings)
 
     def test_script_entry_point_displays_help(self):
         result = subprocess.run(
